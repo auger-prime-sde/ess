@@ -1,0 +1,123 @@
+#
+# ESS procedure
+# communication with BME280 on arduino
+#
+
+import re
+import threading
+import logging
+from time import sleep
+from datetime import datetime, timedelta
+from serial import Serial
+
+class SerialReadTimeout(AssertionError): pass
+
+def readSerRE(ser, r, timeout=2, logger=None):
+    """Try to read regexp 're' from serial with timeout
+r - compiled regexp
+timeout - timeout in s after which SerialReadTimeout exception is raised
+return response from serial or raise SerialReadTimeout exception"""
+    TIME_STEP = 0.01   # timestep between successive read trials
+    resp = ser.read(ser.inWaiting())
+    if r.match(resp):
+        if logger is not None:
+            logger.debug("serial %s read %s" % (ser.port, repr(resp)))
+        return resp
+    tend = datetime.now() + timedelta(seconds=timeout)
+    while datetime.now() < tend:
+        if ser.inWaiting() > 0:
+            resp += ser.read(ser.inWaiting())
+            if r.match(resp):
+                if logger is not None:
+                    logger.debug("serial %s read %s" % (ser.port, repr(resp)))
+                return resp
+        sleep(TIME_STEP)
+    if logger is not None:
+        logger.debug("serial %s timed out, partial read %s" % (
+            ser.port, repr(resp)))
+    raise SerialReadTimeout
+
+class BME(threading.Thread):
+    """Thread managing arduino reading BME280"""
+    re_bmeinit = re.compile(r'.*BME1 detected[\r\n]*BME2 detected[\r\n]*',
+                            re.DOTALL)
+    re_bmetimeset = re.compile(r'.*set time OK[\r\n]*', re.DOTALL)
+    re_bmemeas = re.compile(r'.*(?P<dt>20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})' +
+                            r' +(?P<temp1>-?\d+(\.\d*)?).*' +
+                            r' +(?P<humid1>\d+(\.\d*)?).*' +
+                            r' +(?P<press1>\d+(\.\d*)?).*' +
+                            r' +(?P<temp2>-?\d+(\.\d*)?).*' +
+                            r' +(?P<humid2>\d+(\.\d*)?).*' +
+                            r' +(?P<press2>\d+(\.\d*)?)[\r\n]*',
+                            re.DOTALL)
+    def __init__(self, port, timer, q_resp, timesync=False):
+        """Constructor.
+port - serial port to connect
+timer - instance of timer
+q_resp - queue to send response
+timesync - sync Arduino time
+"""
+        super(BME, self).__init__()
+        self.timer = timer
+        self.q_resp = q_resp
+        # check that we are connected to BME
+        logger = logging.getLogger('bme')
+        s = None               # avoid NameError on isinstance(s, Serial) check
+        try:
+            s = Serial(port, baudrate=115200)
+            logger.info('Opening serial %s', repr(s))
+            resp = readSerRE(s, BME.re_bmeinit, timeout=3, logger=logger)
+            if timesync:
+                # initialize time
+                logger.info('BME time sync')
+                ts = (datetime.now() + timedelta(seconds=1)).strftime(
+                    "t %Y-%m-%dT%H:%M:%S\r")
+                s.write(ts)
+                resp = readSerRE(s, BME.re_bmetimeset,
+                                 timeout=3, logger=logger)
+                logger.info('synced to ' + ts)
+        except Exception:
+            logger.exception("Init serial with BME failed")
+            if isinstance(s, Serial):
+                logger.info('Closing serial %s', s.port)
+                s.close()
+            raise SerialReadTimeout
+        self.ser = s
+
+    def __del__(self):
+        logger = logging.getLogger('bme')
+        logger.info('Closing serial')
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+
+    def run(self):
+        logger = logging.getLogger('bme')
+        while True:
+            self.timer.evt.wait()
+            if self.timer.stop.is_set():
+                logger.info('Timer stopped, closing serial')
+                self.ser.close()
+                return
+            timestamp = self.timer.timestamp   # store info from timer
+            flags = self.timer.flags
+            logger.debug('BME event timestamp '
+                         + datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
+            if 'meas.thp' in flags or 'meas.point' in flags:
+                logger.debug('BME read')
+                self.ser.write('m')
+                resp = readSerRE(self.ser, BME.re_bmemeas, logger=logger)
+                logger.debug('BME read finished')
+                d = BME.re_bmemeas.match(resp).groupdict()
+                bmetime = d.pop('dt')
+                logger.debug('BME vs event time diff: %f s',
+                             (datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S')
+                              - timestamp).total_seconds())
+                res = {'timestamp': timestamp}
+                if 'meas.point' in flags:
+                    res['meas_point'] = flags['meas.point']
+                # prefix keys from re_bme with 'bme.'
+                for k, v in d.iteritems():
+                    res['bme_'+k] = float(v)
+                self.q_resp.put(res)
