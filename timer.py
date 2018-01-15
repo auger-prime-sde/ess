@@ -4,7 +4,6 @@
 
 import threading
 import logging
-from serial import Serial, SerialException
 from time import sleep
 from datetime import datetime, timedelta
 
@@ -46,10 +45,12 @@ class Timer(threading.Thread):
         self.tickers = {}  # name: [gener, offset, candidate]
         self.tickers2add = []
         self.tickers2del = []
+        self.timestamp = None
+        self.flags = {}
         self.stop = threading.Event()
         self.evt = threading.Event()
         logger = logging.getLogger('timer')
-        logger.info('Timer initialized: basetime %s' %
+        logger.info('Timer initialized: basetime %s',
                     datetime.strftime(basetime, "%Y-%m-%d %H:%M:%S.%f"))
 
     def add_ticker(self, name, gener, offset=0):
@@ -74,7 +75,7 @@ offset - an offset to basetime (seconds)
                 assert name not in self.tickers, "Duplicate ticker " + name
                 logger.info('Added ticker ' + name)
                 # at least one value must be produced
-                detail, nextval = gener.next()  
+                detail, nextval = gener.next()
                 nextval += offset
                 self.tickers[name] = [detail, nextval, gener, offset]
             while self.tickers2del:
@@ -83,8 +84,8 @@ offset - an offset to basetime (seconds)
                     del self.tickers[name]
                     logger.info('Removing ticker ' + name)
                 else:
-                    logger.info('Ticker %s not present for removal' % name)
-                    
+                    logger.info('Ticker %s not present for removal', name)
+
             if not self.tickers:
                 sleep(1)
                 continue
@@ -96,33 +97,34 @@ offset - an offset to basetime (seconds)
                 if t[1] == delta:
                     newflags[name] = t[0]
                     try:
-                        t[0:2] = t[2].next()  # generate next value 
+                        t[0:2] = t[2].next()  # generate next value
                         t[1] += t[3]          # add offset to delta
                     except StopIteration:
                         # schedule exhausted ticker deletion
                         tickers2del.append(name)
             for name in tickers2del:
                 del self.tickers[name]
-                logger.info('Exhausted ticker %s removed' % name)
+                logger.info('Exhausted ticker %s removed', name)
 
-            self.timestamp = self.basetime + timedelta(seconds=delta)
+            timestamp = self.basetime + timedelta(seconds=delta)
             now = datetime.now()
-            if now > self.timestamp:
-                logger.debug('Skipping passed tick %s' %
-                    datetime.strftime(self.timestamp, "%Y-%m-%d %H:%M:%S.%f"))
+            if now > timestamp:
+                logger.debug('Skipping passed tick %s',
+                    datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S.%f"))
                 continue
 
             # coarse sleep
-            sec = (self.timestamp - now).seconds
+            sec = (timestamp - now).seconds
             if sec > 2:
-                logger.debug('coarse sleep %ds' % (sec-2))
+                logger.debug('coarse sleep %ds', sec-2)
                 sleep(sec-2)
             # fine sleep
-            delta = self.timestamp - datetime.now()
+            delta = timestamp - datetime.now()
             sec = delta.seconds + 0.000001 * delta.microseconds
-            logger.debug('fine sleep %.6fs' % sec)
+            logger.debug('fine sleep %.6fs', sec)
             sleep(sec)
             logger.debug('event')
+            self.timestamp = timestamp
             self.flags = newflags
             self.evt.set()
             self.evt.clear()
@@ -135,4 +137,3 @@ offset - an offset to basetime (seconds)
         self.flags = {}
         self.evt.set()    # trigger all listeners
         super(Timer, self).join(timeout)
-
