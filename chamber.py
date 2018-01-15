@@ -23,7 +23,7 @@ q_resp - queue to send response"""
         b = None
         try:
             m = Modbus(port)
-            logger.info('Opening serial %s' % repr(m.ser))
+            logger.info('Opening serial %s', repr(m.ser))
             b = Binder(m)
             b.state()
         except ModbusError:
@@ -46,7 +46,7 @@ q_resp - queue to send response"""
                          + datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'binder.progstart' in flags:
                 progno = int(flags['binder.progstart'])
-                logger.info('Starting program %d' % progno)
+                logger.info('Starting program %d', progno)
                 self.binder.setState(Binder.STATE_PROG, progno)
             if 'binder.progstop' in flags:
                 logger.info('Stopping program')
@@ -55,10 +55,11 @@ q_resp - queue to send response"""
                 logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
                 humid = self.binder.getActHumid()
-                logger.debug('Done. t = %.2fdeg.C, h = %.2f%%' % (temperature, humid))
+                logger.debug('Done. t = %.2fdeg.C, h = %.2f%%',
+                             temperature, humid)
                 res = {'timestamp': timestamp,
-                       'chamber.temp': temperature,
-                       'chamber.humid': humid }
+                       'chamber_temp': temperature,
+                       'chamber_humid': humid}
                 if 'meas.point' in flags:
                     res['meas_point'] = flags['meas.point']
                 self.q_resp.put(res)
