@@ -1,6 +1,7 @@
-#
-# ESS procedure - timer implementation
-
+"""
+ ESS procedure
+ timer implementation
+"""
 
 import threading
 import logging
@@ -94,6 +95,7 @@ offset - an offset to basetime (seconds)
             newflags = {}
             tickers2del = []
             for name, t in self.tickers.iteritems():
+#                logger.debug('ticker iteration: %s: %s', name, repr(t))
                 if t[1] == delta:
                     newflags[name] = t[0]
                     try:
