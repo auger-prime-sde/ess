@@ -1,11 +1,11 @@
-#
-# ESS procedure
-# logging
-#
+"""
+ ESS procedure
+ logging
+"""
 
-import threading
-import string
 import logging
+import string
+import threading
 from datetime import datetime, timedelta
 from Queue import Empty
 
@@ -19,7 +19,11 @@ class MyFormatter(string.Formatter):
         try:
             val = super(MyFormatter, self).get_field(field_name, args, kwargs)
         except (KeyError, AttributeError):
-            missing = self.missing_keys.get(field_name, self.missing)
+            if (self.missing_keys is not None and
+                    field_name in self.missing_keys):
+                missing = self.missing_keys[field_name]
+            else:
+                missing = self.missing
             val = (None, missing), field_name
         return val
 
@@ -35,7 +39,7 @@ class MyFormatter(string.Formatter):
 class LogHandlerFile(object):
     def __init__(self, filename, formatstr, prolog='', skiprec=None,
                  missing='~', missing_keys=None):
-        self.f = open(filename, 'w')
+        self.f = open(filename, 'a')
         self.f.write(prolog)
         self.formatstr = formatstr
         formatter = MyFormatter(missing)
@@ -113,7 +117,7 @@ timeout - interval for collecting data
             # process timeouted records
             texp = datetime.now() - timedelta(seconds=self.timeout)
             expts = [ts for ts in self.records.iterkeys() if ts < texp]
-            for ts in expts:
+            for ts in sorted(expts):
                 logger.debug('write rec for ts = %s',
                              datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
                 if ts > last_ts:
