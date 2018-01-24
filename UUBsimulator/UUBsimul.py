@@ -9,7 +9,7 @@ import subprocess
 import threading
 import BaseHTTPServer
 
-PORT = 8080
+PORT = 80
 
 def uubnum2ip(uubnum):
     """Calculate IP address from UUB number"""
@@ -105,7 +105,7 @@ def findUUBnums():
             continue
         x, y = map(int, m.groups())
         if x >> 4 == 1:
-            uubnums.append(((x & 0xF) << 4) + y)
+            uubnums.append(((x & 0xF) << 8) + y)
     return uubnums
 
 if __name__ == '__main__':
