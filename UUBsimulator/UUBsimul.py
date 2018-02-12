@@ -3,13 +3,24 @@
  HTTP server answering some GET requests like UUB
 """
 
+import os
 import re
 import logging
 import subprocess
 import threading
 import BaseHTTPServer
+from time import sleep
+import urllib
 
 PORT = 80
+
+# path to data returned by scope
+SCOPEDATAFN = os.path.dirname(__file__) + '/scopedata'
+
+# manage running httpd in separates threads
+run = True
+def keep_running():
+    return run
 
 def uubnum2ip(uubnum):
     """Calculate IP address from UUB number"""
@@ -71,7 +82,9 @@ data - generator providing (10*2048) data from ADC
 
     def run(self):
         self.logger.info('Starting server')
-        self.httpd.serve_forever()
+        while keep_running():
+            self.httpd.handle_request()
+        self.logger.info('Run finished')
 
     def __del__(self):
         self.logger.info('Stopping server')
@@ -90,7 +103,7 @@ def sc_gen():
     yield None
 
 def data_gen():
-    with open('scopedata', 'r') as f:
+    with open(SCOPEDATAFN, 'r') as f:
         data = f.read()
     while True:
         yield data
@@ -117,3 +130,16 @@ if __name__ == '__main__':
 
     for server in servers.itervalues():
         server.start()
+
+    logger = logging.getLogger('UUB simul')
+    logger.info('Servers started, press ^C to stop')
+    while True:
+        try:
+            sleep(1)
+        except (KeyboardInterrupt, SystemExit):
+            # shutdown servers: they wait for http req
+            run = False
+            for uubnum in servers.iterkeys():
+                url = 'http://%s/' % uubnum2ip(uubnum)
+                urllib.urlopen(url)
+            break
