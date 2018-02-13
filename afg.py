@@ -119,8 +119,9 @@ voltage - [V], also set voltage if not None
 """
         if voltage is not None:
             self.voltage = voltage
-        paramlines = AFG.seton.format(ch2=('on' if ch2 else 'off'),
-                                      voltage=self.voltage)
+        if str(ch2).lower() not in ('on', 'off'):
+            ch2 = 'on' if ch2 else 'off'
+        paramlines = AFG.seton.format(ch2=ch2, voltage=self.voltage)
         for line in paramlines.splitlines():
             self.send(line)
 

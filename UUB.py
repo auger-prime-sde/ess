@@ -18,7 +18,7 @@ from struct import pack, unpack
 from binascii import hexlify
 import numpy
 
-PORT = 8080
+PORT = 80
 
 MSGLEN_DISP = 9    # length of message from dispatcher to meas
 MSGLEN_MEAS = 11   # length of message from meas to dispatcher
@@ -37,6 +37,25 @@ def gener_param_default(**kwargs):
     """Measurement parameters generator: return provided kwargs as dict"""
     yield kwargs
     return
+
+def gener_voltage_ch2(default_voltage, default_ch2):
+    """Return generator of voltage & ch2.
+default_voltage - a default voltage to be returned if not provided
+                - list of floats
+default_ch2 - default values of ch2 (list of 'ON'/'OFF' or True/False)
+"""
+    def gener(voltage=None, ch2=None, **kwargs):
+        if voltage is None:
+            voltage = default_voltage
+        if ch2 is None:
+            ch2 = default_ch2
+        d = kwargs.copy()
+        for v in voltage:
+            d['voltage'] = v
+            for ch in ch2:
+                d['ch2'] = ch
+                yield d
+    return gener
 
 class UUBtsc(threading.Thread):
     """Thread managing read out Zynq temperature and SlowControl data from UUB"""
@@ -118,13 +137,14 @@ return dictionary: sc<uubnum>_<variable>: temperature
 
 class UUBdisp(threading.Thread):
     """UUB dispatcher"""
-    def __init__(self, timer, gener_param=gener_param_default):
+    def __init__(self, timer, afg, gener_param=gener_param_default):
         """Constructor
 timer - instance of timer
+afg - instance of AFG
 gener_param - generator of measurement paramters
 """
         super(UUBdisp, self).__init__()
-        self.timer, self.gener_param = timer, gener_param
+        self.timer, self.afg, self.gener_param = timer, afg, gener_param
         self.socks = []
         self.socks2add = []
         self.flags = {}  # current task paramterers
@@ -142,14 +162,20 @@ uubnum currently not stored
 
     def setParams(self, **params):
         """Perform operations with set-up (voltage, function generator etc.)
-according to params."""
+according to params.
+params keys: voltage, ch2
+"""
         logger = logging.getLogger('UUBdisp')
         logger.debug('setParams %s', repr(params))
+        kw = {k: params[k] for k in ('voltage', 'ch2')
+              if k in params}
+        self.afg.setOn(**kw)
 
     def clearParams(self):
         """Move experiment to idle after all parameters"""
         logger = logging.getLogger('UUBdisp')
         logger.debug('clearParams')
+        self.afg.setOff()
 
     def checkSocks(self, socks, tout, msg):
         """Wait for msg on all socks or timeout
@@ -191,6 +217,7 @@ msg - expected message prefix
                          repr(tflags))
             # run measurement for all parameters
             for flags in self.gener_param(**tflags):
+                logger.debug('flags %s', repr(flags))
                 self.setParams(**flags)
                 flags['timestamp'] = timestamp
                 h = hashObj(flags)
@@ -205,6 +232,7 @@ msg - expected message prefix
                 msg = 'C' + h
                 for s in self.socks:
                     s.send(msg)
+            self.clearParams()
 
 class UUBmeas(threading.Thread):
     """Implementation of thread for UUB data readout"""
