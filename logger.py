@@ -9,6 +9,13 @@ import threading
 from datetime import datetime, timedelta
 from Queue import Empty
 
+def skiprec_MP(d):
+    """Check if a record should be skipped according to presence
+ of meas. point
+d - dictionary where 'meas_point' is looked up
+return boolean"""
+    return 'meas_point' not in d
+
 class MyFormatter(string.Formatter):
     """Formatter with default values for missing keys"""
     def __init__(self, missing='~', missing_keys=None):
@@ -55,12 +62,16 @@ class LogHandlerFile(object):
                                           if k in missing_keys)
         self.formatter = formatter
         self.skiprec = skiprec
+        self.filters = []
 
     def write_rec(self, d):
         """Write one record to log
 d - dictionary key: value"""
         if self.skiprec is not None and self.skiprec(d):
             return
+        for f in self.filters:
+            dfilterer = f(d)
+            d = dfiltered
         record = self.formatter.format(self.formatstr, **d)
         self.f.write(record)
         self.f.flush()

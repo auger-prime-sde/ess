@@ -45,8 +45,10 @@ def item2label(item, **kwargs):
     if 'chan' in kwargs:
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
-    if 'volt' in item:
-        attr.append('v%02d' % int(item['volt'] * 10.))
+    if 'voltage' in item:
+        attr.append('v%02d' % int(item['voltage'] * 10.))
+    if 'ch2' in item:
+        attr.append('a%1d' % (item['ch2'] == 'on'))
     return '_'.join(attr)
 
 class DP_pede(object):
@@ -67,8 +69,8 @@ item2label - a function to generate names
         mean = array.mean(axis=0)
         stddev = array.std(axis=0)
         res = {'timestamp': item['timestamp']}
-        if 'meas.point' in item:
-            res['meas_point'] = item['meas.point']
+        if 'meas_point' in item:
+            res['meas_point'] = item['meas_point']
         for ch, (m, s) in enumerate(zip(mean, stddev)):
             label = self.item2label(item, chan=ch+1)
             res['pede_' + label] = m
@@ -91,8 +93,8 @@ w - width of half-sine in us
     def calculate(self, item):
         hsfres = self.hsf.fit(item['yall'], hsfitter.AMPLI)
         res = {'timestamp': item['timestamp']}
-        if 'meas.point' in item:
-            res['meas_point'] = item['meas.point']
+        if 'meas_point' in item:
+            res['meas_point'] = item['meas_point']
         for ch, ampli in enumerate(hsfres['ampli']):
             label = self.item2label(item, chan=ch+1)
             res['ampli_' + label] = ampli
