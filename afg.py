@@ -164,6 +164,16 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
         # self.logger.debug('Sending %s', line)
         # os.write(self.fd, line)
 
+def splitter_amplification(ch2, chan):
+    """Amplification of Stastny's splitter
+ch2 - channel 2 of AFG (on/off or True/False)
+chan - channel on UUB (1-10)"""
+    if str(ch2).lower() in ('on', 'off'):
+        ch2 = str(ch2).lower() == 'on'
+    if ch2:
+        return 4.0 if chan == 9 else 1.0
+    else:
+        return 1.0/32
 
 def halfsine(x):
     """ 1 - sin(x) on <0,pi> + 4*pi*n; 1 otherwise"""
