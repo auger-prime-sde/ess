@@ -125,23 +125,26 @@ def dpfilter_linear(res_in):
     """Dataprocessing filter
  - calculate linear fit & correlation coeff from ampli
 input items: ampli_u<uubnum>_c<uub channel>_v<voltage>_a<afg.ch2>
-data: x - real voltage amplitude after splitter, y - UUB ADCcount amplitude
+data: x - real voltage amplitude after splitter [mV], y - UUB ADCcount amplitude
+output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
+              r_u<uubnum>_c<uub channel> - correlation coefficient
 """
     lowgain = (1, 3, 5, 7, 9)  # UUB low and low-low gain channels
     highgain = (2, 4, 6, 10)   # UUB high gain channels except not connected 8
     data = {}
-    for label, adcvalue in res_in.iter():
+    for label, adcvalue in res_in.iteritems():
         d = label2item(label)
         if d is None or d['type'] != 'ampli':
             continue
         chan, ch2 = d['chan'], d['ch2']
-        if not(chan in lowgain or chan in highgain and ch2):
+        if not(chan in lowgain or chan in highgain and not ch2):
             continue
-        voltage = d['voltage'] * splitter_amplification(ch2, chan)
+        # voltage in mV
+        voltage = 1000*d['voltage'] * splitter_amplification(ch2, chan)
         key = (d['uubnum'], chan)
         if key not in data:
             data[key] = []
-        data[key].append(voltage, adcvalue)
+        data[key].append((voltage, adcvalue))
     res_out = res_in.copy()
     for key, xy in data.iteritems():
         # xy = [[v1, adc1], [v2, adc2] ....]
@@ -153,6 +156,8 @@ data: x - real voltage amplitude after splitter, y - UUB ADCcount amplitude
         # correlation coeff = cov(V, ADC) / sqrt(var(V) * var(ADC))
         if xy.shape[0] > 1:
             coeff = covm[0][1] / numpy.sqrt(covm[0][0] * covm[1][1])
+        else:
+            coeff = 0.0
         label = item2label({'uubnum': key[0]}, chan=key[1])
         res_out['sens_'+label] = slope
         res_out['r_'+label] = coeff
