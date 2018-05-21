@@ -50,10 +50,10 @@ default_ch2 - default values of ch2 (list of 'ON'/'OFF' or True/False)
         if ch2 is None:
             ch2 = default_ch2
         d = kwargs.copy()
-        for v in voltage:
-            d['voltage'] = v
-            for ch in ch2:
-                d['ch2'] = ch
+        for ch in ch2:
+            d['ch2'] = ch
+            for v in voltage:
+                d['voltage'] = v
                 yield d
     return gener
 
@@ -215,11 +215,14 @@ msg - expected message prefix
             logger.debug('Event timestamp %s, flags: %s',
                          datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"),
                          repr(tflags))
+            # copy other relevant flags
+            aflags = {flag: tflags[flag] for flag in ('db_point', 'set_temp', 'meas_point')
+                          if flag in tflags}
+            aflags['timestamp'] = timestamp
             # run measurement for all parameters
             for flags in self.gener_param(**tflags):
-                logger.debug('flags %s', repr(flags))
                 self.setParams(**flags)
-                flags['timestamp'] = timestamp
+                flags.update(aflags)
                 h = hashObj(flags)
                 self.h, self.flags = h, flags
                 # send measurement request
