@@ -8,6 +8,7 @@ import threading
 import logging
 import itertools
 from Queue import Empty
+from datetime import datetime
 import numpy
 
 # ESS stuff
@@ -42,22 +43,24 @@ class DataProcessor(threading.Thread):
 def item2label(item, **kwargs):
     """Construct label/name for q_resp from item"""
     attr = []
+    if 'timestamp' in kwargs:
+        attr.append(kwargs['timestamp'].strftime('%Y%m%d%H%M%S'))
     if 'uubnum' in item:
         attr.append('u%04d' % item['uubnum'])
     if 'chan' in kwargs:
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
-    if 'voltage' in item:
-        attr.append('v%02d' % int(item['voltage'] * 10.))
     if 'ch2' in item:
         attr.append('a%1d' % (item['ch2'] == 'on'))
+    if 'voltage' in item:
+        attr.append('v%02d' % int(item['voltage'] * 10.))
     return '_'.join(attr)
 
 re_label = re.compile(r'(?P<type>[a-z]+)_' +
                       r'u(?P<uubnum>\d{4})_' +
                       r'c(?P<chan>\d)_' +
-                      r'v(?P<voltage>\d\d)_' +
-                      r'a(?P<ch2>\d)')
+                      r'a(?P<ch2>\d)' +
+                      r'v(?P<voltage>\d\d)_')
 def label2item(label):
     """Check if label stems from item and parse it to components"""
     m = re_label.match(label)
@@ -162,3 +165,18 @@ output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
         res_out['sens_'+label] = slope
         res_out['r_'+label] = coeff
     return res_out
+
+
+class DP_store(object):
+    """Data processor workhorse to store 2048x10 data"""
+
+    def __init__(self, it2label):
+        """Constructor.
+it2label - a function to generate names
+"""
+        self.it2label = it2label
+
+    def calculate(self, item):
+        fn = 'data/dataall_%s.txt' % self.it2label(item,
+                                                timestamp=item['timestamp'])
+        numpy.savetxt(fn, item['yall'], fmt='% 5d')
