@@ -1,7 +1,7 @@
 #
 # ESS procedure - communication
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import logging
 import json
@@ -45,8 +45,8 @@ q_resp - queue to send response"""
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            logger.debug('Chamber event timestamp '
-                         + datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
+            logger.debug('Chamber event timestamp %s',
+                         datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'binder.state' in flags:
                 if flags['binder.state'] is None:
                     logger.info('Stopping program')
@@ -57,7 +57,7 @@ q_resp - queue to send response"""
                     self.binder.setState(Binder.STATE_PROG, progno)
                 except Exception:
                     logger.error('Unknown detail for binder.state: %s',
-                                     repr(flags['binder.state'])
+                                 repr(flags['binder.state']))
             if 'meas.thp' in flags or 'meas.point' in flags:
                 logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
@@ -108,11 +108,11 @@ jsonobj - either json string or json file"""
             self.time_temp.append((t, temp_prev))
             # meas point
             if "meas" in segment:
-                for mpind, mp in enumerate(segment["meas"]):
+                meas = self._macro(segment["meas"])
+                for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
                     flags = self._macro(mp["flags"])
-                    flags['meas_point'] = mp_ind
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
@@ -122,27 +122,33 @@ jsonobj - either json string or json file"""
         self.time_temp.append((t, temp_prev))
         # append the last segment
         self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
-        self.meas_points = [(mptime, mps[mptime]) for mptime in sorted(mps)]
+        self.meas_points = []
+        for mpind, mptime in enumerate(sorted(mps)):
+            mps[mptime]['meas_point'] = mpind
+            self.meas_points.append((mptime, mps[mptime]))
 
     def _macro(self, o):
-        if isinstance(o, str):
-            return self.macros.get(o, o)
-        else:
-            return o
+        if isinstance(o, (str, unicode)):
+            return self.macros.get(str(o), o)
+        return o
 
     def run(self):
         logger = logging.getLogger('ChamberTicker')
+        timestamp = None
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
                 logger.info('Timer stopped, stopping ChamberTicker')
                 return
+            if timestamp == self.timer.timestamp:
+                continue   # already processed timestamp
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if self.startime is not None and ('meas.thp' in flags
-                                              or 'meas.point' in flags):
-                dur = timestamp - self.starttime
-                if dur < 0: continue
+            if self.starttime is not None and ('meas.thp' in flags
+                                               or 'meas.point' in flags):
+                dur = (timestamp - self.starttime).total_seconds()
+                if dur < 0:
+                    continue
                 try:
                     ind = [p[0] > dur for p in self.time_temp].index(True)
                     ((t0, temp0), (t1, temp1)) = self.time_temp[ind-1:ind+1]
@@ -156,20 +162,19 @@ jsonobj - either json string or json file"""
 
     def loadprog(self, delay=60):
         """Create one_tick ticker to load binder prog and add it to timer"""
-        self.timer.add_ticker('binder.prog',
-                              one_tick(self.timer.basetime, delay=delay,
-                                       detail={'prog': self.prog,
-                                        'progno': self.progno}))
+        self.timer.add_ticker('binder.prog', one_tick(self.timer.basetime, delay=delay,
+                                                      detail={'prog': self.prog,
+                                                              'progno': self.progno}))
 
     def startprog(self, delay=31):
         """Create ticker for meas.point and binder.state and add them to timer"""
-        starttime = datetime.now() + delay
+        starttime = datetime.now() + timedelta(seconds=delay)
         starttime = starttime.replace(second=0, microsecond=0,
                                       minute=starttime.minute+1)
         self.starttime = starttime
         self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
-                                                        starttime, delay=0,
-                                                        progno=self.progno))
+                                                       starttime, delay=0,
+                                                       detail={'progno': self.progno}))
         self.timer.add_ticker('meas.point', self.measpoint_tick())
 
     def measpoint_tick(self):
@@ -178,4 +183,4 @@ jsonobj - either json string or json file"""
             raise StopIteration
         offset = self.starttime - self.timer.basetime
         for t, flags in self.meas_points:
-            yield flags, t + offset
+            yield flags, t + offset.total_seconds()
