@@ -73,7 +73,9 @@ offset - an offset to basetime (seconds)
             # update self.tickers
             while self.tickers2add:
                 name, gener, offset = self.tickers2add.pop()
-                assert name not in self.tickers, "Duplicate ticker " + name
+                if name in self.tickers:
+                    logger.error("Duplicate ticker %s, ignoring", name)
+                    continue
                 logger.info('Added ticker ' + name)
                 # at least one value must be produced
                 detail, nextval = gener.next()
@@ -139,3 +141,23 @@ offset - an offset to basetime (seconds)
         self.flags = {}
         self.evt.set()    # trigger all listeners
         super(Timer, self).join(timeout)
+
+class EvtDisp(threading.Thread):
+    """Display event in the timer"""
+    def __init__(self, timer):
+        self.timer = timer
+        super(EvtDisp, self).__init__()
+    def run(self):
+        logger = logging.getLogger('EvtDisp')
+        timestamp = None
+        while True:
+            self.timer.evt.wait()
+            if self.timer.stop.is_set():
+                logger.info('Timer stopped, stopping EvtDisp')
+                return
+            if timestamp == self.timer.timestamp:
+                continue   # already processed timestamp
+            timestamp = self.timer.timestamp   # store info from timer
+            flags = self.timer.flags
+            logger.debug('timestamp: %s, flags: %s',
+                         timestamp.strftime('%Y-%m-%dT%H:%M:%S'), repr(flags))
