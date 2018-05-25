@@ -70,8 +70,7 @@ d - dictionary key: value"""
         if self.skiprec is not None and self.skiprec(d):
             return
         for f in self.filters:
-            dfilterer = f(d)
-            d = dfiltered
+            d = f(d)
         record = self.formatter.format(self.formatstr, **d)
         self.f.write(record)
         self.f.flush()
@@ -112,7 +111,11 @@ timeout - interval for collecting data
                     timeout = (tend - datetime.now()).total_seconds()
                     # logger.debug('timeout = %.6f' % timeout)
                     newrec = self.q_resp.get(True, timeout)
-                    ts = newrec.pop('timestamp')
+                    try:
+                        ts = newrec.pop('timestamp')
+                    except AttributeError:
+                        logger.debug('Wrong record: %s', repr(newrec))
+                        continue
                     if ts in self.records:
                         self.records[ts].update(newrec)
                     elif ts > last_ts:  # add only ts after the last written
@@ -137,6 +140,11 @@ timeout - interval for collecting data
                 rec['timestamp'] = ts
                 for h in self.handlers:
                     h.write_rec(rec)
+        logger.info('run() finished, deleting handlers')
+        for h in self.handlers:
+            h.__del__()
+        self.handlers = None
+#        del self.handlers[:]
 
     def join(self, timeout=None):
         logging.getLogger('logger').debug('DataLogger.join')
