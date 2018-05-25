@@ -157,24 +157,26 @@ jsonobj - either json string or json file"""
                 except ValueError:
                     temp = self.time_temp[-1][1]
                 res = {'timestamp': timestamp,
-                       'set_temp': temp},
+                       'set_temp': temp}
                 self.q_resp.put(res)
 
     def loadprog(self, delay=60):
         """Create one_tick ticker to load binder prog and add it to timer"""
-        self.timer.add_ticker('binder.prog', one_tick(self.timer.basetime, delay=delay,
-                                                      detail={'prog': self.prog,
-                                                              'progno': self.progno}))
+        self.timer.add_ticker('binder.prog',
+                              one_tick(self.timer.basetime, delay=delay,
+                                       detail={'prog': self.prog,
+                                               'progno': self.progno}))
 
     def startprog(self, delay=31):
-        """Create ticker for meas.point and binder.state and add them to timer"""
+        """Create ticker for meas.point and binder.state
+and add them to timer"""
         starttime = datetime.now() + timedelta(seconds=delay)
         starttime = starttime.replace(second=0, microsecond=0,
                                       minute=starttime.minute+1)
         self.starttime = starttime
         self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
                                                        starttime, delay=0,
-                                                       detail={'progno': self.progno}))
+                                                       detail=self.progno))
         self.timer.add_ticker('meas.point', self.measpoint_tick())
 
     def measpoint_tick(self):
