@@ -138,6 +138,7 @@ timeout - interval for collecting data
                     last_ts = ts
                 rec = self.records.pop(ts)
                 rec['timestamp'] = ts
+                # logger.debug('Rec written to handlers: %s', repr(rec))
                 for h in self.handlers:
                     h.write_rec(rec)
         logger.info('run() finished, deleting handlers')
@@ -150,3 +151,24 @@ timeout - interval for collecting data
         logging.getLogger('logger').debug('DataLogger.join')
         self.stop.set()   # stop run()
         super(DataLogger, self).join(timeout)
+
+class QueView(threading.Thread):
+    """Queue viewer
+Consume items from queue and display them"""
+    def __init__(self, timer, q):
+        self.timer, self.q = timer, q
+        self.timeout = 0.5
+        super(QueView, self).__init__()
+    def run(self):
+        logger = logging.getLogger('QueView')
+        while True:
+            if self.timer.stop.is_set():
+                logger.info('Timer stopped, stopping QueView')
+                return
+            try:
+                item = self.q.get(True, self.timeout)
+            except Empty:
+                continue
+            logger.debug(repr(item))
+
+        

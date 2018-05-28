@@ -40,9 +40,27 @@ class DataProcessor(threading.Thread):
                 wh.calculate(item)
         logger.info('run finished')
 
+LABEL_DOC = """ Label to item (and back) conversion
+label = attr1_attr2 ... _attrn
+attr are (optional, but in this order):
+  attr       re in label   python in item       meaning
+----------------------------------------------------------
+  typ        [a-z]+      str              ampli, pede, pedesig ...
+  timestamp  \d{14}      datetime         YYYYmmddHHMMSS
+  uubnum     u\d{4}      int 0-9999       u0015
+  chan       c\d         int 1-10         c1 - c9, c0 .. channels 1 - 10
+  ch2        a[01]       False/True       splitter ch2 on/off     
+  voltage    v\d{2}      float            10* voltage
+
+item: dictionary with mandatory uubnum, ch2, voltage
+kwargs: optional keys (typ, timestamp, chan)
+"""
+
 def item2label(item, **kwargs):
     """Construct label/name for q_resp from item"""
     attr = []
+    if 'typ' in kwargs:
+        attr.append(kwargs['typ'])
     if 'timestamp' in kwargs:
         attr.append(kwargs['timestamp'].strftime('%Y%m%d%H%M%S'))
     if 'uubnum' in item:
@@ -51,28 +69,48 @@ def item2label(item, **kwargs):
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
     if 'ch2' in item:
-        attr.append('a%1d' % (item['ch2'] == 'on'))
+        attr.append('a%1d' % (item['ch2'] == 'on' or item['ch2'] == True))
     if 'voltage' in item:
         attr.append('v%02d' % int(item['voltage'] * 10.))
     return '_'.join(attr)
 
-re_label = re.compile(r'(?P<type>[a-z]+)_' +
-                      r'u(?P<uubnum>\d{4})_' +
-                      r'c(?P<chan>\d)_' +
-                      r'a(?P<ch2>\d)' +
-                      r'v(?P<voltage>\d\d)_')
+re_labels = [re.compile(regex) for regex in (
+    r'(?P<typ>[a-z]+)',
+    r'(?P<timestamp>20\d{12})',
+    r'u(?P<uubnum>\d{4})',
+    r'c(?P<chan>\d)',
+    r'a(?P<ch2>[01])',
+    r'v(?P<voltage>\d\d)')]
+
 def label2item(label):
     """Check if label stems from item and parse it to components"""
-    m = re_label.match(label)
-    if m is None:
-        return None
-    d = m.groupdict()
-    d.update({key: int(d[key]) for key in ('uubnum', 'chan')})
+    attrs = label.split('_')
+    d = {}
+    attr = attrs.pop(0)
+    for rattr in re_labels:
+        m = rattr.match(attr)
+        if m is None:
+            continue
+        d.update(m.groupdict())
+        if len(attrs) == 0:
+            break
+        attr = attrs.pop(0)
+    
+    d.update({key: int(d[key]) for key in ('uubnum', 'chan') if key in d})
     # convert voltage back to float and chan 0 -> 10
-    d['voltage'] = 0.1 * float(d['voltage'])
-    if d['chan'] == 0:
+    if 'voltage' in d:
+        d['voltage'] = 0.1 * float(d['voltage'])
+    if 'chan' in d and d['chan'] == 0:
         d['chan'] = 10
-    d['ch2'] = d['ch2'] == '1'
+    if 'ch2' in d:
+        d['ch2'] = d['ch2'] == '1'
+    if 'timestamp' in d:
+        try:
+            d['timestamp'] = datetime.strptime(d['timestamp'], '%Y%m%d%H%M%S')
+        except ValueError:
+            logging.getLogger('label2item').warning(
+                'Wrong timestamp %s (label %s)', d['timestamp'], label)
+            del d['timestamp']
     return d
 
 class DP_pede(object):
@@ -80,7 +118,7 @@ class DP_pede(object):
     # parameters
     BINSTART = 50
     BINEND = 550
-    def __init__(self, q_resp, it2label):
+    def __init__(self, q_resp, it2label=item2label):
         """Constructor.
 q_resp - a logger queue
 it2label - a function to generate names
@@ -89,36 +127,42 @@ it2label - a function to generate names
         self.it2label = it2label
 
     def calculate(self, item):
+        logging.getLogger('DP_pede').debug('Processing %s for ts %s',
+                                              self.it2label(item),
+                            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
         array = item['yall'][self.BINSTART:self.BINEND, :]
         mean = array.mean(axis=0)
         stddev = array.std(axis=0)
-        res = {'timestamp': item['timestamp']}
-        if 'meas_point' in item:
-            res['meas_point'] = item['meas_point']
+        res = {key: item[key]
+               for key in ('timestamp', 'meas_point', 'db_point')
+               if key in item}
         for ch, (m, s) in enumerate(zip(mean, stddev)):
-            label = self.it2label(item, chan=ch+1)
-            res['pede_' + label] = m
-            res['pedesig_' + label] = s
+            for typ, val in (('pede', m), ('pedesig', s)):
+                label = self.it2label(item, typ=typ, chan=ch+1)
+                res[label] = val
         self.q_resp.put(res)
 
 class DP_hsampli(object):
     """Data processor workhorse to calculate amplitude of half-sines"""
     # parameters
-    def __init__(self, q_resp, it2label, w):
+    def __init__(self, q_resp, w, it2label=item2label):
         """Constructor.
 q_resp - a logger queue
+w - width of half-sine in microseconds
 it2label - a function to generate names
-w - width of half-sine in us
 """
         self.q_resp = q_resp
         self.it2label = it2label
         self.hsf = hsfitter.HalfSineFitter(w)
 
     def calculate(self, item):
+        logging.getLogger('DP_hsampli').debug('Processing %s for ts %s',
+                                              self.it2label(item),
+                            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
         hsfres = self.hsf.fit(item['yall'], hsfitter.AMPLI)
-        res = {'timestamp': item['timestamp']}
-        if 'meas_point' in item:
-            res['meas_point'] = item['meas_point']
+        res = {key: item[key]
+               for key in ('timestamp', 'meas_point', 'db_point')
+               if key in item}
         for ch, ampli in enumerate(hsfres['ampli']):
             label = self.it2label(item, chan=ch+1)
             res['ampli_' + label] = ampli
@@ -132,12 +176,13 @@ data: x - real voltage amplitude after splitter [mV], y - UUB ADCcount amplitude
 output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
               r_u<uubnum>_c<uub channel> - correlation coefficient
 """
+    # logging.getLogger('dpfilter_linear').debug('res_in: %s', repr(res_in))
     lowgain = (1, 3, 5, 7, 9)  # UUB low and low-low gain channels
     highgain = (2, 4, 6, 10)   # UUB high gain channels except not connected 8
     data = {}
     for label, adcvalue in res_in.iteritems():
         d = label2item(label)
-        if d is None or d['type'] != 'ampli':
+        if d is None or 'typ' not in d or d['typ'] != 'ampli':
             continue
         chan, ch2 = d['chan'], d['ch2']
         if not(chan in lowgain or chan in highgain and not ch2):
@@ -163,20 +208,22 @@ output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
             coeff = 0.0
         label = item2label({'uubnum': key[0]}, chan=key[1])
         res_out['sens_'+label] = slope
-        res_out['r_'+label] = coeff
+        res_out['corr_'+label] = coeff
     return res_out
 
 
 class DP_store(object):
     """Data processor workhorse to store 2048x10 data"""
 
-    def __init__(self, it2label):
+    def __init__(self, datadir, it2label=item2label):
         """Constructor.
 it2label - a function to generate names
 """
+        self.datadir = datadir
         self.it2label = it2label
 
     def calculate(self, item):
-        fn = 'data/dataall_%s.txt' % self.it2label(item,
-                                                timestamp=item['timestamp'])
+        label = self.it2label(item, typ='dataall', timestamp=item['timestamp'])
+        logging.getLogger('DP_store').debug('Processing %s', label)
+        fn = '%s/%s.txt' % (self.datadir, label)
         numpy.savetxt(fn, item['yall'], fmt='% 5d')

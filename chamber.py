@@ -122,11 +122,8 @@ jsonobj - either json string or json file"""
         self.time_temp.append((t, temp_prev))
         # append the last segment
         self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
-        self.meas_points = []
-        for mpind, mptime in enumerate(sorted(mps)):
-            mps[mptime]['meas_point'] = mpind
-            self.meas_points.append((mptime, mps[mptime]))
-
+        self.meas_points = [(mptime, mps[mptime]) for mptime in sorted(mps)]
+        
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
             return self.macros.get(str(o), o)
@@ -144,21 +141,22 @@ jsonobj - either json string or json file"""
                 continue   # already processed timestamp
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if self.starttime is not None and ('meas.thp' in flags
-                                               or 'meas.point' in flags):
-                dur = (timestamp - self.starttime).total_seconds()
-                if dur < 0:
-                    continue
-                try:
-                    ind = [p[0] > dur for p in self.time_temp].index(True)
-                    ((t0, temp0), (t1, temp1)) = self.time_temp[ind-1:ind+1]
-                    x = float(dur - t0) / (t1 - t0)
-                    temp = x*temp1 + (1-x)*temp0
-                except ValueError:
-                    temp = self.time_temp[-1][1]
-                res = {'timestamp': timestamp,
-                       'set_temp': temp}
-                self.q_resp.put(res)
+            if self.starttime is None or self.stoptime < timestamp or (
+                    'meas.thp' not in flags and 'meas.point' not in flags):
+                continue
+            dur = (timestamp - self.starttime).total_seconds()
+            if dur < 0:
+                continue
+            try:
+                ind = [p[0] > dur for p in self.time_temp].index(True)
+                ((t0, temp0), (t1, temp1)) = self.time_temp[ind-1:ind+1]
+                x = float(dur - t0) / (t1 - t0)
+                temp = x*temp1 + (1-x)*temp0
+            except ValueError:    # not necessary now due to stoptime
+                temp = self.time_temp[-1][1]
+            res = {'timestamp': timestamp,
+                   'set_temp': temp}
+            self.q_resp.put(res)
 
     def loadprog(self, delay=60):
         """Create one_tick ticker to load binder prog and add it to timer"""
@@ -173,6 +171,7 @@ and add them to timer"""
         starttime = datetime.now() + timedelta(seconds=delay)
         starttime = starttime.replace(second=0, microsecond=0,
                                       minute=starttime.minute+1)
+        self.stoptime = starttime + timedelta(self.time_temp[-1][0])
         self.starttime = starttime
         self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
                                                        starttime, delay=0,
@@ -183,6 +182,9 @@ and add them to timer"""
         """Ticker to provide meas_points"""
         if self.starttime is None:
             raise StopIteration
-        offset = self.starttime - self.timer.basetime
+        offset = (self.starttime - self.timer.basetime).total_seconds()
+        mpind = 0
         for t, flags in self.meas_points:
-            yield flags, t + offset.total_seconds()
+            flags['meas_point'] = mpind
+            yield flags, t + offset
+            mpind += 1
