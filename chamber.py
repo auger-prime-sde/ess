@@ -84,7 +84,7 @@ class ChamberTicker(threading.Thread):
 jsonobj - either json string or json file"""
         super(ChamberTicker, self).__init__()
         self.timer, self.q_resp = timer, q_resp
-        self.starttime = None
+        self.starttime = self.stoptime = None
         if hasattr(jsonobj, 'read'):
             jso = json.load(jsonobj)
         else:
@@ -123,7 +123,7 @@ jsonobj - either json string or json file"""
         # append the last segment
         self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
         self.meas_points = [(mptime, mps[mptime]) for mptime in sorted(mps)]
-        
+
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
             return self.macros.get(str(o), o)
@@ -171,7 +171,7 @@ and add them to timer"""
         starttime = datetime.now() + timedelta(seconds=delay)
         starttime = starttime.replace(second=0, microsecond=0,
                                       minute=starttime.minute+1)
-        self.stoptime = starttime + timedelta(self.time_temp[-1][0])
+        self.stoptime = starttime + timedelta(seconds=self.time_temp[-1][0])
         self.starttime = starttime
         self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
                                                        starttime, delay=0,
@@ -186,5 +186,5 @@ and add them to timer"""
         mpind = 0
         for t, flags in self.meas_points:
             flags['meas_point'] = mpind
-            yield flags, t + offset
+            yield flags.copy(), t + offset
             mpind += 1

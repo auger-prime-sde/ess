@@ -6,6 +6,7 @@
 import logging
 import string
 import threading
+import pickle
 from datetime import datetime, timedelta
 from Queue import Empty
 
@@ -15,6 +16,13 @@ def skiprec_MP(d):
 d - dictionary where 'meas_point' is looked up
 return boolean"""
     return 'meas_point' not in d
+
+def skiprec_DB(d):
+    """Check if a record should be skipped according to presence
+ of database point
+d - dictionary where 'db_point' is looked up
+return boolean"""
+    return 'db_point' not in d
 
 class MyFormatter(string.Formatter):
     """Formatter with default values for missing keys"""
@@ -78,6 +86,18 @@ d - dictionary key: value"""
     def __del__(self):
         self.f.close()
 
+class LogHandlerPickle(object):
+    """LogHandler saving all records as pickles to file."""
+    def __init__(self, filename=None):
+        if filename is None:
+            filename = datetime.now().strftime('data/loghandler-%Y%m%d%H%M')
+        self.fp = open(filename, 'a')
+        logging.getLogger('LogHandlerPickle').info('saving to pickle file %s',
+                                                   filename)
+    def write_rec(self, d):
+        pickle.dump(d, self.fp)
+    def __del__(self):
+        self.fp.close()
 
 class DataLogger(threading.Thread):
     """Thread to save all results"""
@@ -170,5 +190,3 @@ Consume items from queue and display them"""
             except Empty:
                 continue
             logger.debug(repr(item))
-
-        
