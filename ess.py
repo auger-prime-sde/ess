@@ -19,8 +19,9 @@ from chamber import Chamber, ChamberTicker
 from dataproc import DataProcessor, item2label, DP_pede, DP_hsampli
 from dataproc import DP_store, dpfilter_linear
 from afg import AFG
+from power import PowerSupply
 
-VERSION = '20180531'
+VERSION = '20180718'
 
 class ESS(object):
     """ESS process implementation"""
@@ -52,11 +53,20 @@ class ESS(object):
         # tickers
         thp_period = d['tickers'].get('meas.thp', 30)
         self.timer.add_ticker('meas.thp', periodic_ticker(thp_period))
+        if 'meas.sc' in d['tickers']:
+            sc_period = d['tickers'].get('meas.sc', 30)
+            self.timer.add_ticker('meas.sc', periodic_ticker(sc_period))
         if 'chamberticker' in d['tickers']:
             fn = d['tickers']['chamberticker']
             with open(fn, 'r') as fp:
                 self.chticker = ChamberTicker(fp, self.timer, self.q_resp)
             self.chticker.start()
+
+        # power supply
+        if 'power' in d and 'power' in d['ports']:
+            port = d['ports']['power']
+            self.ps = PowerSupply(port, self.timer, **d['power'])
+            self.ps.start()
 
         # BME
         if 'BME' in d['ports']:
@@ -114,10 +124,13 @@ class ESS(object):
         if d['dataloggers'].get('temperature', False):
             prolog = """# Temperature measurement: BME + chamber + Zynq
 # date %s
-# columns: timestamp | set.temp | BME1.temp | BME2.temp | chamber.temp | """ % (
+# columns: timestamp | set.temp | BME1.temp | BME2.temp | chamber.temp""" % (
     dt.strftime('%Y-%m-%d'))
-            prolog += ' | '.join(['UUB-%04d.zynq_temp' % uubnum
-                                  for uubnum in self.uubnums])
+            prolog += ''.join([' | UUB-%04d.zynq_temp' % uubnum
+                               for uubnum in self.uubnums])
+            if 'meas.sc' in d['tickers']:
+                prolog += ''.join([' | UUB-%04d.sc_temp' % uubnum
+                                   for uubnum in self.uubnums])
             prolog += '\n'
             logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                        '{set_temp:6.1f}',
@@ -126,10 +139,39 @@ class ESS(object):
                        '{chamber_temp:7.2f}']
             logdata += ['{zynq%04d_temp:5.1f}' % uubnum
                         for uubnum in self.uubnums]
+            if 'meas.sc' in d['tickers']:
+                logdata += ['{sc%04d_temp:5.1f}' % uubnum
+                            for uubnum in self.uubnums]
             formatstr = ' '.join(logdata) + '\n'
             fn = self.datadir + dt.strftime('thp-%Y%m%d.log')
             self.dl.handlers.append(LogHandlerFile(fn, formatstr,
                                                    prolog=prolog))
+
+        # slow control measured values
+        if d['dataloggers'].get('slowcontrol', False):
+            labels_I = ('1V', '1V2', '1V8', '3V3', '3V3_sc', 'P3V3', 'N3V3',
+                        '5V', 'radio', 'PMTs')
+            labels_U = ('1V', '1V2', '1V8', '3V3', 'P3V3', 'N3V3',
+                        '5V', 'radio', 'PMTs', 'ext1', 'ext2')
+            for uubnum in self.uubnums:
+                fn = self.datadir + ('sc_uub%04d' % uubnum) +\
+                     dt.strftime('-%Y%m%d.log')
+                prolog = """# Slow Control measured values
+# UUB #%04d, date %s
+# voltages in mV, currents in mA
+# columns: timestamp""" % (uubnum, dt.strftime('%Y-%m-%d'))
+                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}']
+                prolog += ''.join([' | I_%s' % label for label in labels_I])
+                logdata.extend(['{sc%04d_i_%s:5.2f}' % (uubnum, label)
+                                for label in labels_I])
+                prolog += ''.join([' | U_%s' % label for label in labels_U])
+                logdata.extend(['{sc%04d_u_%s:7.2f}' % (uubnum, label)
+                                for label in labels_U])
+                prolog += '\n'
+                formatstr = ' '.join(logdata) + '\n'
+                lh = LogHandlerFile(fn, formatstr, prolog=prolog)
+                self.dl.handlers.append(lh)
+
 
         # pedestals & their std
         if 'pede' in d['dataloggers']:

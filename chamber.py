@@ -2,12 +2,13 @@
 # ESS procedure - communication
 
 from datetime import datetime, timedelta
+import re
 import threading
 import logging
 import json
 
 # ESS stuff
-from timer import one_tick
+from timer import point_ticker, list_ticker, one_tick
 from modbus import Modbus, ModbusError, Binder, BinderSegment, BinderProg
 
 class Chamber(threading.Thread):
@@ -93,7 +94,9 @@ jsonobj - either json string or json file"""
         self.progno = jso.get('progno', 0)
         self.prog = BinderProg()
         self.time_temp = []
-        mps = {}
+        mps = {}   # measurement points, {time: flags}
+        tps = []   # test points: [time]
+        pps = {}   # power operations: {time: kwargs}
         temp_prev = None
         t = 0
         for segment in jso['program']:
@@ -117,12 +120,36 @@ jsonobj - either json string or json file"""
                     if offset < 0:
                         mptime += dur
                     mps[mptime] = flags
+            # power and test
+            if "power" in segment:
+                power = self._macro(segment["power"])
+                for pp in power:
+                    pp = self._macro(pp)
+                    offset = self._macro(pp["offset"])
+                    ptime = t + offset
+                    if offset < 0:
+                        ptime += dur
+                    if "test" in pp:
+                        tps.append(ptime)
+                    # kwargs for PowerSupply.config()
+                    # e.g. {'ch1': (12.0, None, True, False)}
+                    kwargs = {}
+                    for chan in pp:
+                        if re.match(r'^ch\d$', chan) is None:
+                            continue
+                        args = self._macro(pp[chan])
+                        if not all([v is None for v in args]):
+                            kwargs[chan] = args
+                    if kwargs:
+                        pps[ptime] = kwargs
             t += dur
             temp_prev = temp_end
         self.time_temp.append((t, temp_prev))
         # append the last segment
         self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
         self.meas_points = [(mptime, mps[mptime]) for mptime in sorted(mps)]
+        self.power_points = [(ptime, pps[ptime]) for ptime in sorted(pps)]
+        self.test_points = sorted(tps)
 
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
@@ -176,15 +203,16 @@ and add them to timer"""
         self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
                                                        starttime, delay=0,
                                                        detail=self.progno))
-        self.timer.add_ticker('meas.point', self.measpoint_tick())
-
-    def measpoint_tick(self):
-        """Ticker to provide meas_points"""
-        if self.starttime is None:
-            raise StopIteration
         offset = (self.starttime - self.timer.basetime).total_seconds()
-        mpind = 0
-        for t, flags in self.meas_points:
-            flags['meas_point'] = mpind
-            yield flags.copy(), t + offset
-            mpind += 1
+        if self.meas_points:
+            self.timer.add_ticker('meas.point',
+                                  point_ticker(self.meas_points, offset,
+                                               'meas_point'))
+        if self.power_points:
+            self.timer.add_ticker('power',
+                                  point_ticker(self.power_points, offset))
+        if self.test_points:
+            self.timer.add_ticker('power.test',
+                                  list_ticker(self.test_points, offset,
+                                              'test_point'))
+

@@ -150,6 +150,7 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
                 value = 0
             self.send('data:data:value ememory,%d,%d' % (i+1, value),
                       logging.DEBUG - 1)
+        self.send('data:lock user%d,off' % usernum)
         self.send('data:copy user%d,ememory' % usernum)
         self.send('data:lock user%d,on' % usernum)
         # values = [int(0x4000 * func(i/scale) + 0.5) for i in xrange(npoint)]
