@@ -10,7 +10,10 @@ from time import sleep
 from datetime import datetime, timedelta
 from serial import Serial
 
-class SerialReadTimeout(AssertionError): pass
+
+class SerialReadTimeout(AssertionError):
+    pass
+
 
 def readSerRE(ser, r, timeout=2, logger=None):
     """Try to read regexp 're' from serial with timeout
@@ -37,12 +40,14 @@ return response from serial or raise SerialReadTimeout exception"""
             ser.port, repr(resp)))
     raise SerialReadTimeout
 
+
 class BME(threading.Thread):
     """Thread managing arduino reading BME280"""
     re_bmeinit = re.compile(r'.*BME1 detected[\r\n]*BME2 detected[\r\n]*',
                             re.DOTALL)
     re_bmetimeset = re.compile(r'.*set time OK[\r\n]*', re.DOTALL)
-    re_bmemeas = re.compile(r'.*(?P<dt>20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})' +
+    re_bmemeas = re.compile(r'.*(?P<dt>20\d{2}-\d{2}-\d{2}T' +
+                            r'\d{2}:\d{2}:\d{2})' +
                             r' +(?P<temp1>-?\d+(\.\d*)?).*' +
                             r' +(?P<humid1>\d+(\.\d*)?).*' +
                             r' +(?P<press1>\d+(\.\d*)?).*' +
@@ -50,6 +55,7 @@ class BME(threading.Thread):
                             r' +(?P<humid2>\d+(\.\d*)?).*' +
                             r' +(?P<press2>\d+(\.\d*)?)[\r\n]*',
                             re.DOTALL)
+
     def __init__(self, port, timer, q_resp, timesync=False):
         """Constructor.
 port - serial port to connect
@@ -102,8 +108,8 @@ timesync - sync Arduino time
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            logger.debug('BME event timestamp '
-                         + datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
+            logger.debug('BME event timestamp ' +
+                         datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'meas.thp' in flags or 'meas.point' in flags:
                 logger.debug('BME read')
                 self.ser.write('m')
@@ -112,8 +118,8 @@ timesync - sync Arduino time
                 d = BME.re_bmemeas.match(resp).groupdict()
                 bmetime = d.pop('dt')
                 logger.debug('BME vs event time diff: %f s',
-                             (datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S')
-                              - timestamp).total_seconds())
+                             (datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S') -
+                              timestamp).total_seconds())
                 res = {'timestamp': timestamp}
                 if 'meas.point' in flags:
                     res['meas_point'] = flags['meas.point']

@@ -12,37 +12,44 @@ from struct import pack
 
 YSCALE = 0x3FFE    # data point value range <0, YSCALE>, including
 
+
 class AFG(object):
     """Class for control of AFG over usbtmc"""
-    userfun = """\
+
+    # default values of parameters
+    PARAM = {'functype': 'P',
+             'polarity': 'inverted',
+             'ch2': False,
+             'usernum': 4,
+             'hswidth': 0.625,
+             'Pvoltage': 1.6,
+             'freq': 1.0,
+             'Fvoltage': 1.6}
+    SETINIT = """\
 output1:state off
-source1:function user{usernum:d}
-source1:frequency {freq:f}Hz
 source1:burst:mode triggered
 source1:burst:state ON
-source1:burst:ncycles {ncycles:d}
 source1:burst:tdelay 0
 source1:voltage:level:immediate:low 0
 source1:voltage:unit Vpp
 output1:impedance 50 Ohm
 output1:polarity {polarity:s}
+trigger:sequence:source ext
+output2:state off
 source2:function:shape square
 source2:frequency 2kHz
 source2:voltage:level:immediate:low -2.5V
 source2:voltage:level:immediate:high 2.5V
 output2:impedance 50 Ohm
-output2:state off
-trigger:sequence:source timer
-trigger:sequence:timer {timer:f}s
 """
-    seton = """\
-source1:voltage:level:immediate:high {voltage:f}V
-output2:state {ch2:s}
-output1:state on
+    SETFUNPULSE = """\
+source1:function user{usernum:d}
+source1:burst:ncycles 1
+source1:frequency {pulse_freq:f}MHz
 """
-    setoff = """\
-output2:state off
-output1:state off
+    SETFUNFREQ = """\
+source1:function sinusoid
+source1:phase 90 deg
 """
 
     def __init__(self, tmcid=1, zLoadUserfun=False, **kwargs):
@@ -50,12 +57,21 @@ output1:state off
 tmcid - number of usbtmc device (default 1, i.e. /dev/usbtmc1)
 zLoadUserfun - if True, load halfsine as a user function
 kwargs - parameters:
-  period - duration of signal in seconds (default 12.5 us ~ 80kHz)
+  functype - type of signal P (5 half-sine pulses), F (sinusoid), default P
+  polarity - normal | inverted (default inverted)
+  ch2 - True | False - if ch2 in splitter on (default False)
+for functype P:
   usernum - user function number (default 4)
-  repetition - repetition period in seconds (default 1ms)
+  hswidth - width of half sine in microseconds (default 0.625 us ~ 80kHz)
+  Pvoltage - amplitude of sine in Volt (default 1.6)
+for functype F:
+  freq - frequency of sinusiod in Hz (default 1e6)
+  Fvoltage - amplitude of sinusiod in Volt (default 0.8)
 """
         self.logger = logging.getLogger('AFG')
         device = '/dev/usbtmc%d' % tmcid
+        self.DURATION = 22e-6  # duration of fun FREQ in seconds
+        self.fd = None
         try:
             self.fd = os.open(device, os.O_RDWR)
             self.logger.debug('%s open', device)
@@ -70,24 +86,26 @@ kwargs - parameters:
             else:
                 self.logger.error('Error opening %s - %s, %s',
                                   device, errno.errorcode[e.errno], e.args[1])
+            if self.fd is not None:
+                os.close(self.fd)
             raise
-        # default parameters
-        self.param = {
-            'usernum': 4,   # user<d> function
-            'freq': 80.e3,  # [Hz] inverse of user function duration
-            'ncycles': 1,   # source:burst:ncycles
-            'polarity': 'inverted',  # ch1 polarity: normal|inverted
-            'timer': 1.0e-3  # [s] period for trigger
-            }
-        self.voltage = 1.6  # [V] default amplitude
-        self.setParams(kwargs)
         # takes about 15s
         if zLoadUserfun:
             self.writeUserfun(halfsine, self.param['usernum'],
                               5000, 5000/(20*math.pi))
+        # get parameters from kwargs with PARAM as default
+        params = {key: kwargs.get(key, AFG.PARAM[key])
+                  for key in AFG.PARAM}
+        # initialize the AFG device
+        for line in AFG.SETINIT.format(**params).splitlines():
+            self.send(line)
+        self.param = {'functype': None, 'ch2': None}
+        self.setParams(**params)
 
     def __del__(self):
-        self.logger.info('Closing')
+        self.logger.info('Switching off channels and closing')
+        self.send('output1:state off')
+        self.send('output2:state off')
         os.close(self.fd)
 
     def send(self, line, lvl=logging.DEBUG):
@@ -98,37 +116,55 @@ lvl - optional logging level
         self.logger.log(lvl, 'Sending %s', line)
         os.write(self.fd, line)
 
-    def setParams(self, d=None):
+    def setParams(self, **d):
         """Set AFG parameters according to dictionary d.
 Updates self.param and send them to AFG."""
-        if d:
-            for key, val in d.iteritems():
-                if key in self.param:
-                    self.logger.info('Updating param %s = %s', key, repr(val))
-                    self.param[key] = val
-                else:
-                    self.logger.debug('Param %s = %s ignored', key, repr(val))
-        paramlines = AFG.userfun.format(**self.param)
-        for line in paramlines.splitlines():
-            self.send(line)
+        if 'functype' in d and d['functype'] != self.param['functype']:
+            setFun = d['functype']
+        else:
+            setFun = None
+        setCh2 = 'ch2' in d and d['ch2'] != self.param['ch2']
+        self.param.update({key: d[key]
+                           for key in AFG.PARAM.keys() if key in d})
+        if setFun == 'P':
+            self.logger.info('setting functype P, usernum %d, hswidth %fus',
+                             self.param['usernum'], self.param['hswidth'])
+            pulse_freq = 1./(20*self.param['hswidth'])  # us -> MHz
+            paramlines = AFG.SETFUNPULSE.format(pulse_freq=pulse_freq,
+                                                usernum=self.param['usernum'])
+            for line in paramlines.splitlines():
+                self.send(line)
+        if setFun == 'F':
+            self.logger.info('setting functype F')
+            for line in AFG.SETFUNFREQ.splitlines():
+                self.send(line)
+        if setFun == 'P' or 'Pvoltage' in d and self.param['functype'] == 'P':
+            self.logger.info('setting Pvoltage %fV', self.param['Pvoltage'])
+            self.send("source1:voltage:level:immediate:high %fV" %
+                      self.param['Pvoltage'])
+        if setFun == 'F' or 'Fvoltage' in d and self.param['functype'] == 'F':
+            self.logger.info('setting Fvoltage %fV', self.param['Fvoltage'])
+            self.send("source1:voltage:level:immediate:high %fV" %
+                      self.param['Fvoltage'])
+        if setFun == 'F' or 'freq' in d and self.param['functype'] == 'F':
+            self.logger.info('setting freq %fHz', self.param['freq'])
+            ncycles = math.ceil(self.DURATION * self.param['freq'])
+            self.send("source1:frequency %fHz" % self.param['freq'])
+            self.send("source1:burst:ncycles %d" % ncycles)
+        if setCh2:
+            state = 'on' if self.param['ch2'] else 'off'
+            self.logger.info('setting ch2 %s', state)
+            self.send("output2:state " + state)
 
-    def setOn(self, ch2=True, voltage=None):
-        """Switch on signal
-ch2 - set channel2 On/Off
-voltage - [V], also set voltage if not None
-"""
-        if voltage is not None:
-            self.voltage = voltage
-        if str(ch2).lower() not in ('on', 'off'):
-            ch2 = 'on' if ch2 else 'off'
-        paramlines = AFG.seton.format(ch2=ch2, voltage=self.voltage)
-        for line in paramlines.splitlines():
-            self.send(line)
+    def switchOn(self, state=True):
+        """Switch on signal on ch1"""
+        state = 'on' if state else 'off'
+        self.logger.info('setting ch1 %s', state)
+        self.send("output1:state " + state)
 
-    def setOff(self):
-        """Switch off signals"""
-        for line in AFG.setoff.splitlines():
-            self.send(line)
+    def trigger(self):
+        """Send trigger signal"""
+        self.send("trigger")
 
     def writeUserfun(self, func, usernum, npoint=5000, scale=None):
         """Write function to AFG
@@ -153,17 +189,7 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
         self.send('data:lock user%d,off' % usernum)
         self.send('data:copy user%d,ememory' % usernum)
         self.send('data:lock user%d,on' % usernum)
-        # values = [int(0x4000 * func(i/scale) + 0.5) for i in xrange(npoint)]
-        # values = [0x3FFF if val > 0x3FFF else 0 if val < 0 else val
-        #         for val in values]
-        # datalen = '%d' % (2*npoint)
-        # header = 'data:data ememory,#%d%s' % (len(datalen), datalen)
-        # self.logger.debug('Writing user funcetion: %s + %s data bytes',
-        #                    header, datalen)
-        # os.write(self.fd, header + ''.join([pack('>H', x) for x in values]))
-        # line = 'data:copy user%d,ememory' % usernum
-        # self.logger.debug('Sending %s', line)
-        # os.write(self.fd, line)
+
 
 def splitter_amplification(ch2, chan):
     """Amplification of Stastny's splitter
@@ -176,11 +202,13 @@ chan - channel on UUB (1-10)"""
     else:
         return 1.0/32
 
+
 def halfsine(x):
     """ 1 - sin(x) on <0,pi> + 4*pi*n; 1 otherwise"""
     xx = x % (4*math.pi)
     val = 1 - math.sin(xx) if xx < math.pi else 1.0
     return val
+
 
 def writeTFW(func, filename, npoint=5000, scale=None):
     """ Write function values in TFW format
