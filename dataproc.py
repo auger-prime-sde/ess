@@ -6,6 +6,7 @@
 import re
 import threading
 import logging
+import string
 import itertools
 from Queue import Empty
 from datetime import datetime
@@ -15,12 +16,40 @@ import numpy
 import hsfitter
 from afg import splitter_amplification
 
+
+def float2expo(x, manlength=3):
+    """Convert float x to E M1 M2 .. Mn, x = M1.M2 ... Mn * 10^E
+manlength - maximal length of mantisa (n)
+Return str EM1M2...Mn"""
+    x = float(x)
+    assert x >= 0, "x must be non-negative"
+    eps = 5. / 10 ** manlength
+    for expo in range(10):
+        if x + eps < 10.:
+            break
+        x /= 10
+    else:
+        raise AssertionError("x too big")
+    imant = int((x + eps) * 10 ** (manlength-1))  # mantisa as int
+    mant = string.rstrip('%d' % imant, '0')
+    return '%d%s' % (expo, mant)
+
+
+def expo2float(s):
+    """Convert E M1 M2 .. Mn to float"""
+    assert re.match(r'^\d\d+$', s), 'Wrong EMMM format'
+    expo = int(s[0])
+    imant = float(s[1:])
+    return imant * 10 ** (expo - (len(s) - 2))
+
+
 class DataProcessor(threading.Thread):
     """Generic data processor"""
     id_generator = itertools.count()
     stop = threading.Event()
     timeout = 1.0
     workhorses = []
+
     def __init__(self, q_dp):
         super(DataProcessor, self).__init__()
         self.myid = next(self.id_generator)
@@ -40,8 +69,9 @@ class DataProcessor(threading.Thread):
                 wh.calculate(item)
         logger.info('run finished')
 
+
 LABEL_DOC = """ Label to item (and back) conversion
-label = attr1_attr2 ... _attrn
+label = attr1_attr2 ... _attrn<functype>
 attr are (optional, but in this order):
   attr       re in label   python in item       meaning
 ----------------------------------------------------------
@@ -49,12 +79,15 @@ attr are (optional, but in this order):
   timestamp  \d{14}      datetime         YYYYmmddHHMMSS
   uubnum     u\d{4}      int 0-9999       u0015
   chan       c\d         int 1-10         c1 - c9, c0 .. channels 1 - 10
-  ch2        a[01]       False/True       splitter ch2 on/off     
+  ch2        a[01]       False/True       splitter ch2 on/off
   voltage    v\d{2}      float            10* voltage
+  freq       f\d{2,4}    float            EM1M2M3 coded freq M1.M2M3*10^E Hz
+  functype   [PF]        char             P - pulse series, F - sine
 
-item: dictionary with mandatory uubnum, ch2, voltage
+item: dictionary with mandatory uubnum, ch2, voltage/freq, functype
 kwargs: optional keys (typ, timestamp, chan)
 """
+
 
 def item2label(item, **kwargs):
     """Construct label/name for q_resp from item"""
@@ -69,10 +102,16 @@ def item2label(item, **kwargs):
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
     if 'ch2' in item:
-        attr.append('a%1d' % (item['ch2'] == 'on' or item['ch2'] == True))
-    if 'voltage' in item:
-        attr.append('v%02d' % int(item['voltage'] * 10.))
-    return '_'.join(attr)
+        attr.append('a1' if (item['ch2'] == 'on' or item['ch2'] is True)
+                    else 'a0')
+    if kwargs['functype'] == 'P':
+        if 'voltage' in item:
+            attr.append('v%02d' % int(item['voltage'] * 10.))
+    elif kwargs['functype'] == 'F':
+        if 'freq' in item:
+            attr.append('f' + float2expo(item['freq']))
+    return '_'.join(attr) + kwargs['functype']
+
 
 re_labels = [re.compile(regex) for regex in (
     r'(?P<typ>[a-z]+)',
@@ -80,12 +119,17 @@ re_labels = [re.compile(regex) for regex in (
     r'u(?P<uubnum>\d{4})',
     r'c(?P<chan>\d)',
     r'a(?P<ch2>[01])',
-    r'v(?P<voltage>\d\d)')]
+    r'v(?P<voltage>\d\d)',
+    r'f(?P<freq>\d\d+)')]
+
 
 def label2item(label):
     """Check if label stems from item and parse it to components"""
-    attrs = label.split('_')
-    d = {}
+    attrs = label[:-1].split('_')
+    d = {'functype': label[-1]}
+    if d['functype'] not in ('P', 'F'):
+        logging.getLogger('label2item').warning('Wrong functype %c',
+                                                d['functype'])
     attr = attrs.pop(0)
     for rattr in re_labels:
         m = rattr.match(attr)
@@ -95,11 +139,13 @@ def label2item(label):
         if len(attrs) == 0:
             break
         attr = attrs.pop(0)
-    
+
     d.update({key: int(d[key]) for key in ('uubnum', 'chan') if key in d})
     # convert voltage back to float and chan 0 -> 10
     if 'voltage' in d:
         d['voltage'] = 0.1 * float(d['voltage'])
+    if 'freq' in d:
+        d['freq'] = expo2float(d['freq'])
     if 'chan' in d and d['chan'] == 0:
         d['chan'] = 10
     if 'ch2' in d:
@@ -113,11 +159,13 @@ def label2item(label):
             del d['timestamp']
     return d
 
+
 class DP_pede(object):
     """Data processor workhorse to calculate pedestals"""
     # parameters
     BINSTART = 50
     BINEND = 550
+
     def __init__(self, q_resp, it2label=item2label):
         """Constructor.
 q_resp - a logger queue
@@ -127,8 +175,10 @@ it2label - a function to generate names
         self.it2label = it2label
 
     def calculate(self, item):
+        if item['functype'] != 'P':
+            return
         logging.getLogger('DP_pede').debug('Processing %s for ts %s',
-                                              self.it2label(item),
+                                           self.it2label(item),
                             item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
         array = item['yall'][self.BINSTART:self.BINEND, :]
         mean = array.mean(axis=0)
@@ -141,6 +191,7 @@ it2label - a function to generate names
                 label = self.it2label(item, typ=typ, chan=ch+1)
                 res[label] = val
         self.q_resp.put(res)
+
 
 class DP_hsampli(object):
     """Data processor workhorse to calculate amplitude of half-sines"""
@@ -156,6 +207,8 @@ it2label - a function to generate names
         self.hsf = hsfitter.HalfSineFitter(w)
 
     def calculate(self, item):
+        if item['functype'] != 'P':
+            return
         logging.getLogger('DP_hsampli').debug('Processing %s for ts %s',
                                               self.it2label(item),
                             item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
@@ -168,11 +221,13 @@ it2label - a function to generate names
             res['ampli_' + label] = ampli
         self.q_resp.put(res)
 
+
 def dpfilter_linear(res_in):
     """Dataprocessing filter
  - calculate linear fit & correlation coeff from ampli
-input items: ampli_u<uubnum>_c<uub channel>_v<voltage>_a<afg.ch2>
-data: x - real voltage amplitude after splitter [mV], y - UUB ADCcount amplitude
+input items: ampli_u<uubnum>_c<uub channel>_v<voltage>_a<afg.ch2>P
+data: x - real voltage amplitude after splitter [mV],
+      y - UUB ADCcount amplitude
 output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
               r_u<uubnum>_c<uub channel> - correlation coefficient
 """
