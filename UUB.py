@@ -14,21 +14,27 @@ import select
 import socket
 import threading
 from datetime import datetime, timedelta
-from time import sleep
 from struct import pack, unpack
+from struct import error as struct_error
 from binascii import hexlify
+from Queue import Empty
 import numpy
 
 PORT = 80
+DATAPORT = 8888    # UDP port UUB send data to
+CTRLPORT = 8887    # UDP port UUB listen for commands
+LADDR = "192.168.31.254"  # IP address of the computer
 
 MSGLEN_DISP = 9    # length of message from dispatcher to meas
 MSGLEN_MEAS = 11   # length of message from meas to dispatcher
 TOUT_ACK = 1.0     # timeout for ack
 TOUT_DONE = 5.0    # timeout for done
 
+
 def uubnum2ip(uubnum):
     """Calculate IP address from UUB number"""
     return '192.168.%d.%d' % (16 + (uubnum >> 8), uubnum & 0xFF)
+
 
 def ip2uubnum(ip):
     """Calculate UUB number from IP"""
@@ -38,14 +44,17 @@ def ip2uubnum(ip):
     uubnum = 0x100*(comps[2] & 0x0F) + comps[3]
     return uubnum
 
+
 def hashObj(o):
     """Hash serialized object to 8B string"""
     return pack(">q", hash(pickle.dumps(o)))
+
 
 def gener_param_default(**kwargs):
     """Measurement parameters generator: return provided kwargs as dict"""
     yield kwargs
     return
+
 
 def gener_voltage_ch2(default_voltage, default_ch2):
     """Return generator of voltage & ch2.
@@ -66,6 +75,7 @@ default_ch2 - default values of ch2 (list of 'ON'/'OFF' or True/False)
                 yield d
     return gener
 
+
 def isLive(uub, timeout=0):
     """Try open TCP to UUB:80, eventually repeat until timeout expires.
 Return True if UUB answers, False if timeout occurs.
@@ -73,7 +83,8 @@ uub - UUBmeas or UUBtsc (must have ip and logger attributes)
 """
     # uub.logger.debug('isLive(%f)', timeout)
     exptime = datetime.now() + timedelta(seconds=timeout)
-    # uub.logger.debug('exptime = %s', exptime.strftime("%Y-%m-%d %H:%M:%S,%f"))
+    # uub.logger.debug('exptime = %s',
+    #                  exptime.strftime("%Y-%m-%d %H:%M:%S,%f"))
     addr = (uub.ip, PORT)
     while True:
         try:
@@ -93,8 +104,10 @@ uub - UUBmeas or UUBtsc (must have ip and logger attributes)
                 # uub.logger.debug('isLive: False')
                 return False
 
+
 class UUBtsc(threading.Thread):
-    """Thread managing read out Zynq temperature and SlowControl data from UUB"""
+    """Thread managing read out Zynq temperature and SlowControl data
+ from UUB"""
 
     re_scdata = re.compile(r'''.*
    PMT1 \s+ (?P<HV_PMT1>\d+(\.\d+)?)
@@ -130,7 +143,7 @@ class UUBtsc(threading.Thread):
    12V\ PMTs  \s+ (?P<u_PMTs>\d+(\.\d+)?) \s* \[mV\] \s*
                   (?P<i_PMTs>\d+(\.\d+)?) \s* \[mA\] \s*
    24V\ EXT1/2 \s+ (?P<u_ext1>\d+(\.\d+)?) \s* \[mV\] \s*
-                   (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s* 
+                   (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
    .* Sensors \s+
    T= \s+ (?P<temp>\d+) \s* \*0\.1K, \s*
@@ -172,8 +185,8 @@ q_resp - queue to send response
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if (not 'meas.thp' in flags and 'meas.sc' not in flags
-                and 'power.test' in flags):
+            if ('meas.thp' not in flags and 'meas.sc' not in flags and
+                    'power.test' not in flags):
                 continue
             res = {'timestamp': timestamp}
             if 'power.test' in flags:
@@ -189,7 +202,8 @@ q_resp - queue to send response
                 # read SlowControl data
                 if 'meas.sc' in flags:
                     res.update(self.readSlowControl(conn))
-            except (httplib.CannotSendRequest, socket.error, AttributeError) as e:
+            except (httplib.CannotSendRequest, socket.error,
+                    AttributeError) as e:
                 self.logger.error('HTTP request failed, %s', e.__str__())
             finally:
                 conn.close()
@@ -200,7 +214,8 @@ q_resp - queue to send response
         """Read UUB serial number
 Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
         re_sernum = re.compile(r'.*\nSN: (?P<sernum>' +
-                               r'([a-fA-F0-9]{2}-){5}[a-fA-F0-9]{2})', re.DOTALL)
+                               r'([a-fA-F0-9]{2}-){5}[a-fA-F0-9]{2})',
+                               re.DOTALL)
 
         if timeout is not None and not isLive(self, timeout):
             return None
@@ -225,8 +240,8 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
 conn - HTTPConnection instance
 return dictionary: zynq<uubnum>_temp: temperature
 """
-        re_zynqtemp = re.compile(r'Zynq temperature: (?P<zt>[+-]?\d+(\.\d*)?)' +
-                                 r' degrees')
+        re_zynqtemp = re.compile(
+            r'Zynq temperature: (?P<zt>[+-]?\d+(\.\d*)?) degrees')
         conn.request('GET', '/cgi-bin/getdata.cgi?action=xadc')
         # TO DO: check status
         resp = conn.getresponse().read()
@@ -258,16 +273,19 @@ return dictionary: sc<uubnum>_<variable>: value
             res = {}
         return res
 
+
 class UUBdisp(threading.Thread):
     """UUB dispatcher"""
-    def __init__(self, timer, afg, gener_param=gener_param_default):
+    def __init__(self, timer, afg, ulisten, gener_param=gener_param_default):
         """Constructor
 timer - instance of timer
 afg - instance of AFG
+ulisten - instance of UUBlistener
 gener_param - generator of measurement paramters
 """
         super(UUBdisp, self).__init__()
         self.timer, self.afg, self.gener_param = timer, afg, gener_param
+        self.ulisten = ulisten
         self.socks = []
         self.socks2add = []
         self.flags = {}  # current task paramterers
@@ -339,8 +357,9 @@ msg - expected message prefix
                          datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"),
                          repr(tflags))
             # copy other relevant flags
-            aflags = {flag: tflags[flag] for flag in ('db_point', 'set_temp', 'meas_point')
-                          if flag in tflags}
+            aflags = {flag: tflags[flag]
+                      for flag in ('db_point', 'set_temp', 'meas_point')
+                      if flag in tflags}
             aflags['timestamp'] = timestamp
             # run measurement for all parameters
             for flags in self.gener_param(**tflags):
@@ -359,6 +378,7 @@ msg - expected message prefix
                 for s in self.socks:
                     s.send(msg)
             self.clearParams()
+
 
 class UUBmeas(threading.Thread):
     """Implementation of thread for UUB data readout"""
@@ -423,7 +443,8 @@ return (None, None) nothing received or K not for us or wrong msg
             conn = httplib.HTTPConnection(self.ip, PORT)
             try:
                 conn.request('GET', '/cgi-bin/getdata.cgi?action=scope')
-            except (httplib.CannotSendRequest, socket.error, AttributeError) as e:
+            except (httplib.CannotSendRequest, socket.error,
+                    AttributeError) as e:
                 self.logger.error('HTTP request failed, %s', e.__str__())
                 conn.close()
             self.logger.debug('Request scope sent')
@@ -446,7 +467,8 @@ return (None, None) nothing received or K not for us or wrong msg
             # wait for response
             try:
                 resp = conn.getresponse()
-            except (httplib.CannotSendRequest, socket.error, AttributeError) as e:
+            except (httplib.CannotSendRequest, socket.error,
+                    AttributeError) as e:
                 self.logger.error('HTTP get response failed, %s', e.__str__())
                 conn.close()
                 continue
@@ -469,8 +491,221 @@ return (None, None) nothing received or K not for us or wrong msg
                 self.logger.debug('JSON transformed to list')
             except ValueError as e:
                 self.logger.error('Error parsing UUB data, %s', e.__str__())
-                continue 
+                continue
             flags['yall'] = numpy.array(y, dtype='float32')
             flags['uubnum'] = self.uubnum
             self.q_dp.put(flags)
             self.logger.debug('Data put to q_dp')
+
+
+class UUBlisten(threading.Thread):
+    """Listen for UDP packets with data from UUB"""
+    def __init__(self, q_ndata):
+        """Constructor.
+q_ndata - a queue to send received data (NetscopeData instance)"""
+        super(UUBlisten, self).__init__()
+        self.q_ndata = q_ndata
+        self.stop = threading.Event()
+        self.active = threading.Event()
+        # adjust before run
+        self.port = DATAPORT
+        self.laddr = LADDR
+        self.PACKETSIZE = 1500
+        self.SLEEPTIME = 0.5  # timeout for checking active event
+        self.NPOINT = 2048    # number of measured points
+        self.details = None
+        self.uubnums = []     # UUBs to monitor
+        # if False, remove UUBnum from uubnums after a header received
+        self.permanent = True
+        self.clear = False    # when True, discard all records
+        self.records = {}
+
+    def run(self):
+        logger = logging.getLogger('UUBlisten')
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((self.laddr, self.port))
+        self.sock.settimeout(0.0001)
+        logger.info("Listening on %s:%d", self.laddr, self.port)
+        while not self.stop.is_set():
+            if not self.active.wait(self.SLEEPTIME):
+                continue
+            if self.clear:
+                self.records = {}
+                self.clear = False
+            try:
+                data, addr = self.sock.recvfrom(self.PACKETSIZE)
+            except socket.timeout:
+                continue
+            nsid = unpack('<L', data[:4])[0]
+            uubnum = ip2uubnum(addr[0])
+            # (UUBnum, port, id)
+            key = (uubnum, addr[1], nsid & 0x7FFFFFFF)
+            # logger.debug('packet UUB %d, port %d, id %08x',
+            #              key[0], key[1], nsid)
+            if nsid & 0x80000000:  # header
+                if key in self.records:
+                    logger.error('duplicate header (UUB %d, port %d, id %08x)',
+                                 *key)
+                    continue
+                elif uubnum not in self.uubnums:
+                    logger.info(
+                        'unsolicited header (UUB %d, port %d, id %08x)', *key)
+                    continue
+                else:
+                    try:
+                        self.records[key] = NetscopeData(data, uubnum,
+                                                         self.details)
+                        if not self.permanent:
+                            self.uubnums.remove(uubnum)
+                        logger.info('new record UUB %d, port %d, id %08x',
+                                    *key)
+                    except struct_error:
+                        logger.error('header length error (%d) ' +
+                                     'from UUB %d, port %d, id %08x',
+                                     len(data), *key)
+            else:   # chunk
+                if key in self.records:
+                    try:
+                        if self.records[key].addChunk(data):
+                            # send to q_ndata
+                            self.q_ndata.put(self.records.pop(key))
+                            logger.info('done record UUB %d, port %d, id %08x',
+                                        *key)
+                    except ValueError as e:
+                        logger.error('addChunk error %s, ' +
+                                     'UUB %d, port %d, id %08x',
+                                     e.__str__(), *key)
+                else:
+                    logger.error('orphan chunk for UUB %d, port %d, id %08x',
+                                 *key)
+        logger.info("Leaving run()")
+        self.sock.close()
+
+
+class Coverage(object):
+    """Cover range(0, MAX) by chunks."""
+    def __init__(self, size):
+        self.size = size
+        self.starts = []
+        self.ends = []
+
+    def insert(self, start, end):
+        """Add a chunk in coverage.
+Return False if overlapping or outside, True otherwise."""
+        if not 0 <= start < end <= self.size:
+            return False
+        curLen = len(self.starts)
+        pos = len(filter(lambda i: start >= i, self.ends))
+        if pos < curLen and end > self.starts[pos]:
+            return False
+        # ok, insert the new chunk
+        self.starts.insert(pos, start)
+        self.ends.insert(pos, end)
+        # check if a merge is possible
+        if pos < curLen and end == self.starts[pos+1]:
+            self.starts.pop(pos+1)
+            self.ends.pop(pos)
+        if pos > 0 and start == self.ends[pos-1]:
+            self.starts.pop(pos)
+            self.ends.pop(pos-1)
+        return True
+
+    def isCovered(self):
+        """Return True if (0, MAX) completely covered."""
+        return len(self.starts) == 1 and \
+            self.starts[0] == 0 and self.ends[0] == self.size
+
+    def __str__(self):
+        return "coverage(0, %d): " % self.size + \
+            ", ".join(["(%d, %d)" % (start, end)
+                       for start, end in zip(self.starts, self.ends)])
+
+
+class NetscopeData(object):
+    """ Data received from netscope """
+    HEADER = ('id', 'shwr_buf_status', 'shwr_buf_start', 'shwr_buf_trig_id',
+              'ttag_shwr_seconds', 'ttag_shwr_nanosec', 'rd')
+    NPOINT = 2048
+    RAWDATASIZE = 4 * 5 * NPOINT
+    FRAGHEADLEN = 8     # LHH: id, start, end
+
+    def __init__(self, header, uubnum, details=None):
+        """Constructor.
+header - data as in `struct shwr_header'"""
+        headerdict = dict(zip(self.HEADER,
+                              unpack('<%dL' % len(self.HEADER), header)))
+        self.__dict__.update(headerdict)
+        self.id &= 0x7FFFFFFF
+        self.uubnum = uubnum
+        self.details = details
+        self.rawdata = bytearray(self.RAWDATASIZE)
+        self.yall = None
+        self.cover = Coverage(self.RAWDATASIZE)
+
+    def addChunk(self, chunk):
+        """Add a chunk into data. Return True if data complete."""
+        # fragment header
+        cid, start, end = unpack('<LHH', chunk[:self.FRAGHEADLEN])
+        if len(chunk) - self.FRAGHEADLEN != end - start:
+            raise ValueError("Wrong start/end versus chunk length")
+        if cid != self.id:
+            raise ValueError("Wrong id %d (%d expected)" % (cid, self.id))
+        if not self.cover.insert(start, end):
+            raise ValueError("Incompatible chunk (%d, %d), already covered %s"
+                             % (start, end, self.cover.__str__()))
+        self.rawdata[start:end] = bytearray(chunk[self.FRAGHEADLEN:])
+        return self.cover.isCovered()
+
+    def header(self):
+        """Return header as dictionary"""
+        d = {key: self.__dict__[key] for key in self.HEADER}
+        # d['uubnum'] = self.uubnum
+        # if self.details is not None:
+        #     d.update(self.details)
+        return d
+
+    def convertData(self):
+        """Convert raw data to numpy 2048x10 array"""
+        if self.yall is not None:
+            return self.yall
+        yall = numpy.zeros([self.NPOINT, 10], dtype=float)
+        start = self.shwr_buf_start
+        for i in xrange(self.NPOINT):
+            index = (i + start) % self.NPOINT
+            for j in xrange(5):
+                off = (j*self.NPOINT+index)*4
+                hg, lg = unpack("<HH", self.rawdata[off:off+4])
+                yall[i, 2*j] = hg & 0xFFF
+                yall[i, 2*j+1] = lg & 0xFFF
+        self.yall = yall
+        return yall
+
+
+class UUBconvData(threading.Thread):
+    """Thread to convert UUB rawdata to numpy"""
+    stop = threading.Event()
+    timeout = 1.0
+
+    def __init__(self, q_ndata, q_dp):
+        """Constructor.
+q_ndata - a queue to listen for NetscopeData
+q_dp - a queue to send numpy data
+"""
+        super(UUBconvData, self).__init__()
+        self.q_ndata, self.q_dp = q_ndata, q_dp
+
+    def run(self):
+        logger = logging.getLogger('UUBconvData')
+        while not self.stop.is_set():
+            try:
+                nd = self.q_ndata.get(True, self.timeout)
+            except Empty:
+                continue
+            logger.debug('processing UUB %04d, id %08x start',
+                         nd.uubnum, nd.id)
+            flags = nd.details if nd.details is not None else {}
+            flags['uubnum'] = nd.uubnum
+            flags['yall'] = nd.convertData()
+            self.q_dp.put(flags)
+            logger.debug('processing UUB %04d, id %08x done', nd.uubnum, nd.id)
+        logger.info("Leaving run()")
