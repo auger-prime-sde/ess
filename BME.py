@@ -127,3 +127,53 @@ timesync - sync Arduino time
                 for k, v in d.iteritems():
                     res['bme_'+k] = float(v)
                 self.q_resp.put(res)
+
+
+class TrigDelay(object):
+    """Interface to arduino managing trigger delay"""
+    re_init = re.compile(r'.*TrigDelay (?P<version>\d+)', re.DOTALL)
+    re_setdelay = re.compile(r'.*OK', re.DOTALL)
+    re_getdelay = re.compile(r'.*trigdelay .*: (?P<delay>\d+)', re.DOTALL)
+
+    def __init__(self, port):
+        """Constructor.
+port - serial port to connect"""
+        self.logger = logging.getLogger('TrigDelay')
+        s = None               # avoid NameError on isinstance(s, Serial) check
+        try:
+            s = Serial(port, baudrate=115200)
+            self.logger.info('Opening serial %s', repr(s))
+            sleep(0.1)  # ad hoc constant to avoid timeout
+            s.write('?\r')
+            resp = readSerRE(s, TrigDelay.re_init, timeout=1,
+                             logger=self.logger)
+            self.version = TrigDelay.re_init.match(resp).groupdict()['version']
+        except Exception:
+            self.logger.exception("Init serial with TrigDelay failed")
+            if isinstance(s, Serial):
+                self.logger.info('Closing serial %s', s.port)
+                s.close()
+            raise SerialReadTimeout
+        self.ser = s
+
+    def __del__(self):
+        self.ser.close()
+
+    @property
+    def delay(self):
+        """Get delay from Arduino"""
+        self.logger.info('getting delay')
+        self.ser.write('q\r')
+        resp = readSerRE(self.ser, TrigDelay.re_getdelay,
+                         timeout=1, logger=self.logger)
+        m = TrigDelay.re_getdelay.match(resp)
+        return int(m.groupdict()['delay'])
+
+    @delay.setter
+    def delay(self, delay):
+        """Set delay in <250ns> units"""
+        self.logger.info('setting delay %d * 3/16us', delay)
+        self.ser.write('d %d\r' % delay)
+        resp = readSerRE(self.ser, TrigDelay.re_setdelay,
+                         timeout=1, logger=self.logger)
+        self.logger.debug('delay set')
