@@ -80,37 +80,44 @@ attr are (optional, but in this order):
   uubnum     u\d{4}      int 0-9999       u0015
   chan       c\d         int 1-10         c1 - c9, c0 .. channels 1 - 10
   ch2        a[01]       False/True       splitter ch2 on/off
-  voltage    v\d{2}      float            10* voltage
+  voltage    v\d{2,3}    float            voltage coded as v1.v2v3 [volt]
   freq       f\d{2,4}    float            EM1M2M3 coded freq M1.M2M3*10^E Hz
-  functype   [PF]        char             P - pulse series, F - sine
+  functype   [A-Z]       char             P - pulse series, F - sine
 
-item: dictionary with mandatory uubnum, ch2, voltage/freq, functype
-kwargs: optional keys (typ, timestamp, chan)
+mandatory keys: uubnum, ch2, voltage/freq, functype
+optional keys (typ, timestamp, chan)
 """
 
 
 def item2label(item, **kwargs):
-    """Construct label/name for q_resp from item"""
+    """Construct label/name for q_resp from item and kwargs
+kwargs and item are merged, item is not modified"""
     attr = []
+    if kwargs:
+        kwargs.update(item)
+    else:
+        kwargs = item
     if 'typ' in kwargs:
         attr.append(kwargs['typ'])
     if 'timestamp' in kwargs:
         attr.append(kwargs['timestamp'].strftime('%Y%m%d%H%M%S'))
-    if 'uubnum' in item:
-        attr.append('u%04d' % item['uubnum'])
+    if 'uubnum' in kwargs:
+        attr.append('u%04d' % kwargs['uubnum'])
     if 'chan' in kwargs:
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
-    if 'ch2' in item:
-        attr.append('a1' if (item['ch2'] == 'on' or item['ch2'] is True)
-                    else 'a0')
-    if kwargs['functype'] == 'P':
-        if 'voltage' in item:
-            attr.append('v%02d' % int(item['voltage'] * 10.))
-    elif kwargs['functype'] == 'F':
-        if 'freq' in item:
-            attr.append('f' + float2expo(item['freq']))
-    return '_'.join(attr) + kwargs['functype']
+    if 'ch2' in kwargs:
+        attr.append('a1' if kwargs['ch2'] else 'a0')
+    functype = kwargs.get('functype', '')
+    if 'voltage' in kwargs:
+        svolt = 'v%03d' % int(kwargs['voltage'] * 100.)
+        if(svolt[-1] == '0'):
+            svolt = svolt[:-1]
+        attr.append(svolt)
+    if functype == 'F':
+        if 'freq' in kwargs:
+            attr.append('f' + float2expo(kwargs['freq'], manlength=3))
+    return '_'.join(attr) + functype
 
 
 re_labels = [re.compile(regex) for regex in (
@@ -119,17 +126,18 @@ re_labels = [re.compile(regex) for regex in (
     r'u(?P<uubnum>\d{4})',
     r'c(?P<chan>\d)',
     r'a(?P<ch2>[01])',
-    r'v(?P<voltage>\d\d)',
-    r'f(?P<freq>\d\d+)')]
+    r'v(?P<voltage>\d{2,3})',
+    r'f(?P<freq>\d{2,4})')]
 
 
 def label2item(label):
     """Check if label stems from item and parse it to components"""
-    attrs = label[:-1].split('_')
-    d = {'functype': label[-1]}
-    if d['functype'] not in ('P', 'F'):
-        logging.getLogger('label2item').warning('Wrong functype %c',
-                                                d['functype'])
+    if 'A' <= label[-1] <= 'Z':
+        d = {'functype': label[-1]}
+        attrs = label[:-1].split('_')
+    else:
+        d = {}
+        attrs = label.split('_')
     attr = attrs.pop(0)
     for rattr in re_labels:
         m = rattr.match(attr)
@@ -140,14 +148,22 @@ def label2item(label):
             break
         attr = attrs.pop(0)
 
+    # change strings from re to Python objects
+    # uubnum and chan to integers
     d.update({key: int(d[key]) for key in ('uubnum', 'chan') if key in d})
-    # convert voltage back to float and chan 0 -> 10
-    if 'voltage' in d:
-        d['voltage'] = 0.1 * float(d['voltage'])
-    if 'freq' in d:
-        d['freq'] = expo2float(d['freq'])
     if 'chan' in d and d['chan'] == 0:
         d['chan'] = 10
+    # convert voltage back to float and chan 0 -> 10
+    if 'voltage' in d:
+        svolt = d['voltage']
+        d['voltage'] = float('%c.%s' % (svolt[0], svolt[1:]))
+    if 'freq' in d:
+        try:
+            d['freq'] = expo2float(d['freq'])
+        except AssertionError:
+            logging.getLogger('label2item').warning(
+                'Wrong expo2float argument %s', d['freq'])
+            del d['freq']
     if 'ch2' in d:
         d['ch2'] = d['ch2'] == '1'
     if 'timestamp' in d:
@@ -166,20 +182,18 @@ class DP_pede(object):
     BINSTART = 50
     BINEND = 550
 
-    def __init__(self, q_resp, it2label=item2label):
+    def __init__(self, q_resp):
         """Constructor.
 q_resp - a logger queue
-it2label - a function to generate names
 """
         self.q_resp = q_resp
-        self.it2label = it2label
 
     def calculate(self, item):
         if item['functype'] != 'P':
             return
-        logging.getLogger('DP_pede').debug('Processing %s for ts %s',
-                                           self.it2label(item),
-                            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
+        logging.getLogger('DP_pede').debug(
+            'Processing %s for ts %s', self.item2label(item),
+            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
         array = item['yall'][self.BINSTART:self.BINEND, :]
         mean = array.mean(axis=0)
         stddev = array.std(axis=0)
@@ -188,7 +202,7 @@ it2label - a function to generate names
                if key in item}
         for ch, (m, s) in enumerate(zip(mean, stddev)):
             for typ, val in (('pede', m), ('pedesig', s)):
-                label = self.it2label(item, typ=typ, chan=ch+1)
+                label = self.item2label(item, typ=typ, chan=ch+1)
                 res[label] = val
         self.q_resp.put(res)
 
@@ -196,28 +210,26 @@ it2label - a function to generate names
 class DP_hsampli(object):
     """Data processor workhorse to calculate amplitude of half-sines"""
     # parameters
-    def __init__(self, q_resp, w, it2label=item2label):
+    def __init__(self, q_resp, hswidth):
         """Constructor.
 q_resp - a logger queue
-w - width of half-sine in microseconds
-it2label - a function to generate names
+hswidth - width of half-sine in microseconds
 """
         self.q_resp = q_resp
-        self.it2label = it2label
-        self.hsf = hsfitter.HalfSineFitter(w)
+        self.hsf = hsfitter.HalfSineFitter(hswidth)
 
     def calculate(self, item):
         if item['functype'] != 'P':
             return
-        logging.getLogger('DP_hsampli').debug('Processing %s for ts %s',
-                                              self.it2label(item),
-                            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
+        logging.getLogger('DP_hsampli').debug(
+            'Processing %s for ts %s', item2label(item),
+            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
         hsfres = self.hsf.fit(item['yall'], hsfitter.AMPLI)
         res = {key: item[key]
                for key in ('timestamp', 'meas_point', 'db_point')
                if key in item}
         for ch, ampli in enumerate(hsfres['ampli']):
-            label = self.it2label(item, chan=ch+1)
+            label = self.item2label(item, chan=ch+1)
             res['ampli_' + label] = ampli
         self.q_resp.put(res)
 
@@ -270,15 +282,13 @@ output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
 class DP_store(object):
     """Data processor workhorse to store 2048x10 data"""
 
-    def __init__(self, datadir, it2label=item2label):
+    def __init__(self, datadir):
         """Constructor.
-it2label - a function to generate names
 """
         self.datadir = datadir
-        self.it2label = it2label
 
     def calculate(self, item):
-        label = self.it2label(item, typ='dataall', timestamp=item['timestamp'])
+        label = item2label(item, typ='dataall', timestamp=item['timestamp'])
         logging.getLogger('DP_store').debug('Processing %s', label)
         fn = '%s/%s.txt' % (self.datadir, label)
         numpy.savetxt(fn, item['yall'], fmt='% 5d')
