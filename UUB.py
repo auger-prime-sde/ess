@@ -14,10 +14,12 @@ import select
 import socket
 import threading
 from datetime import datetime, timedelta
+from time import sleep
 from struct import pack, unpack
 from struct import error as struct_error
 from binascii import hexlify
 from Queue import Empty
+from telnetlib import Telnet
 import numpy
 
 PORT = 80
@@ -74,6 +76,55 @@ default_ch2 - default values of ch2 (list of 'ON'/'OFF' or True/False)
                 d['voltage'] = v
                 yield d
     return gener
+
+
+def gener_funcparams():
+    """Return generators of AFG and item parameters
+return [(timer.name, functype, generator), ...]
+"""
+    def generP(**kwargs):
+        """Generator for functype pulse
+kwargs: ch2s, voltages
+return afg_dict, item_dict"""
+        afg_dict = {'functype': 'P'}
+        item_dict = afg_dict.copy()
+        ch2s = kwargs.get('ch2s', (None, ))
+        voltages = kwargs.get('voltages', (None, ))
+        for ch2 in ch2s:
+            if ch2 is not None:
+                afg_dict['ch2'] = ch2
+                item_dict['ch2'] = ch2
+            for v in voltages:
+                if v is not None:
+                    afg_dict['Pvoltage'] = v
+                    item_dict['voltage'] = v
+                yield afg_dict, item_dict
+
+    def generF(**kwargs):
+        """Generator for functype freq
+kwargs: ch2s, freqs, voltages
+return afg_dict, item_dict"""
+        afg_dict = {'functype': 'F'}
+        item_dict = afg_dict.copy()
+        ch2s = kwargs.get('ch2s', (None, ))
+        freqs = kwargs.get('freqs', (None, ))
+        voltages = kwargs.get('voltages', (None, ))
+        for ch2 in ch2s:
+            if ch2 is not None:
+                afg_dict['ch2'] = ch2
+                item_dict['ch2'] = ch2
+            for freq in freqs:
+                if freq is not None:
+                    afg_dict['freq'] = freq
+                    item_dict['freq'] = freq
+                for v in voltages:
+                    if v is not None:
+                        afg_dict['Fvoltage'] = v
+                        item_dict['voltage'] = v
+                    yield afg_dict, item_dict
+
+    return (('meas.pulse', 'P', generP),
+            ('meas.freq', 'F', generF))
 
 
 def isLive(uub, timeout=0):
@@ -498,6 +549,86 @@ return (None, None) nothing received or K not for us or wrong msg
             self.logger.debug('Data put to q_dp')
 
 
+class UUBdaq(threading.Thread):
+    """Thread managing data acquisition from UUBs"""
+    TOUT_DAQ = 0.1    # timeout between trigger and UUBlisten cancel
+    TOUT_PREP = 0.01  # delay between afg setting and trigger
+
+    def __init__(self, timer, afg, ulisten, trigdelay,
+                 gener_param=gener_funcparams()):
+        """Constructor
+timer - instance of timer
+afg - instance of AFG
+ulisten - instance of UUBlistener
+trigdelay - instance of TrigDelay
+gener_param - generator of measurement paramters (see gener_funcparams)
+"""
+        super(UUBdaq, self).__init__()
+        self.timer, self.afg, self.ulisten = timer, afg, ulisten
+        self.trigdelay = trigdelay
+        self.tnames = [rec[0] for rec in gener_param]  # timer names
+        self.functypes = {rec[0]: rec[1] for rec in gener_param}
+        self.geners = {rec[0]: rec[2] for rec in gener_param}
+        self.ulisten = ulisten
+        self.uubnums = set()
+        self.uubnums2add = []
+        self.uubnums2del = []
+
+    def run(self):
+        logger = logging.getLogger('UUBdaq')
+        # stop and clear ulisten
+        self.ulisten.uubnums = set()
+        self.ulisten.clear = True
+        self.ulisten.permanent = False
+        while True:
+            self.timer.evt.wait()
+            if self.timer.stop.is_set():
+                break
+            # store timer parameters
+            timestamp = self.timer.timestamp   # store info from timer
+            tflags = {tname: self.timer.flags[tname]
+                      for tname in self.tnames
+                      if tname in self.timer.flags}
+            # copy other relevant flags
+            aflags = {flag: tflags[flag]
+                      for flag in ('db_point', 'set_temp', 'meas_point')
+                      if flag in tflags}
+            aflags['timestamp'] = timestamp
+
+            # update uubnums
+            while self.uubnums2add:
+                self.uubnums.add(self.uubnums2add.pop())
+            while self.uubnums2del:
+                self.uubnums.discard(self.uubnums2del.pop())
+
+            # loop over functype/tname
+            for tname in self.tnames:
+                if tname not in tflags:
+                    continue
+                logger.info('executing %s, flags %s', tname, repr(tflags))
+                self.trigdelay.delay = self.functypes[tname]
+                # run measurement for all parameters
+                for afg_dict, item_dict in self.geners[tname](**tflags[tname]):
+                    item_dict.update(aflags)
+                    logger.debug("params %s", repr(item_dict))
+                    self.afg.setParams(**afg_dict)
+                    self.afg.switchOn(True)
+                    self.ulisten.done.clear()
+                    self.ulisten.details = item_dict.copy()
+                    self.ulisten.uubnums = self.uubnums.copy()
+                    sleep(0.1)
+                    self.afg.trigger()
+                    logger.debug('trigger sent')
+                    self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
+                    # stop daq at ulisten
+                    self.ulisten.uubnums = set()
+                    self.ulisten.clear = True
+                    self.afg.switchOn(False)
+                    logger.debug('DAQ completed')
+        # end while(True)
+        logger.info('Timer stopped, stopping UUB daq')
+
+
 class UUBlisten(threading.Thread):
     """Listen for UDP packets with data from UUB"""
     def __init__(self, q_ndata):
@@ -506,15 +637,15 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         super(UUBlisten, self).__init__()
         self.q_ndata = q_ndata
         self.stop = threading.Event()
-        self.active = threading.Event()
+        self.done = threading.Event()
         # adjust before run
         self.port = DATAPORT
         self.laddr = LADDR
         self.PACKETSIZE = 1500
-        self.SLEEPTIME = 0.5  # timeout for checking active event
+        self.SLEEPTIME = 0.001  # timeout for checking active event
         self.NPOINT = 2048    # number of measured points
         self.details = None
-        self.uubnums = []     # UUBs to monitor
+        self.uubnums = set()  # UUBs to monitor
         # if False, remove UUBnum from uubnums after a header received
         self.permanent = True
         self.clear = False    # when True, discard all records
@@ -527,8 +658,6 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         self.sock.settimeout(0.0001)
         logger.info("Listening on %s:%d", self.laddr, self.port)
         while not self.stop.is_set():
-            if not self.active.wait(self.SLEEPTIME):
-                continue
             if self.clear:
                 self.records = {}
                 self.clear = False
@@ -548,7 +677,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                                  *key)
                     continue
                 elif uubnum not in self.uubnums:
-                    logger.info(
+                    logger.debug(
                         'unsolicited header (UUB %d, port %d, id %08x)', *key)
                     continue
                 else:
@@ -556,7 +685,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                         self.records[key] = NetscopeData(data, uubnum,
                                                          self.details)
                         if not self.permanent:
-                            self.uubnums.remove(uubnum)
+                            self.uubnums.discard(uubnum)
                         logger.info('new record UUB %d, port %d, id %08x',
                                     *key)
                     except struct_error:
@@ -571,12 +700,14 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                             self.q_ndata.put(self.records.pop(key))
                             logger.info('done record UUB %d, port %d, id %08x',
                                         *key)
+                            if not self.uubnums and not self.records:
+                                self.done.set()
                     except ValueError as e:
                         logger.error('addChunk error %s, ' +
                                      'UUB %d, port %d, id %08x',
                                      e.__str__(), *key)
                 else:
-                    logger.error('orphan chunk for UUB %d, port %d, id %08x',
+                    logger.debug('orphan chunk for UUB %d, port %d, id %08x',
                                  *key)
         logger.info("Leaving run()")
         self.sock.close()
@@ -709,3 +840,33 @@ q_dp - a queue to send numpy data
             self.q_dp.put(flags)
             logger.debug('processing UUB %04d, id %08x done', nd.uubnum, nd.id)
         logger.info("Leaving run()")
+
+
+class UUBtelnet(threading.Thread):
+    """Class making telnet to UUBs and run netscope program"""
+    CMDS = ("tftp -g -r netscope.elf -l netscope 192.168.31.254",
+            "chmod +x netscope",
+            "./netscope >&/dev/null")
+    LOGIN = "root"
+    PASSWD = "root"
+
+    def __init__(self, *uubnums):
+        self.uubnums = uubnums
+        self.telnets = [Telnet() for uubnum in self.uubnums]
+
+    def login(self):
+        """Login to UUBs"""
+        for uubnum, tn in zip(self.uubnums, self.telnets):
+            tn.open(uubnum2ip(uubnum))
+            tn.read_until("login: ")
+            tn.write(UUBtelnet.LOGIN + "\n")
+            tn.read_until("Password: ")
+            tn.write(UUBtelnet.PASSWD + "\n")
+            for cmd in UUBtelnet.CMDS:
+                tn.write(cmd + "\n")
+                tn.read_until(cmd + "\r\n")
+
+    def logout(self):
+        """Logout from UUBs"""
+        for tn in self.telnets:
+            tn.close()
