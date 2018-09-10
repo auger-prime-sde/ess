@@ -135,16 +135,17 @@ class TrigDelay(object):
     re_setdelay = re.compile(r'.*OK', re.DOTALL)
     re_getdelay = re.compile(r'.*trigdelay .*: (?P<delay>\d+)', re.DOTALL)
 
-    def __init__(self, port):
+    def __init__(self, port, predefined=None):
         """Constructor.
-port - serial port to connect"""
+port - serial port to connect
+predefined - dict functype: delay with predefined values """
         self.logger = logging.getLogger('TrigDelay')
         s = None               # avoid NameError on isinstance(s, Serial) check
         try:
             s = Serial(port, baudrate=115200)
             self.logger.info('Opening serial %s', repr(s))
-            sleep(0.1)  # ad hoc constant to avoid timeout
-            s.write('?\r')
+            sleep(0.5)  # ad hoc constant to avoid timeout
+            # s.write('?\r')
             resp = readSerRE(s, TrigDelay.re_init, timeout=1,
                              logger=self.logger)
             self.version = TrigDelay.re_init.match(resp).groupdict()['version']
@@ -155,6 +156,7 @@ port - serial port to connect"""
                 s.close()
             raise SerialReadTimeout
         self.ser = s
+        self.predefined = predefined if predefined is not None else {}
 
     def __del__(self):
         self.ser.close()
@@ -172,8 +174,9 @@ port - serial port to connect"""
     @delay.setter
     def delay(self, delay):
         """Set delay in <250ns> units"""
-        self.logger.info('setting delay %d * 3/16us', delay)
-        self.ser.write('d %d\r' % delay)
+        ndelay = self.predefined.get(delay, delay)
+        self.logger.info('setting delay %d * 3/16us', ndelay)
+        self.ser.write('d %d\r' % ndelay)
         resp = readSerRE(self.ser, TrigDelay.re_setdelay,
                          timeout=1, logger=self.logger)
         self.logger.debug('delay set')
