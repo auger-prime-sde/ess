@@ -1,17 +1,22 @@
 """
  ESS procedure
- control of power supply Rohde&Schwarz HMP4040
+ control of power supply Rohde&Schwarz HMP4040 and TTi CPX400SP
 """
 
 import logging
+import re
 import threading
 from serial import Serial, SerialException
 
 POWER_OPER = ('voltage', 'currLim', 'on', 'off')
 
+
 class PowerSupply(threading.Thread):
     """Class for control of programable power supply
-Developed for Rohde & Schwarz MHP4040."""
+Developed for Rohde & Schwarz MHP4040 and for TTi CPX400SP."""
+    re_cpx = re.compile(r'.*CPX400')
+    re_hmp = re.compile(r'.*HMP4040')
+
     def __init__(self, port, timer, **kwargs):
         """Constructor.
 port - serial port to connect
@@ -20,10 +25,9 @@ kwargs - parameters for output voltage/current limit configuration
         super(PowerSupply, self).__init__()
         self.timer = timer
         self.logger = logging.getLogger('PowerSup')
-        self.NCHAN = 4       # number of output channels
         s = None
         try:
-            s = Serial(port, baudrate=9600,
+            s = Serial(port, baudrate=9600, xonxoff=True,
                        bytesize=8, parity='N', stopbits=1, timeout=0.5)
             s.write('*IDN?\n')
             resp = s.read(100)
@@ -35,7 +39,25 @@ kwargs - parameters for output voltage/current limit configuration
                 s.close()
             raise
         self.ser = s
-        self.uubch = None
+        if PowerSupply.re_cpx.match(resp):
+            setattr(PowerSupply, "output", PowerSupply._output_cpx)
+            setattr(PowerSupply, "setVoltage", PowerSupply._setVoltage_cpx)
+            setattr(PowerSupply, "setCurrLim", PowerSupply._setCurrLim_cpx)
+            setattr(PowerSupply, "setVoltCurrLim",
+                    PowerSupply._setVoltCurrLim_cpx)
+            self.NCHAN = 1       # number of output channels
+            self.uubch = 1       # the only channel in CPX400
+        elif PowerSupply.re_hmp.match(resp):
+            setattr(PowerSupply, "output", PowerSupply._output_hmp)
+            setattr(PowerSupply, "setVoltage", PowerSupply._setVoltage_hmp)
+            setattr(PowerSupply, "setCurrLim", PowerSupply._setCurrLim_hmp)
+            setattr(PowerSupply, "setVoltCurrLim",
+                    PowerSupply._setVoltCurrLim_hmp)
+            self.NCHAN = 4       # number of output channels
+            self.uubch = None    # undefined for HMP4040
+        else:
+            self.logger.error('Unknown power supply')
+            raise ValueError
         self.config(**kwargs)
 
     def run(self):
@@ -44,11 +66,11 @@ kwargs - parameters for output voltage/current limit configuration
             if self.timer.stop.is_set():
                 self.logger.info('Timer stopped, quitting PowerSupply.run()')
                 return
-            timestamp = self.timer.timestamp   # store info from timer
+            # timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if 'power' in flags:
                 self.config(**flags['power'])
-        
+
     def config(self, **kwargs):
         """Configuration of output paramters
 ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
@@ -68,12 +90,12 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
             for key in POWER_OPER:
                 if args[self.uubch][key] is None:
                     args[self.uubch][key] = args[0][key]
-        # discard eventual uubch                     
-        args.pop(0, None)  
+        # discard eventual uubch
+        args.pop(0, None)
 
         # switch off
-        chans = [i for i in args.keys() if args[i]['off'] == True]
-        self.output(chans, 'OFF')
+        chans = [i for i in args.keys() if args[i]['off']]
+        self.output(chans, 0)
         # set voltage/current limit for all channels
         for i, d in args.iteritems():
             if d['voltage'] is not None:
@@ -84,10 +106,11 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
             elif d['currLim'] is not None:
                 self.setCurrLim(i, d['currLim'])
         # switch on
-        chans = [i for i in args.keys() if args[i]['on'] == True]
-        self.output(chans, 'ON')
+        chans = [i for i in args.keys() if args[i]['on']]
+        self.output(chans, 1)
 
-    def output(self, chans, state):
+    # HMP4040 methods
+    def _output_hmp(self, chans, state):
         """Set channels in chans to state
 chans - list of channels to switch
 state - required state: 'ON' | 'OFF' | 0 | 1
@@ -98,22 +121,43 @@ state - required state: 'ON' | 'OFF' | 0 | 1
             self.logger.debug('Switch ch%d %s', ch, state)
             self.ser.write('INST OUT%d\n' % ch)
             self.ser.write('OUTP:STATE %s\n' % state)
-            
-    def setVoltage(self, ch, value):
+
+    def _setVoltage_hmp(self, ch, value):
         self.logger.debug('Set voltage ch%d: %fV', ch, value)
         self.ser.write('INST OUT%d\n' % ch)
         self.ser.write('VOLT %f\n' % value)
 
-    def setCurrLim(self, ch, value):
+    def _setCurrLim_hmp(self, ch, value):
         self.logger.debug('Set current limit ch%d: %fA', ch, value)
         self.ser.write('INST OUT%d\n' % ch)
         self.ser.write('CURR %f\n' % value)
 
-    def setVoltCurrLim(self, ch, voltage, currLim):
+    def _setVoltCurrLim_hmp(self, ch, voltage, currLim):
         self.logger.debug('Set voltage and current limit ch%d: %fV %fA',
                           ch, voltage, currLim)
         self.ser.write('INST OUT%d\n' % ch)
         self.ser.write('APPL %f, %f\n' % (voltage, currLim))
+
+    # CPX400 methods
+    def _output_cpx(self, chans, state):
+        if 1 in chans:
+            pstate = 'ON' if state else 'OFF'
+            self.logger.debug('Switch ch1 %s', pstate)
+            self.ser.write('OP1 %d\n' % state)
+
+    def _setVoltage_cpx(self, ch, value):
+        self.logger.debug('Set voltage ch1: %fV', value)
+        self.ser.write('V1 %f\n' % value)
+
+    def _setCurrLim_cpx(self, ch, value):
+        self.logger.debug('Set current limit ch: %fA', value)
+        self.ser.write('I1 %f\n' % value)
+
+    def _setVoltCurrLim_cpx(self, ch, voltage, currLim):
+        self.logger.debug('Set voltage and current limit ch: %fV %fA',
+                          voltage, currLim)
+        self.ser.write('V1 %f\n' % voltage)
+        self.ser.write('I1 %f\n' % currLim)
 
     def __del__(self):
         self.logger.info('Closing serial')
