@@ -552,7 +552,7 @@ return (None, None) nothing received or K not for us or wrong msg
 class UUBdaq(threading.Thread):
     """Thread managing data acquisition from UUBs"""
     TOUT_DAQ = 0.1    # timeout between trigger and UUBlisten cancel
-    TOUT_PREP = 0.01  # delay between afg setting and trigger
+    TOUT_PREP = 0.1   # delay between afg setting and trigger
 
     def __init__(self, timer, afg, ulisten, trigdelay,
                  gener_param=gener_funcparams()):
@@ -616,10 +616,12 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     self.ulisten.done.clear()
                     self.ulisten.details = item_dict.copy()
                     self.ulisten.uubnums = self.uubnums.copy()
-                    sleep(0.1)
+                    sleep(UUBdaq.TOUT_PREP)
                     self.afg.trigger()
                     logger.debug('trigger sent')
-                    self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
+                    finished = self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
+                    if not finished:
+                        logger.debug('timeout')
                     # stop daq at ulisten
                     self.ulisten.uubnums = set()
                     self.ulisten.clear = True
@@ -850,13 +852,22 @@ class UUBtelnet(threading.Thread):
     LOGIN = "root"
     PASSWD = "root"
 
-    def __init__(self, *uubnums):
-        self.uubnums = uubnums
+    def __init__(self, timer, *uubnums):
+        super(UUBtelnet, self).__init__()
+        self.timer = timer
+        self.uubnums = list(uubnums)
         self.telnets = [Telnet() for uubnum in self.uubnums]
+        self.uubnums2add = []
+        self.uubnums2del = []
+        self.logger = logging.getLogger('UUBtelnet')
 
-    def login(self):
-        """Login to UUBs"""
+    def login(self, uubnums=None):
+        """Login to UUBs
+uubnums - if not None, logs in only to these UUB"""
         for uubnum, tn in zip(self.uubnums, self.telnets):
+            if uubnums is not None and uubnum not in uubnums:
+                continue
+            self.logger.debug('logging to UUB %04d', uubnum)
             tn.open(uubnum2ip(uubnum))
             tn.read_until("login: ")
             tn.write(UUBtelnet.LOGIN + "\n")
@@ -866,7 +877,41 @@ class UUBtelnet(threading.Thread):
                 tn.write(cmd + "\n")
                 tn.read_until(cmd + "\r\n")
 
-    def logout(self):
-        """Logout from UUBs"""
-        for tn in self.telnets:
+    def logout(self, uubnums=None):
+        """Logout from UUBs
+uubnums - if not None, logs out only from these UUB"""
+        for uubnum, tn in zip(self.uubnums, self.telnets):
+            if uubnums is not None and uubnum not in uubnums:
+                continue
+            self.logger.debug('logging out of UUB %04d', uubnum)
             tn.close()
+
+    def run(self):
+        while True:
+            self.timer.evt.wait()
+            if self.timer.stop.is_set():
+                self.logger.info('Timer stopped, closing telnets')
+                self.logout()
+                return
+            # timestamp = self.timer.timestamp   # store info from timer
+            flags = self.timer.flags
+            while self.uubnums2add:
+                uubnum = self.uubnums2add.pop()
+                if uubnum in self.uubnums:
+                    continue
+                self.uubnums.append(uubnum)
+                self.telnets.append(Telnet())
+            while self.uubnums2del:
+                uubnum = self.uubnums2del.pop()
+                if uubnum not in self.uubnums:
+                    continue
+                ind = self.uubnums.index(uubnum)
+                tn = self.telnets.pop(ind)
+                tn.close()
+                self.uubnums.pop(ind)
+            if 'power.logout' in flags:
+                self.logger.info('logout event')
+                self.logout(flags['power.logout'])
+            if 'power.login' in flags:
+                self.logger.info('login event')
+                self.login(flags['power.login'])
