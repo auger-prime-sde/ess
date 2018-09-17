@@ -21,10 +21,10 @@ class AFG(object):
              'polarity': 'inverted',
              'ch2': False,
              'usernum': 4,
-             'hswidth': 0.625,
-             'Pvoltage': 1.6,
-             'freq': 1.0,
-             'Fvoltage': 1.6}
+             'hswidth': 0.625,  # us
+             'Pvoltage': 1.6,   # pulse amplitude in V
+             'freq': 1.0e6,     # Hz
+             'Fvoltage': 0.5}    # sine amplitude in V
     SETINIT = """\
 output1:state off
 source1:burst:mode triggered
@@ -145,7 +145,7 @@ Updates self.param and send them to AFG."""
         if setFun == 'F' or 'Fvoltage' in d and self.param['functype'] == 'F':
             self.logger.info('setting Fvoltage %fV', self.param['Fvoltage'])
             self.send("source1:voltage:level:immediate:high %fV" %
-                      self.param['Fvoltage'])
+                      (2*self.param['Fvoltage']))
         if setFun == 'F' or 'freq' in d and self.param['functype'] == 'F':
             self.logger.info('setting freq %fHz', self.param['freq'])
             ncycles = math.ceil(self.DURATION * self.param['freq'])
