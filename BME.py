@@ -121,8 +121,6 @@ timesync - sync Arduino time
                              (datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S') -
                               timestamp).total_seconds())
                 res = {'timestamp': timestamp}
-                if 'meas.point' in flags:
-                    res['meas_point'] = flags['meas.point']
                 # prefix keys from re_bme with 'bme.'
                 for k, v in d.iteritems():
                     res['bme_'+k] = float(v)
