@@ -4,16 +4,18 @@ from numpy import fft, angle, dot, outer, zeros, ones
 from numpy import sum as npsum
 import numba
 
+
 # squared norm of complex array
 @numba.vectorize([numba.float64(numba.complex128),
                   numba.float32(numba.complex64)])
 def abs2(x):
     return x.real**2 + x.imag**2
 
-(AMPLI, PEDE, PHASE, YVAL) = range(4)
 
 class HalfSineFitter(object):
     """Fit a train of half sine pulses using FFT"""
+    (AMPLI, PEDE, PHASE, YVAL) = range(4)
+
     def __init__(self, w, N=2048, FREQ=120., Npeak=5):
         self.w = w             # half period of sine in us
         # fixed parameters
@@ -38,16 +40,16 @@ Calculate train of half sine pulses of width w, separated by 3*w pedestal
             binstart = self.binstart
         argsine = pi/self.w/self.FREQ * (
             linspace(0, self.N, self.N, endpoint=False) - binstart)
-        mask = (argsine % (4*pi) < pi) & (argsine > 0) \
-               & (argsine < self.Npeak*4*pi)
+        mask = (argsine % (4*pi) < pi) & (argsine > 0) & \
+               (argsine < self.Npeak*4*pi)
         res = zeros(self.N) + pede
         res[mask] += ampli * sin(argsine[mask])
         return res
-        
+
     def _calc_model(self):
         """Calculate model data and its fft"""
         assert self.Nampli >= self.Nphase
-        self.y = self.halfsine()      # model 
+        self.y = self.halfsine()      # model
         yfft = fft.fft(self.y, axis=0)
         self.abs2 = abs2(yfft[:self.Nampli])   # norm of coefficients
         self.power = dot(self.abs2[1:], self.abs2[1:])
@@ -67,24 +69,24 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
         ampli = sqrt(dot(self.abs2[1:], yabs) / self.power)
 
         res = {'ampli': ampli}
-        if stage == AMPLI:
+        if stage == HalfSineFitter.AMPLI:
             return res
 
         # calculate pedestals
-        pede = ( abs(yfft[0, :]) - ampli * self.c0 ) / self.N
+        pede = (abs(yfft[0, :]) - ampli * self.c0) / self.N
 
         res['pede'] = pede
-        if stage == PEDE:
+        if stage == HalfSineFitter.PEDE:
             return res
 
         # calculate binstart
         mphase = outer(self.mphase, ones(Ncol))
         phasedif = unwrap(angle(yfft[:self.Nphase, :]) - mphase, axis=0)
         slope = dot(self.abs2[:self.Nphase], phasedif) / self.normphase
-        binstart = self.binstart - N/2/pi * slope 
+        binstart = self.binstart - N/2/pi * slope
 
         res['binstart'] = binstart
-        if stage == PHASE:
+        if stage == HalfSineFitter.PHASE:
             return res
 
         # calculate function values
