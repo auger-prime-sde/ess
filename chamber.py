@@ -11,6 +11,7 @@ import json
 from timer import point_ticker, list_ticker, one_tick
 from modbus import Modbus, ModbusError, Binder, BinderSegment, BinderProg
 
+
 class Chamber(threading.Thread):
     """Thread managing Climate chamber"""
 
@@ -77,6 +78,7 @@ q_resp - queue to send response"""
                 logger.info('Loading program %d', progno)
                 prog.send(self.binder, progno)
 
+
 class ChamberTicker(threading.Thread):
     """Build BinderProg and ticker from JSON description"""
 
@@ -94,24 +96,41 @@ jsonobj - either json string or json file"""
         self.progno = jso.get('progno', 0)
         self.prog = BinderProg()
         self.time_temp = []
-        mps = {}   # measurement points, {time: flags}
+        self.time_humid = []
+        mps = {}   # measurement pulses, {time: flags}
+        mfs = {}   # measurement freqs, {time: flags}
         tps = []   # test points: [time]
         pps = {}   # power operations: {time: kwargs}
         temp_prev = None
-        t = 0
+        humid_prev = None
+        time_temp_prev = time_humid_prev = t = 0
         for segment in jso['program']:
             dur = segment["duration"]
-            temp_end = segment["temperature"]
-            if temp_prev is None:  # for the first iteration
+            if 'temperature' in segment:
+                temp_end = segment["temperature"]
+                dur_temp = t + dur - time_temp_prev
+                if temp_prev is None:
+                    temp_prev = temp_end
+                if dur_temp > 0:
+                    seg = BinderSegment(temp_prev, dur_temp)
+                    self.prog.seg_temp.append(seg)
+                    self.time_temp.append((time_temp_prev, temp_prev))
                 temp_prev = temp_end
-                if dur == 0:
-                    continue
-            assert dur > 0, "Non-positive duration of segment"
-            self.prog.seg_temp.append(BinderSegment(temp_prev, dur))
-            self.time_temp.append((t, temp_prev))
-            # meas point
-            if "meas" in segment:
-                meas = self._macro(segment["meas"])
+                time_temp_prev += dur_temp
+            if 'humidity' in segment:
+                humid_end = segment["humidity"]
+                dur_humid = t + dur - time_humid_prev
+                if humid_prev is None:
+                    humid_prev = humid_end
+                if dur_humid > 0:
+                    seg = BinderSegment(humid_prev, dur_humid)
+                    self.prog.seg_humid.append(seg)
+                    self.time_humid.append((time_humid_prev, humid_prev))
+                humid_prev = humid_end
+                time_humid_prev += dur_humid
+            # meas points
+            if "meas.pulse" in segment:
+                meas = self._macro(segment["meas.pulse"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
@@ -120,6 +139,16 @@ jsonobj - either json string or json file"""
                     if offset < 0:
                         mptime += dur
                     mps[mptime] = flags
+            if "meas.freq" in segment:
+                meas = self._macro(segment["meas.freq"])
+                for mp in meas:
+                    mp = self._macro(mp)
+                    offset = self._macro(mp["offset"])
+                    flags = self._macro(mp["flags"])
+                    mptime = t + offset
+                    if offset < 0:
+                        mptime += dur
+                    mfs[mptime] = flags
             # power and test
             if "power" in segment:
                 power = self._macro(segment["power"])
@@ -143,11 +172,16 @@ jsonobj - either json string or json file"""
                     if kwargs:
                         pps[ptime] = kwargs
             t += dur
-            temp_prev = temp_end
-        self.time_temp.append((t, temp_prev))
+        self.progdur = t
         # append the last segment
-        self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
-        self.meas_points = [(mptime, mps[mptime]) for mptime in sorted(mps)]
+        if temp_prev is not None:
+            self.time_temp.append((t, temp_prev))
+            self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
+        if humid_prev is not None:
+            self.time_humid.append((t, humid_prev))
+            self.prog.seg_humid.append(BinderSegment(humid_prev, 1))
+        self.meas_pulses = [(mptime, mps[mptime]) for mptime in sorted(mps)]
+        self.meas_freqs = [(mptime, mfs[mptime]) for mptime in sorted(mfs)]
         self.power_points = [(ptime, pps[ptime]) for ptime in sorted(pps)]
         self.test_points = sorted(tps)
 
@@ -155,6 +189,18 @@ jsonobj - either json string or json file"""
         if isinstance(o, (str, unicode)):
             return self.macros.get(str(o), o)
         return o
+
+    def polyline(self, t, timevalues):
+        """Providing timevalues as a list of tuples (time, value)
+return polyline approximation at the time t"""
+        try:
+            ind = [p[0] > t for p in timevalues].index(True)
+            ((t0, val0), (t1, val1)) = timevalues[ind-1:ind+1]
+            x = float(t - t0) / (t1 - t0)
+            val = x*val1 + (1-x)*val0
+        except ValueError:    # not necessary now due to stoptime
+            val = timevalues[-1][1]
+        return val
 
     def run(self):
         logger = logging.getLogger('ChamberTicker')
@@ -169,21 +215,21 @@ jsonobj - either json string or json file"""
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if self.starttime is None or self.stoptime < timestamp or (
-                    'meas.thp' not in flags and 'meas.point' not in flags):
+                    'meas.thp' not in flags and
+                    'meas.sc' not in flags and
+                    'meas.pulse' not in flags and
+                    'meas.freq' not in flags):
                 continue
             dur = (timestamp - self.starttime).total_seconds()
             if dur < 0:
                 continue
-            try:
-                ind = [p[0] > dur for p in self.time_temp].index(True)
-                ((t0, temp0), (t1, temp1)) = self.time_temp[ind-1:ind+1]
-                x = float(dur - t0) / (t1 - t0)
-                temp = x*temp1 + (1-x)*temp0
-            except ValueError:    # not necessary now due to stoptime
-                temp = self.time_temp[-1][1]
-            res = {'timestamp': timestamp,
-                   'set_temp': temp}
-            self.q_resp.put(res)
+            res = {'timestamp': timestamp}
+            if self.time_temp:
+                res['set_temp'] = self.polyline(dur, self.time_temp)
+            if self.time_humid:
+                res['set_humid'] = self.polyline(dur, self.time_humid)
+            if len(res) > 1:
+                self.q_resp.put(res)
 
     def loadprog(self, delay=60):
         """Create one_tick ticker to load binder prog and add it to timer"""
@@ -198,16 +244,20 @@ and add them to timer"""
         starttime = datetime.now() + timedelta(seconds=delay)
         starttime = starttime.replace(second=0, microsecond=0,
                                       minute=starttime.minute+1)
-        self.stoptime = starttime + timedelta(seconds=self.time_temp[-1][0])
+        self.stoptime = starttime + timedelta(seconds=self.progdur)
         self.starttime = starttime
         self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
                                                        starttime, delay=0,
                                                        detail=self.progno))
         offset = (self.starttime - self.timer.basetime).total_seconds()
-        if self.meas_points:
-            self.timer.add_ticker('meas.point',
-                                  point_ticker(self.meas_points, offset,
-                                               'meas_point'))
+        if self.meas_pulses:
+            self.timer.add_ticker('meas.pulse',
+                                  point_ticker(self.meas_pulses, offset,
+                                               'meas_pulse_point'))
+        if self.meas_freqs:
+            self.timer.add_ticker('meas.freq',
+                                  point_ticker(self.meas_freqs, offset,
+                                               'meas_freq_point'))
         if self.power_points:
             self.timer.add_ticker('power',
                                   point_ticker(self.power_points, offset))
@@ -215,4 +265,3 @@ and add them to timer"""
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,
                                               'test_point'))
-
