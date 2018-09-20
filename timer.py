@@ -69,13 +69,15 @@ delay - delay in seconds
 
 class Timer(threading.Thread):
     """Event (periodic/from list) generator"""
+    EPS = 0.0001  # guard interval for immediates
 
     def __init__(self, basetime):
         super(Timer, self).__init__()
         self.basetime = basetime
-        self.tickers = {}  # name: [gener, offset, candidate]
+        self.tickers = {}  # name: [nextval, detail, gener, offset]
         self.tickers2add = []
         self.tickers2del = []
+        self.immediate = []  # (name: detail)
         self.timestamp = None
         self.flags = {}
         self.stop = threading.Event()
@@ -96,6 +98,10 @@ offset - an offset to basetime (seconds)
     def del_ticker(self, name):
         """Remove a ticker"""
         self.tickers2del.append(name)
+
+    def add_immediate(self, name, detail):
+        """Schedule an event with name and detail ASAP"""
+        self.immediate.append((name, detail))
 
     def run(self):
         logger = logging.getLogger('timer')
@@ -119,11 +125,18 @@ offset - an offset to basetime (seconds)
                 else:
                     logger.info('Ticker %s not present for removal', name)
 
-            if not self.tickers:
-                sleep(1)
+            if not self.tickers and not self.immediate:
+                sleep(0.3)
                 continue
+
+            # the closest possible delta-time for event
+            delta0 = int((datetime.now() - self.basetime).total_seconds() +
+                         Timer.EPS + 0.999999)
             # find minimal next values of time delta
-            delta = min([t[0] for t in self.tickers.values()])
+            if self.immediate:
+                delta = min([delta0] + [t[0] for t in self.tickers.values()])
+            else:
+                delta = min([t[0] for t in self.tickers.values()])
             newflags = {}
             tickers2del = []
             for name, t in self.tickers.iteritems():
@@ -139,6 +152,14 @@ offset - an offset to basetime (seconds)
             for name in tickers2del:
                 del self.tickers[name]
                 logger.info('Exhausted ticker %s removed', name)
+
+            if delta >= delta0:
+                while self.immediate:
+                    name = self.immediate[0][0]
+                    if name in newflags:
+                        break  # duplicate ticker.name
+                    name, detail = self.immediate.pop(0)
+                    newflags[name] = detail
 
             timestamp = self.basetime + timedelta(seconds=delta)
             now = datetime.now()
