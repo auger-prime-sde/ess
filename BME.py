@@ -108,9 +108,10 @@ timesync - sync Arduino time
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            logger.debug('BME event timestamp ' +
-                         datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
-            if 'meas.thp' in flags or 'meas.point' in flags:
+            if any([name in flags
+                    for name in ('meas.thp', 'meas.pulse', 'meas.freq')]):
+                logger.debug('BME event timestamp ' +
+                             datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
                 logger.debug('BME read')
                 self.ser.write('m')
                 resp = readSerRE(self.ser, BME.re_bmemeas, logger=logger)

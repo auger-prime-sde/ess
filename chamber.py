@@ -47,20 +47,27 @@ q_resp - queue to send response"""
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
+            if all([name not in flags
+                    for name in ('binder.state', 'binder.prog', 'meas.sc',
+                                 'meas.thp', 'meas.pulse', 'meas.freq')]):
+                continue
             logger.debug('Chamber event timestamp %s',
                          datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'binder.state' in flags:
                 if flags['binder.state'] is None:
                     logger.info('Stopping program')
                     self.binder.setState(Binder.STATE_BASIC)
-                try:
-                    progno = int(flags['binder.state'])
-                    logger.info('Starting program %d', progno)
-                    self.binder.setState(Binder.STATE_PROG, progno)
-                except Exception:
-                    logger.error('Unknown detail for binder.state: %s',
-                                 repr(flags['binder.state']))
-            if 'meas.thp' in flags or 'meas.point' in flags:
+                else:
+                    try:
+                        progno = int(flags['binder.state'])
+                        logger.info('Starting program %d', progno)
+                        self.binder.setState(Binder.STATE_PROG, progno)
+                    except Exception:
+                        logger.error('Unknown detail for binder.state: %s',
+                                     repr(flags['binder.state']))
+            if any([name in flags
+                    for name in ('meas.sc', 'meas.thp',
+                                 'meas.pulse', 'meas.freq')]):
                 logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
                 humid = self.binder.getActHumid()
@@ -69,8 +76,6 @@ q_resp - queue to send response"""
                 res = {'timestamp': timestamp,
                        'chamber_temp': temperature,
                        'chamber_humid': humid}
-                if 'meas.point' in flags:
-                    res['meas_point'] = flags['meas.point']['meas_point']
                 self.q_resp.put(res)
             if 'binder.prog' in flags:
                 progno, prog = (flags['binder.prog']['progno'],
@@ -79,13 +84,13 @@ q_resp - queue to send response"""
                 prog.send(self.binder, progno)
 
 
-class ChamberTicker(threading.Thread):
+class ESSprogram(threading.Thread):
     """Build BinderProg and ticker from JSON description"""
 
     def __init__(self, jsonobj, timer, q_resp):
         """Constructor
 jsonobj - either json string or json file"""
-        super(ChamberTicker, self).__init__()
+        super(ESSprogram, self).__init__()
         self.timer, self.q_resp = timer, q_resp
         self.starttime = self.stoptime = None
         if hasattr(jsonobj, 'read'):
@@ -94,6 +99,7 @@ jsonobj - either json string or json file"""
             jso = json.loads(jsonobj)
         self.macros = jso.get('macros', {})
         self.progno = jso.get('progno', 0)
+        self.load = jso.get('load', False)
         self.prog = BinderProg()
         self.time_temp = []
         self.time_humid = []
@@ -203,22 +209,24 @@ return polyline approximation at the time t"""
         return val
 
     def run(self):
-        logger = logging.getLogger('ChamberTicker')
+        logger = logging.getLogger('ESSprogram')
+        if self.load:
+            self.timer.add_immediate('binder.prog', {'prog': self.prog,
+                                                     'progno': self.progno})
         timestamp = None
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
-                logger.info('Timer stopped, stopping ChamberTicker')
+                logger.info('Timer stopped, stopping ESSprogram')
                 return
             if timestamp == self.timer.timestamp:
                 continue   # already processed timestamp
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if self.starttime is None or self.stoptime < timestamp or (
-                    'meas.thp' not in flags and
-                    'meas.sc' not in flags and
-                    'meas.pulse' not in flags and
-                    'meas.freq' not in flags):
+            if self.starttime is None or self.stoptime < timestamp or all(
+                    [name not in flags
+                     for name in ('meas.sc', 'meas.thp',
+                                  'meas.pulse', 'meas.freq')]):
                 continue
             dur = (timestamp - self.starttime).total_seconds()
             if dur < 0:
@@ -231,25 +239,19 @@ return polyline approximation at the time t"""
             if len(res) > 1:
                 self.q_resp.put(res)
 
-    def loadprog(self, delay=60):
-        """Create one_tick ticker to load binder prog and add it to timer"""
-        self.timer.add_ticker('binder.prog',
-                              one_tick(self.timer.basetime, delay=delay,
-                                       detail={'prog': self.prog,
-                                               'progno': self.progno}))
-
     def startprog(self, delay=31):
-        """Create ticker for meas.point and binder.state
+        """Create tickers for meas.*, power.*, telnet.* and binder.state
 and add them to timer"""
         starttime = datetime.now() + timedelta(seconds=delay)
         starttime = starttime.replace(second=0, microsecond=0,
                                       minute=starttime.minute+1)
         self.stoptime = starttime + timedelta(seconds=self.progdur)
         self.starttime = starttime
-        self.timer.add_ticker('binder.state', one_tick(self.timer.basetime,
-                                                       starttime, delay=0,
-                                                       detail=self.progno))
         offset = (self.starttime - self.timer.basetime).total_seconds()
+        # start and stop binder program
+        self.timer.add_ticker('binder.state',
+                              point_ticker(((0, self.progno),
+                                            (self.progdur, None)), offset))
         if self.meas_pulses:
             self.timer.add_ticker('meas.pulse',
                                   point_ticker(self.meas_pulses, offset,
