@@ -66,7 +66,7 @@ for functype P:
   Pvoltage - amplitude of sine in Volt (default 1.6)
 for functype F:
   freq - frequency of sinusiod in Hz (default 1e6)
-  Fvoltage - amplitude of sinusiod in Volt (default 0.8)
+  Fvoltage - amplitude of sinusiod in Volt (default 0.5)
 """
         self.logger = logging.getLogger('AFG')
         device = '/dev/usbtmc%d' % tmcid
@@ -89,13 +89,13 @@ for functype F:
             if self.fd is not None:
                 os.close(self.fd)
             raise
-        # takes about 15s
-        if zLoadUserfun:
-            self.writeUserfun(halfsine, self.param['usernum'],
-                              5000, 5000/(20*math.pi))
         # get parameters from kwargs with PARAM as default
         params = {key: kwargs.get(key, AFG.PARAM[key])
                   for key in AFG.PARAM}
+        # takes about 15s
+        if zLoadUserfun:
+            self.writeUserfun(halfsine, params['usernum'],
+                              5000, 5000/(20*math.pi))
         # initialize the AFG device
         for line in AFG.SETINIT.format(**params).splitlines():
             self.send(line)
