@@ -10,19 +10,6 @@ import pickle
 from datetime import datetime, timedelta
 from Queue import Empty
 
-def skiprec_MP(d):
-    """Check if a record should be skipped according to presence
- of meas. point
-d - dictionary where 'meas_point' is looked up
-return boolean"""
-    return 'meas_point' not in d
-
-def skiprec_DB(d):
-    """Check if a record should be skipped according to presence
- of database point
-d - dictionary where 'db_point' is looked up
-return boolean"""
-    return 'db_point' not in d
 
 class MyFormatter(string.Formatter):
     """Formatter with default values for missing keys"""
@@ -50,6 +37,7 @@ class MyFormatter(string.Formatter):
             return super(MyFormatter, self).format_field(value, spec)
         except ValueError:
             return self.missing
+
 
 class LogHandlerFile(object):
     def __init__(self, filename, formatstr, prolog='', skiprec=None,
@@ -86,6 +74,7 @@ d - dictionary key: value"""
     def __del__(self):
         self.f.close()
 
+
 class LogHandlerPickle(object):
     """LogHandler saving all records as pickles to file."""
     def __init__(self, filename=None):
@@ -94,10 +83,13 @@ class LogHandlerPickle(object):
         self.fp = open(filename, 'a')
         logging.getLogger('LogHandlerPickle').info('saving to pickle file %s',
                                                    filename)
+
     def write_rec(self, d):
         pickle.dump(d, self.fp)
+
     def __del__(self):
         self.fp.close()
+
 
 class DataLogger(threading.Thread):
     """Thread to save all results"""
@@ -139,8 +131,9 @@ timeout - interval for collecting data
                     if ts in self.records:
                         self.records[ts].update(newrec)
                     elif ts > last_ts:  # add only ts after the last written
-                        logger.debug('Added new record %s',
-                                     datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
+                        logger.debug(
+                            'Added new record %s',
+                            datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
                         self.records[ts] = newrec
                     else:
                         logger.info('Discarding an old record %s',
@@ -172,6 +165,7 @@ timeout - interval for collecting data
         self.stop.set()   # stop run()
         super(DataLogger, self).join(timeout)
 
+
 class QueView(threading.Thread):
     """Queue viewer
 Consume items from queue and display them"""
@@ -179,6 +173,7 @@ Consume items from queue and display them"""
         self.timer, self.q = timer, q
         self.timeout = 0.5
         super(QueView, self).__init__()
+
     def run(self):
         logger = logging.getLogger('QueView')
         while True:
@@ -187,6 +182,28 @@ Consume items from queue and display them"""
                 return
             try:
                 item = self.q.get(True, self.timeout)
+            except Empty:
+                continue
+            logger.debug(repr(item))
+
+
+class QuePipeView(threading.Thread):
+    """Queue viewer
+Consume items from queue in, put them to queue out and display them"""
+    def __init__(self, timer, q_in, q_out):
+        self.timer, self.q_in, self.q_out = timer, q_in, q_out
+        self.timeout = 0.5
+        super(QuePipeView, self).__init__()
+
+    def run(self):
+        logger = logging.getLogger('QuePipeView')
+        while True:
+            if self.timer.stop.is_set():
+                logger.info('Timer stopped, stopping QueView')
+                return
+            try:
+                item = self.q_in.get(True, self.timeout)
+                self.q_out.put(item)
             except Empty:
                 continue
             logger.debug(repr(item))
