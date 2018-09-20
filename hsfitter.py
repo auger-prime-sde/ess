@@ -1,8 +1,16 @@
+"""
+ ESS procedure
+ fit by sine and halfsine model functions
+"""
+
 from math import pi
-from numpy import sqrt, sin, arange, linspace, unwrap
-from numpy import fft, angle, dot, outer, zeros, ones
-from numpy import sum as npsum
+from numpy import arange, linspace, unwrap, concatenate
+from numpy import fft, angle, zeros, ones, vander
+from numpy import dot, outer, matmul, linalg
+from numpy import sqrt, sin, cos, arctan2
 import numba
+
+from dataproc import float2expo, expo2float
 
 
 # squared norm of complex array
@@ -96,4 +104,77 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
                                      pede=pede[i])
 
         res['yval'] = yf
+        return res
+
+
+class SineFitter(object):
+    """Fit sine plus decaying baseline"""
+    (AMPLI, PARAM, CHI, YFIT) = range(4)
+    YMAX = 4095
+
+    def __init__(self, N=2048, FREQ=120., NPOLY=1):
+        # fixed parameters
+        self.N = N             # number of bins
+        self.FREQ = FREQ       # ADC sampling rate in MHz
+        self.NPOLY = NPOLY     # degree of baseline polynomial
+        self.freqs = {}
+        x = arange(N, dtype='float64')
+        self.vander = vander(x, NPOLY+1, True)
+        self.x = x.reshape(N, 1)
+
+    def addFreq(self, flabel, freq=None):
+        """Add a frequncy and precompute sine and cosine arrays for it
+flabel - freq converted to expo representation
+freq - frequency of sine in Hz
+"""
+        if freq is None:
+            freq = expo2float(flabel)
+        elif flabel is None:
+            flabel = float2expo(freq)
+        if flabel in self.freqs:
+            return
+        omega = 2*pi/self.FREQ * freq/1.e6
+        matX = concatenate((cos(omega*self.x), sin(omega*self.x), self.vander),
+                           axis=1)
+        self.freqs[flabel] = matX
+
+    def fit(self, yall, flabel, stage=YFIT):
+        """Perform fit
+yall  - array(2048, Ncol)
+stage - what to calculate: AMPLI, PARAM, CHI, YVAL
+return dict with keys: ampli, param, chi, yval
+        param contains amplitude, phase and polynomial"""
+        N, Ncol = yall.shape
+        assert N == self.N
+        self.addFreq(flabel)
+        matX = self.freqs[flabel]
+        res = {'ampli': zeros(Ncol)}
+        if stage >= SineFitter.PARAM:
+            res['param'] = zeros((Ncol, 3+self.NPOLY))
+        if stage >= SineFitter.CHI:
+            res['chi'] = zeros(Ncol)
+        if stage >= SineFitter.YFIT:
+            res['yfit'] = zeros((self.N, Ncol))
+        for col in xrange(Ncol):
+            y = yall[:, col]
+            ind = (0 < y) & (y < SineFitter.YMAX)
+            ind4095 = y >= SineFitter.YMAX
+            matX1 = matX[ind]
+            y1 = y[ind]
+            N1 = y1.shape[0]
+            matM = linalg.inv(matmul(matX1.T, matX1)/N1)
+            b = matmul(matX1.T, y1)/N1
+            a = matmul(matM, b)
+            res['ampli'][col] = sqrt(a[0]*a[0] + a[1]*a[1])
+            if stage >= SineFitter.PARAM:
+                params = zeros(3+self.NPOLY)
+                params[0] = res['ampli'][col]
+                params[1] = arctan2(a[1], a[0])  # phase
+                params[2:] = a[2:]
+                res['param'][col, :] = params
+            if stage >= SineFitter.CHI:
+                res['chi'][col] = sqrt(dot(y1, y1)/N1 - dot(a, b))
+            if stage >= SineFitter.YFIT:
+                res['yfit'][ind4095, col] = SineFitter.YMAX
+                res['yfit'][ind, col] = matmul(matX1, a)
         return res
