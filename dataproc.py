@@ -66,7 +66,12 @@ class DataProcessor(threading.Thread):
                 continue
             logger.debug('processing %s', item2label(item))
             for wh in self.workhorses:
-                wh.calculate(item)
+                try:
+                    wh.calculate(item)
+                except Exception as e:
+                    logger.error('Workhorse %s with item = %s failed',
+                                 repr(wh), repr(item))
+                    logger.exception(e)
         logger.info('run finished')
 
 
@@ -89,14 +94,16 @@ optional keys (typ, timestamp, chan)
 """
 
 
-def item2label(item, **kwargs):
+def item2label(item=None, **kwargs):
     """Construct label/name for q_resp from item and kwargs
 kwargs and item are merged, item is not modified"""
-    attr = []
+    if item is None:
+        item = {}
     if kwargs:
         kwargs.update(item)
     else:
         kwargs = item
+    attr = []
     if 'typ' in kwargs:
         attr.append(kwargs['typ'])
     if 'timestamp' in kwargs:
@@ -192,17 +199,16 @@ q_resp - a logger queue
         if item['functype'] != 'P':
             return
         logging.getLogger('DP_pede').debug(
-            'Processing %s for ts %s', self.item2label(item),
-            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
+            'Processing %s', item2label(item))
         array = item['yall'][self.BINSTART:self.BINEND, :]
         mean = array.mean(axis=0)
         stddev = array.std(axis=0)
-        res = {key: item[key]
-               for key in ('timestamp', 'meas_point', 'db_point')
-               if key in item}
+        res = {'timestamp': item['timestamp']}
+        itemr = {key: item[key]
+                 for key in ('uubnum', 'voltage', 'ch2', 'functype')}
         for ch, (m, s) in enumerate(zip(mean, stddev)):
             for typ, val in (('pede', m), ('pedesig', s)):
-                label = self.item2label(item, typ=typ, chan=ch+1)
+                label = item2label(itemr, typ=typ, chan=ch+1)
                 res[label] = val
         self.q_resp.put(res)
 
@@ -222,15 +228,15 @@ hswidth - width of half-sine in microseconds
         if item['functype'] != 'P':
             return
         logging.getLogger('DP_hsampli').debug(
-            'Processing %s for ts %s', item2label(item),
-            item['timestamp'].strftime('%Y-%m-%dT%H:%M:%S'))
+            'Processing %s', item2label(item))
         hsfres = self.hsf.fit(item['yall'], hsfitter.AMPLI)
-        res = {key: item[key]
-               for key in ('timestamp', 'meas_point', 'db_point')
-               if key in item}
+        res = {'timestamp': item['timestamp']}
+        itemr = {key: item[key]
+                 for key in ('uubnum', 'voltage', 'ch2', 'functype')}
+        itemr['typ'] = 'ampli'
         for ch, ampli in enumerate(hsfres['ampli']):
-            label = self.item2label(item, chan=ch+1)
-            res['ampli_' + label] = ampli
+            label = item2label(itemr, chan=ch+1)
+            res[label] = ampli
         self.q_resp.put(res)
 
 
@@ -288,7 +294,7 @@ class DP_store(object):
         self.datadir = datadir
 
     def calculate(self, item):
-        label = item2label(item, typ='dataall', timestamp=item['timestamp'])
+        label = item2label(item)
         logging.getLogger('DP_store').debug('Processing %s', label)
-        fn = '%s/%s.txt' % (self.datadir, label)
+        fn = '%s/dataall_%s.txt' % (self.datadir, label)
         numpy.savetxt(fn, item['yall'], fmt='% 5d')
