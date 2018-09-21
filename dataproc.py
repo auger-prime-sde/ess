@@ -13,7 +13,7 @@ from datetime import datetime
 import numpy
 
 # ESS stuff
-import hsfitter
+from hsfitter import HalfSineFitter, SineFitter
 from afg import splitter_amplification
 
 
@@ -215,27 +215,31 @@ q_resp - a logger queue
 
 class DP_hsampli(object):
     """Data processor workhorse to calculate amplitude of half-sines"""
-    # parameters
-    def __init__(self, q_resp, hswidth):
+
+    def __init__(self, q_resp, hswidth, lowgains, chans):
         """Constructor.
 q_resp - a logger queue
 hswidth - width of half-sine in microseconds
-"""
+lowgains - UUB channels to process if ch2 == True
+chans - UUB channels to process if ch2 == False (all channels with signal)"""
         self.q_resp = q_resp
-        self.hsf = hsfitter.HalfSineFitter(hswidth)
+        self.hsf = HalfSineFitter(hswidth)
+        self.lowgains, self.chans = lowgains, chans
 
     def calculate(self, item):
         if item['functype'] != 'P':
             return
         logging.getLogger('DP_hsampli').debug(
             'Processing %s', item2label(item))
-        hsfres = self.hsf.fit(item['yall'], hsfitter.AMPLI)
+        chans = self.lowgains if item['ch2'] else self.chans
+        yall = item['yall'][:, [chan-1 for chan in chans]]
+        hsfres = self.hsf.fit(yall, HalfSineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
                  for key in ('uubnum', 'voltage', 'ch2', 'functype')}
         itemr['typ'] = 'ampli'
-        for ch, ampli in enumerate(hsfres['ampli']):
-            label = item2label(itemr, chan=ch+1)
+        for chan, ampli in zip(chans, hsfres['ampli']):
+            label = item2label(itemr, chan=chan)
             res[label] = ampli
         self.q_resp.put(res)
 
@@ -285,6 +289,28 @@ output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
     return res_out
 
 
+def createDPF_freq(afg, calibration=None):
+    """Create a dataprocessor filter for amplitude vs. freq dependency
+afg - AFG instance to extract Fvoltage
+calibration - not implemented yet"""
+    voltage_mV = afg.param['Fvoltage'] * 1000.
+
+    def dpfilter_freq(res_in):
+        """Dataprocessing filter
+     - calculate linear fit & correlation coeff from ampli
+    input items: ampli_u<uubnum>_c<uub channel>_v<voltage>_a<afg.ch2>P
+    data: x - real voltage amplitude after splitter [mV],
+          y - UUB ADCcount amplitude
+    output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
+                  r_u<uubnum>_c<uub channel> - correlation coefficient
+    """
+        logger = logging.getLogger('dpfilter_freq')
+        logger.debug('res_in: %s', repr(res_in))
+        logger.debug('voltage_mV: %f', voltage_mV)
+        return res_in
+    return dpfilter_freq
+
+
 class DP_store(object):
     """Data processor workhorse to store 2048x10 data"""
 
@@ -298,3 +324,35 @@ class DP_store(object):
         logging.getLogger('DP_store').debug('Processing %s', label)
         fn = '%s/dataall_%s.txt' % (self.datadir, label)
         numpy.savetxt(fn, item['yall'], fmt='% 5d')
+
+
+class DP_freq(object):
+    """Data processor workhorse to calculate amplitude of sines
+for functype F"""
+
+    def __init__(self, q_resp, lowgains, chans):
+        """Constructor.
+q_resp - a logger queue
+lowgains - UUB channels to process if ch2 == True
+chans - UUB channels to process if ch2 == False (all channels with signal)"""
+        self.q_resp = q_resp
+        self.sf = SineFitter()
+        self.lowgains, self.chans = lowgains, chans
+
+    def calculate(self, item):
+        if item['functype'] != 'F':
+            return
+        logging.getLogger('DP_freq').debug(
+            'Processing %s', item2label(item))
+        chans = self.lowgains if item['ch2'] else self.chans
+        yall = item['yall'][:, [chan-1 for chan in chans]]
+        flabel = float2expo(item['freq'])
+        sfres = self.sf.fit(yall, flabel, item['freq'], stage=SineFitter.AMPLI)
+        res = {'timestamp': item['timestamp']}
+        itemr = {key: item[key]
+                 for key in ('uubnum', 'freq', 'ch2', 'functype')}
+        itemr['typ'] = 'fampli'
+        for chan, ampli in zip(chans, sfres['ampli']):
+            label = item2label(itemr, chan=chan)
+            res[label] = ampli
+        self.q_resp.put(res)
