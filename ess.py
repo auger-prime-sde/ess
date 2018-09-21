@@ -16,11 +16,11 @@ from BME import BME, TrigDelay
 from UUB import UUBdaq, UUBlisten, UUBconvData, UUBtelnet, UUBtsc
 from chamber import Chamber, ESSprogram
 from dataproc import DataProcessor, item2label, DP_pede, DP_hsampli
-from dataproc import DP_store, dpfilter_linear
+from dataproc import DP_store, DP_freq, dpfilter_linear
 from afg import AFG
 from power import PowerSupply
 
-VERSION = '20180920'
+VERSION = '20180921'
 
 
 class ESS(object):
@@ -45,6 +45,11 @@ class ESS(object):
         self.q_resp = Queue()
         self.q_ndata = Queue()
         self.q_dp = Queue()
+
+        # UUB channels
+        self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
+        self.highgains = d.get('highgains', [2, 4, 6, 10])
+        self.chans = sorted(self.lowgains+self.highgains)
 
         # datadir
         self.datadir = dt.strftime('data-%Y%m%d/')
@@ -101,8 +106,11 @@ class ESS(object):
         # data processing
         self.dp0 = DataProcessor(self.q_dp)
         self.dp0.workhorses.append(DP_pede(self.q_resp))
-        self.dp0.workhorses.append(DP_hsampli(self.q_resp,
-                                              self.afg.param['hswidth']))
+        self.dp0.workhorses.append(DP_hsampli(
+            self.q_resp, self.afg.param['hswidth'],
+            self.lowgains, self.chans))
+        self.dp0.workhorses.append(DP_freq(
+            self.q_resp, self.lowgains, self.chans))
         self.dp0.workhorses.append(DP_store(self.datadir))
         self.dp0.start()
 
@@ -123,9 +131,6 @@ class ESS(object):
 
         #  ===== DataLogger & handlers =====
         # handler for amplitudes
-        lowgains = (1, 3, 5, 7, 9)
-        highgains = (2, 4, 6, 10)
-        chans = sorted(lowgains+highgains)
 
         self.dl = DataLogger(self.q_resp)
         # temperature
@@ -198,11 +203,11 @@ class ESS(object):
                            '{meas_pulse_point:2d}']
                 for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
                     prolog += ''.join([' | %s.ch%d' % (typ, chan)
-                                       for chan in chans])
+                                       for chan in self.chans])
                     logdata += ['{%s:%s}' % (item2label(item, uubnum=uubnum,
                                                         chan=chan, typ=typ),
                                              fmt)
-                                for chan in chans]
+                                for chan in self.chans]
                 prolog += '\n'
                 formatstr = ' '.join(logdata) + '\n'
                 lh = LogHandlerFile(
@@ -221,26 +226,60 @@ class ESS(object):
                 prolog = """\
 # Amplitudes of halfsines
 # UUB #%04d, date %s
-# columns: timestamp | meas_point | ch2 | voltage | """ % (
+# columns: timestamp | meas_pulse_point | ch2 | voltage | """ % (
                     uubnum, dt.strftime('%Y-%m-%d'))
-                prolog += ' | '.join(['ampli.ch%d' % chan for chan in chans])
+                prolog += ' | '.join(['ampli.ch%d' % chan
+                                      for chan in self.chans])
                 prolog += '\n'
                 loglines = []
                 for ch2 in ch2s:
                     for voltage in voltages:
                         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                                   '{meas_point:2d}',
+                                   '{meas_pulse_point:2d}',
                                    '%d %.1f' % (ch2, voltage)]
-                        logdata += [' '*7 if chan in highgains and ch2 == 'on'
+                        logdata += [' '*7 if (chan in self.highgains and ch2)
                                     else '{%s:7.2f}' % item2label(
                                             item, uubnum=uubnum, chan=chan,
                                             voltage=voltage, ch2=ch2)
-                                    for chan in chans]
+                                    for chan in self.chans]
                         loglines.append(' '.join(logdata))
                 formatstr = '\n'.join(loglines) + '\n\n'
                 self.dl.handlers.append(LogHandlerFile(
                     fn, formatstr, prolog=prolog,
                     skiprec=lambda d: 'meas_pulse_point' not in d))
+
+        # amplitudes of sines vs freq
+        if 'freq' in d['dataloggers']:
+            freqs, ch2s = (d['dataloggers']['freq'][key]
+                           for key in ('freqs', 'ch2s'))
+            item = {'functype': 'F', 'typ': 'fampli'}
+            for uubnum in self.uubnums:
+                fn = self.datadir + ('fampli_uub%04d' % uubnum) +\
+                     dt.strftime('-%Y%m%d.log')
+                prolog = """\
+# Amplitudes of sines depending on frequency
+# UUB #%04d, date %s
+# columns: timestamp | meas_freq_point | ch2 | freq [MHz] | """ % (
+                    uubnum, dt.strftime('%Y-%m-%d'))
+                prolog += ' | '.join(['fampli.ch%d' % chan
+                                      for chan in self.chans])
+                prolog += '\n'
+                loglines = []
+                for ch2 in ch2s:
+                    for freq in freqs:
+                        logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                                   '{meas_freq_point:2d}',
+                                   '%d %5.2f' % (ch2, freq/1e6)]
+                        logdata += [' '*7 if (chan in self.highgains and ch2)
+                                    else '{%s:7.2f}' % item2label(
+                                            item, uubnum=uubnum, chan=chan,
+                                            freq=freq, ch2=ch2)
+                                    for chan in self.chans]
+                        loglines.append(' '.join(logdata))
+                formatstr = '\n'.join(loglines) + '\n\n'
+                self.dl.handlers.append(LogHandlerFile(
+                    fn, formatstr, prolog=prolog,
+                    skiprec=lambda d: 'meas_freq_point' not in d))
 
         # linearity
         if d['dataloggers'].get('linearity', False):
@@ -251,15 +290,15 @@ class ESS(object):
 # Linearity ADC count vs. voltage analysis
 # - sensitivity [ADC count/mV] & correlation coefficient
 # UUB #%04d, date %s
-# columns: timestamp | meas_point""" % (uubnum, dt.strftime('%Y-%m-%d'))
+# columns: timestamp | meas_pulse_point""" % (uubnum, dt.strftime('%Y-%m-%d'))
                 logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                            '{meas_pulse_point:2d}']
                 for typ, fmt in (('sens', '6.3f'), ('corr', '7.5f')):
                     prolog += ''.join([' | %s.ch%d' % (typ, chan)
-                                       for chan in chans])
+                                       for chan in self.chans])
                     logdata += ['{%s:%s}' % (item2label(
                         uubnum=uubnum, chan=chan, typ=typ), fmt)
-                                for chan in chans]
+                                for chan in self.chans]
                 prolog += '\n'
                 formatstr = ' '.join(logdata) + '\n'
                 lh = LogHandlerFile(
@@ -279,7 +318,7 @@ class ESS(object):
             fn = self.datadir + dt.strftime('db-%Y%m%d.js')
             logdata = []
             for uubnum in self.uubnums:
-                for chan in chans:
+                for chan in self.chans:
                     items = [('meas_pulse_point', '{meas_pulse_point:d}'),
                              ('temp', '{set_temp:6.1f}'),
                              ('uub', '%d' % uubnum),
