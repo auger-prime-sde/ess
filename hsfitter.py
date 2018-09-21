@@ -5,12 +5,10 @@
 
 from math import pi
 from numpy import arange, linspace, unwrap, concatenate
-from numpy import fft, angle, zeros, ones, vander
+from numpy import fft, angle, zeros, ones
 from numpy import dot, outer, matmul, linalg
 from numpy import sqrt, sin, cos, arctan2
 import numba
-
-from dataproc import float2expo, expo2float
 
 
 # squared norm of complex array
@@ -119,35 +117,38 @@ class SineFitter(object):
         self.NPOLY = NPOLY     # degree of baseline polynomial
         self.freqs = {}
         x = arange(N, dtype='float64')
-        self.vander = vander(x, NPOLY+1, True)
+        # vander: vandermont matrix normalized to 1
+        self.vander = ones((N, NPOLY+1))
+        if NPOLY >= 1:
+            self.vander[:, 1] = (2*x + 1.0)/N - 1.0
+            for i in xrange(2, NPOLY):
+                self.vander[:, i] = self.vander[:, i-1] * self.vander[:, 1]
         self.x = x.reshape(N, 1)
 
-    def addFreq(self, flabel, freq=None):
+    def addFreq(self, flabel, freq):
         """Add a frequncy and precompute sine and cosine arrays for it
 flabel - freq converted to expo representation
 freq - frequency of sine in Hz
+return matrix freqs[flabel]
 """
-        if freq is None:
-            freq = expo2float(flabel)
-        elif flabel is None:
-            flabel = float2expo(freq)
         if flabel in self.freqs:
-            return
+            return self.freqs[flabel]
         omega = 2*pi/self.FREQ * freq/1.e6
         matX = concatenate((cos(omega*self.x), sin(omega*self.x), self.vander),
                            axis=1)
         self.freqs[flabel] = matX
+        return matX
 
-    def fit(self, yall, flabel, stage=YFIT):
+    def fit(self, yall, flabel, freq, stage=YFIT):
         """Perform fit
 yall  - array(2048, Ncol)
+freq - frequency of sine in Hz
 stage - what to calculate: AMPLI, PARAM, CHI, YVAL
 return dict with keys: ampli, param, chi, yval
         param contains amplitude, phase and polynomial"""
         N, Ncol = yall.shape
         assert N == self.N
-        self.addFreq(flabel)
-        matX = self.freqs[flabel]
+        matX = self.addFreq(flabel, freq)
         res = {'ampli': zeros(Ncol)}
         if stage >= SineFitter.PARAM:
             res['param'] = zeros((Ncol, 3+self.NPOLY))
