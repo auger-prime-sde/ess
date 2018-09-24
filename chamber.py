@@ -8,7 +8,7 @@ import logging
 import json
 
 # ESS stuff
-from timer import point_ticker, list_ticker, one_tick
+from timer import point_ticker, list_ticker
 from modbus import Modbus, ModbusError, Binder, BinderSegment, BinderProg
 
 
@@ -107,33 +107,43 @@ jsonobj - either json string or json file"""
         mfs = {}   # measurement freqs, {time: flags}
         tps = []   # test points: [time]
         pps = {}   # power operations: {time: kwargs}
+        lis = {}   # logins {time: flags}, flags - None or list of UUBnums
+        los = {}   # logouts {time: flags}, flags - None or list of UUBnums
         temp_prev = None
         humid_prev = None
-        time_temp_prev = time_humid_prev = t = 0
+        operc = 0
+        t = 0
         for segment in jso['program']:
             dur = segment["duration"]
-            if 'temperature' in segment:
-                temp_end = segment["temperature"]
-                dur_temp = t + dur - time_temp_prev
-                if temp_prev is None:
-                    temp_prev = temp_end
-                if dur_temp > 0:
-                    seg = BinderSegment(temp_prev, dur_temp)
-                    self.prog.seg_temp.append(seg)
-                    self.time_temp.append((time_temp_prev, temp_prev))
+            # temperature & operc
+            temp_end = segment.get("temperature", temp_prev)
+            if temp_prev is None and temp_end is not None:
                 temp_prev = temp_end
-                time_temp_prev += dur_temp
-            if 'humidity' in segment:
-                humid_end = segment["humidity"]
-                dur_humid = t + dur - time_humid_prev
-                if humid_prev is None:
-                    humid_prev = humid_end
-                if dur_humid > 0:
-                    seg = BinderSegment(humid_prev, dur_humid)
-                    self.prog.seg_humid.append(seg)
-                    self.time_humid.append((time_humid_prev, humid_prev))
+                self.time_temp.append((0, temp_prev))
+                if t > 0:
+                    seg = BinderSegment(temp_prev, t)
+                    self.prog.seg_temp.append(seg)
+                    self.time_temp.append((t, temp_prev))
+            if temp_prev is not None and dur > 0:
+                operc = segment.get("operc", operc)
+                seg = BinderSegment(temp_prev, dur, operc=operc)
+                self.prog.seg_temp.append(seg)
+                self.time_temp.append((t + dur, temp_end))
+            temp_prev = temp_end
+            # humidity
+            humid_end = segment.get("humidity", humid_prev)
+            if humid_prev is None and humid_end is not None:
                 humid_prev = humid_end
-                time_humid_prev += dur_humid
+                self.time_humid.append((0, humid_prev))
+                if t > 0:
+                    seg = BinderSegment(humid_prev, t)
+                    self.prog.seg_humid.append(seg)
+                    self.time_humid.append((t, humid_prev))
+            if humid_prev is not None and dur > 0:
+                seg = BinderSegment(humid_prev, dur)
+                self.prog.seg_humid.append(seg)
+                self.time_humid.append((t + dur, humid_end))
+            humid_prev = humid_end
             # meas points
             if "meas.pulse" in segment:
                 meas = self._macro(segment["meas.pulse"])
@@ -166,6 +176,10 @@ jsonobj - either json string or json file"""
                         ptime += dur
                     if "test" in pp:
                         tps.append(ptime)
+                    if "login" in pp:
+                        lis[ptime] = self._macro(pp["login"])
+                    if "logout" in pp:
+                        los[ptime] = self._macro(pp["logout"])
                     # kwargs for PowerSupply.config()
                     # e.g. {'ch1': (12.0, None, True, False)}
                     kwargs = {}
@@ -179,17 +193,17 @@ jsonobj - either json string or json file"""
                         pps[ptime] = kwargs
             t += dur
         self.progdur = t
-        # append the last segment
+        # append the last segments
         if temp_prev is not None:
-            self.time_temp.append((t, temp_prev))
             self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
         if humid_prev is not None:
-            self.time_humid.append((t, humid_prev))
             self.prog.seg_humid.append(BinderSegment(humid_prev, 1))
         self.meas_pulses = [(mptime, mps[mptime]) for mptime in sorted(mps)]
         self.meas_freqs = [(mptime, mfs[mptime]) for mptime in sorted(mfs)]
         self.power_points = [(ptime, pps[ptime]) for ptime in sorted(pps)]
         self.test_points = sorted(tps)
+        self.logins = [(ptime, lis[ptime]) for ptime in sorted(lis)]
+        self.logouts = [(ptime, los[ptime]) for ptime in sorted(los)]
 
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
@@ -263,6 +277,12 @@ and add them to timer"""
         if self.power_points:
             self.timer.add_ticker('power',
                                   point_ticker(self.power_points, offset))
+        if self.logins:
+            self.timer.add_ticker('power.login',
+                                  point_ticker(self.logins, offset))
+        if self.logouts:
+            self.timer.add_ticker('power.logout',
+                                  point_ticker(self.logouts, offset))
         if self.test_points:
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,
