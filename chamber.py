@@ -256,11 +256,13 @@ return polyline approximation at the time t"""
     def startprog(self, delay=31):
         """Create tickers for meas.*, power.*, telnet.* and binder.state
 and add them to timer"""
-        starttime = datetime.now() + timedelta(seconds=delay)
-        starttime = starttime.replace(second=0, microsecond=0,
-                                      minute=starttime.minute+1)
+        starttime = datetime.now() + timedelta(seconds=60+delay)
+        starttime = starttime.replace(second=0, microsecond=0)
         self.stoptime = starttime + timedelta(seconds=self.progdur)
         self.starttime = starttime
+        message = starttime.strftime('starting ESS program at %H:%M, duration')
+        message += ' %d:%02d' % (self.progdur / 60, self.progdur % 60)
+        logging.getLogger('ESSprogram').info(message)
         offset = (self.starttime - self.timer.basetime).total_seconds()
         # start and stop binder program
         self.timer.add_ticker('binder.state',
