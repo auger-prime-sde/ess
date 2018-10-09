@@ -6,7 +6,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from Queue import Queue
 
 # ESS stuff
@@ -20,7 +20,7 @@ from dataproc import DP_store, DP_freq, dpfilter_linear
 from afg import AFG
 from power import PowerSupply
 
-VERSION = '20180921'
+VERSION = '20181005'
 
 
 class ESS(object):
@@ -32,12 +32,13 @@ class ESS(object):
         else:
             d = json.loads(js)
         if 'logging' in d:
-            kwargs = {key: d['logging'][key] for key in ('level', 'format')
+            kwargs = {key: d['logging'][key]
+                      for key in ('level', 'format', 'filename')
                       if key in d['logging']}
             logging.basicConfig(**kwargs)
 
         dt = datetime.now()
-        dt = dt.replace(second=0, microsecond=0, minute=dt.minute+1)
+        dt = dt.replace(second=0, microsecond=0) + timedelta(seconds=60)
         self.timer = Timer(dt)
         self.timer.start()
 
@@ -75,7 +76,8 @@ class ESS(object):
             self.chamber.start()
 
         # AFG
-        self.afg = AFG()
+        kwargs = d.get("afg", {})
+        self.afg = AFG(**kwargs)
 
         # TrigDelay
         if 'trigdelay' in d['ports']:
@@ -126,6 +128,8 @@ class ESS(object):
             with open(fn, 'r') as fp:
                 self.essprog = ESSprogram(fp, self.timer, self.q_resp)
             self.essprog.start()
+            if 'startprog' in d['tickers']:
+                self.essprog.startprog(int(d['tickers']['startprog']))
         # login to UUBs after 30s (let UUB to properly boot)
         self.timer.add_ticker("power.login", one_tick(basetime=None, delay=30))
 
@@ -245,7 +249,7 @@ class ESS(object):
                         loglines.append(' '.join(logdata))
                 formatstr = '\n'.join(loglines) + '\n\n'
                 self.dl.handlers.append(LogHandlerFile(
-                    fn, formatstr, prolog=prolog,
+                    fn, formatstr, prolog=prolog, missing='   ~   ',
                     skiprec=lambda d: 'meas_pulse_point' not in d))
 
         # amplitudes of sines vs freq
@@ -278,7 +282,7 @@ class ESS(object):
                         loglines.append(' '.join(logdata))
                 formatstr = '\n'.join(loglines) + '\n\n'
                 self.dl.handlers.append(LogHandlerFile(
-                    fn, formatstr, prolog=prolog,
+                    fn, formatstr, prolog=prolog, missing='   ~   ',
                     skiprec=lambda d: 'meas_freq_point' not in d))
 
         # linearity
@@ -346,3 +350,12 @@ class ESS(object):
             self.dl.handlers.append(lh)
 
         self.dl.start()
+
+    def stop(self):
+        """Stop all threads"""
+        self.timer.stop.set()
+        self.timer.evt.set()
+        self.dl.stop.set()
+        self.dp0.stop.set()
+        self.ulisten.stop.set()
+        self.uconv.stop.set()
