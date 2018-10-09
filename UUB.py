@@ -148,7 +148,7 @@ class UUBtsc(threading.Thread):
              (?P<i_3V3_sc>\d+(\.\d+)?) \s* \[mA\ SC\] \s*
    P3V3  \s+ (?P<u_P3V3>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_P3V3>\d+(\.\d+)?) \s* \[mA\] \s*
-   N3V3  \s+ (?P<u_N3V3>\d+(\.\d+)?) \s* \[mV\] \s*
+   N3V3  \s+ -?(?P<u_N3V3>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_N3V3>\d+(\.\d+)?) \s* \[mA\] \s*
    5V    \s+ (?P<u_5V>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_5V>\d+(\.\d+)?) \s* \[mA\] \s*
@@ -579,7 +579,7 @@ q_dp - a queue to send numpy data
                 continue
             logger.debug('processing UUB %04d, id %08x start',
                          nd.uubnum, nd.id)
-            flags = nd.details if nd.details is not None else {}
+            flags = nd.details.copy() if nd.details is not None else {}
             flags['uubnum'] = nd.uubnum
             flags['yall'] = nd.convertData()
             self.q_dp.put(flags)
