@@ -4,7 +4,7 @@
 """
 
 from math import pi
-from numpy import arange, linspace, unwrap, concatenate
+from numpy import arange, linspace, unwrap, concatenate, full_like
 from numpy import fft, angle, zeros, ones
 from numpy import dot, outer, matmul, linalg
 from numpy import sqrt, sin, cos, arctan2
@@ -124,6 +124,7 @@ class SineFitter(object):
             for i in xrange(2, NPOLY):
                 self.vander[:, i] = self.vander[:, i-1] * self.vander[:, 1]
         self.x = x.reshape(N, 1)
+        self.crop = True
 
     def addFreq(self, flabel, freq):
         """Add a frequncy and precompute sine and cosine arrays for it
@@ -158,8 +159,12 @@ return dict with keys: ampli, param, chi, yval
             res['yfit'] = zeros((self.N, Ncol))
         for col in xrange(Ncol):
             y = yall[:, col]
-            ind = (0 < y) & (y < SineFitter.YMAX)
-            ind4095 = y >= SineFitter.YMAX
+            if self.crop:
+                ind = (0 < y) & (y < SineFitter.YMAX)
+                ind4095 = y >= SineFitter.YMAX
+            else:
+                ind = full_like(y, True, dtype=bool)
+                ind4095 = full_like(y, False, dtype=bool)
             matX1 = matX[ind]
             y1 = y[ind]
             N1 = y1.shape[0]
