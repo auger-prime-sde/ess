@@ -4,10 +4,10 @@
 """
 
 from math import pi
-from numpy import arange, linspace, unwrap, concatenate, full_like
+from numpy import arange, linspace, unwrap, full_like
 from numpy import fft, angle, zeros, ones
 from numpy import dot, outer, matmul, linalg
-from numpy import sqrt, sin, cos, arctan2
+from numpy import sqrt, sin, cos
 import numba
 
 
@@ -110,11 +110,12 @@ class SineFitter(object):
     (AMPLI, PARAM, CHI, YFIT) = range(4)
     YMAX = 4095
 
-    def __init__(self, N=2048, FREQ=120., NPOLY=1):
+    def __init__(self, N=2048, FREQ=120., NPOLY=1, NHARM=1):
         # fixed parameters
         self.N = N             # number of bins
         self.FREQ = FREQ       # ADC sampling rate in MHz
         self.NPOLY = NPOLY     # degree of baseline polynomial
+        self.NHARM = NHARM     # number of harmonics
         self.freqs = {}
         x = arange(N, dtype='float64')
         # vander: vandermont matrix normalized to 1
@@ -123,7 +124,8 @@ class SineFitter(object):
             self.vander[:, 1] = (2*x + 1.0)/N - 1.0
             for i in xrange(2, NPOLY):
                 self.vander[:, i] = self.vander[:, i-1] * self.vander[:, 1]
-        self.x = x.reshape(N, 1)
+#        self.x = x.reshape(N, 1)
+        self.x = x
         self.crop = True
 
     def addFreq(self, flabel, freq):
@@ -135,8 +137,11 @@ return matrix freqs[flabel]
         if flabel in self.freqs:
             return self.freqs[flabel]
         omega = 2*pi/self.FREQ * freq/1.e6
-        matX = concatenate((cos(omega*self.x), sin(omega*self.x), self.vander),
-                           axis=1)
+        matX = zeros((self.N, 2*self.NHARM + self.NPOLY+1))
+        for n in xrange(self.NHARM):
+            matX[:, 2*n] = cos((n+1)*omega*self.x)
+            matX[:, 2*n+1] = sin((n+1)*omega*self.x)
+        matX[:, 2*self.NHARM:] = self.vander
         self.freqs[flabel] = matX
         return matX
 
@@ -152,7 +157,7 @@ return dict with keys: ampli, param, chi, yval
         matX = self.addFreq(flabel, freq)
         res = {'ampli': zeros(Ncol)}
         if stage >= SineFitter.PARAM:
-            res['param'] = zeros((Ncol, 3+self.NPOLY))
+            res['param'] = zeros((Ncol, 2*self.NHARM + 1 + self.NPOLY))
         if stage >= SineFitter.CHI:
             res['chi'] = zeros(Ncol)
         if stage >= SineFitter.YFIT:
@@ -173,11 +178,7 @@ return dict with keys: ampli, param, chi, yval
             a = matmul(matM, b)
             res['ampli'][col] = sqrt(a[0]*a[0] + a[1]*a[1])
             if stage >= SineFitter.PARAM:
-                params = zeros(3+self.NPOLY)
-                params[0] = res['ampli'][col]
-                params[1] = arctan2(a[1], a[0])  # phase
-                params[2:] = a[2:]
-                res['param'][col, :] = params
+                res['param'][col, :] = a
             if stage >= SineFitter.CHI:
                 res['chi'][col] = sqrt(dot(y1, y1)/N1 - dot(a, b))
             if stage >= SineFitter.YFIT:
