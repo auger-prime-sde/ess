@@ -4,10 +4,13 @@
 """
 
 import os
+import sys
 import json
 import logging
+import threading
 from datetime import datetime, timedelta
 from Queue import Queue
+from prc import PRCServer
 
 # ESS stuff
 from timer import Timer, periodic_ticker, one_tick
@@ -20,7 +23,7 @@ from dataproc import DP_store, DP_freq, dpfilter_linear
 from afg import AFG
 from power import PowerSupply
 
-VERSION = '20181005'
+VERSION = '20181022'
 
 
 class ESS(object):
@@ -31,10 +34,32 @@ class ESS(object):
             d = json.load(js)
         else:
             d = json.loads(js)
+
+        # event to stop
+        self.evtstop = threading.Event()
+        self.prcport = d['ports'].get('prc', None)
+
+        # datadir
+        self.datadir = datetime.now().strftime(
+            d.get('datadir', 'data-%Y%m%d/'))
+        if self.datadir[-1] != '/':
+            self.datadir += '/'
+        if not os.path.isdir(self.datadir):
+            os.mkdir(self.datadir)
+
+        if 'comment' in d:
+            with open(self.datadir + 'README.txt', 'w') as f:
+                f.write(d['comment'] + '\n')
+
         if 'logging' in d:
             kwargs = {key: d['logging'][key]
                       for key in ('level', 'format', 'filename')
                       if key in d['logging']}
+            if 'filename' in kwargs:
+                kwargs['filename'] = datetime.now().strftime(
+                    kwargs['filename'])
+                if kwargs['filename'][0] not in ('.', '/'):
+                    kwargs['filename'] = self.datadir + kwargs['filename']
             logging.basicConfig(**kwargs)
 
         dt = datetime.now()
@@ -51,11 +76,6 @@ class ESS(object):
         self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
         self.highgains = d.get('highgains', [2, 4, 6, 10])
         self.chans = sorted(self.lowgains+self.highgains)
-
-        # datadir
-        self.datadir = dt.strftime('data-%Y%m%d/')
-        if not os.path.isdir(self.datadir):
-            os.mkdir(self.datadir)
 
         # power supply
         if 'power' in d and 'power' in d['ports']:
@@ -130,8 +150,6 @@ class ESS(object):
             self.essprog.start()
             if 'startprog' in d['tickers']:
                 self.essprog.startprog(int(d['tickers']['startprog']))
-        # login to UUBs after 30s (let UUB to properly boot)
-        self.timer.add_ticker("power.login", one_tick(basetime=None, delay=30))
 
         #  ===== DataLogger & handlers =====
         # handler for amplitudes
@@ -311,6 +329,10 @@ class ESS(object):
                 lh.filters.append(dpfilter_linear)
                 self.dl.handlers.append(lh)
 
+        # fsensitivity TBD
+        if d['dataloggers'].get('fsensitivity', False):
+            pass
+
         # database
         if d['dataloggers'].get('db_pulse', False):
             itemr = {key: d['dataloggers']['pede'][key]
@@ -359,3 +381,26 @@ class ESS(object):
         self.dp0.stop.set()
         self.ulisten.stop.set()
         self.uconv.stop.set()
+
+
+if __name__ == '__main__':
+    try:
+        with open(sys.argv[1], 'r') as fp:
+            ess = ESS(fp)
+    except (IndexError, IOError, ValueError):
+        print("Usage: %s <JSON config file>" % sys.argv[0])
+        raise
+
+    logger = logging.getLogger('ESS')
+    if ess.prcport is not None:
+        logger.info('Starting PRC server at localhost:%d', ess.prcport)
+        server = PRCServer(ip='127.0.0.1', port=ess.prcport)
+        server.add_variable('ess', ess)
+        server.start()
+        print 'PRC server started at localhost:%d' % ess.prcport
+
+    logger.debug('Waiting for ess.evtstop.')
+    ess.evtstop.wait()
+    logger.info('Stopping everything.')
+    ess.stop()
+    logger.info('Everything stopped.')

@@ -191,6 +191,8 @@ q_resp - queue to send response
             if self.timer.stop.is_set():
                 self.logger.info('UUBtsc stopped')
                 return
+        self.logger.info('added immediate power.login')
+        self.timer.add_immediate('power.login', [self.uubnum])
         self.logger.debug('UUB live, entering while loop')
         while True:
             self.timer.evt.wait()
@@ -431,8 +433,9 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                                                          self.details)
                         if not self.permanent:
                             self.uubnums.discard(uubnum)
-                        logger.info('new record UUB %d, port %d, id %08x',
-                                    *key)
+                        logger.info(
+                            'new record UUB %d, port %d, id %08x, rd%d',
+                            key[0], key[1], key[2], self.records[key].rd)
                     except struct_error:
                         logger.error('header length error (%d) ' +
                                      'from UUB %d, port %d, id %08x',
