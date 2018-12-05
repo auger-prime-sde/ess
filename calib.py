@@ -25,12 +25,16 @@ except (IndexError, IOError, ValueError):
     raise
 
 # timeouts
-TOUT_PREP = 0.2   # delay between afg setting and trigger in s
+TOUT_PREP = 0.4   # delay between afg setting and trigger in s
 TOUT_DAQ = 0.1    # timeout between trigger and oscilloscope readout
 
 datadir = datetime.now().strftime(d.get('datadir', './'))
 if not os.path.isdir(datadir):
     os.mkdir(datadir)
+
+if 'comment' in d:
+    with open(datadir + 'README.txt', 'w') as f:
+        f.write(d['comment'] + '\n')
 
 if 'logging' in d:
     kwargs = {key: d['logging'][key]
@@ -54,6 +58,7 @@ dataslice = d['dataslice'] if 'dataslice' in d else None
 # oscilloscope channels with signals
 cho = d.get('cho')
 ch9 = d.get('ch9')
+ch9ampli = d.get('ch9ampli')
 
 # sampling frequency and number of datapoints after dataslice
 mdo.send('HEADER 0')
@@ -90,8 +95,8 @@ prolog = """\
 datalog.write(prolog)
 dlog_formstr = ("%-4s %5.2f  %d %4.2f" +
                 "   %7.5f %7.5f   %7.5f %7.5f" +
-                "  %8.5f"*(2*sf.NHARM + 1 + sf.NPOLY) + "  "
-                "  %8.5f"*(2*sf.NHARM + 1 + sf.NPOLY) + "\n")
+                " %8.5f"*(2*sf.NHARM + 1 + sf.NPOLY) + "   " +
+                " %8.5f"*(2*sf.NHARM + 1 + sf.NPOLY) + "\n")
 
 fitlog = open(datadir + 'fitlog.txt', 'w')
 prolog = """\
@@ -112,8 +117,8 @@ for afg_dict, item_dict in generF(**afgkwargs):
     ch2 = afg.param['ch2']
     freq = afg.param['freq']
     flabel = float2expo(freq)
-    for ch_mdo, chan_uub in ((cho, 1), (ch9, 9)):
-        scale = 2 * voltage * splitter_amplification(ch2, chan_uub) / 6.0
+    for ch_mdo, chan_uub in ((cho, 1), (ch9, ch9ampli)):
+        scale = 2 * voltage * splitter_amplification(ch2, chan_uub) / 1.0
         mdo.send('CH%d:SCALE %f' % (ch_mdo, scale))
     mdo.send('ACQUIRE:STATE ON')
     sleep(TOUT_PREP)
@@ -141,10 +146,13 @@ datalog.close()
 
 # calculate sensitivity fit calibdata vs. voltage
 calibration = {}
-for label, vallist in calibdata.iteritems():
+for label in sorted(calibdata.keys(),
+                    key=lambda label: (label2item(label)['ch2'],
+                                       label2item(label)['freq'])):
+    vallist = calibdata[label]
     item = label2item(label)
-    sampo = splitter_amplification(item['ch2'], 0)
-    samp9 = splitter_amplification(item['ch2'], 9)
+    sampo = splitter_amplification(item['ch2'], 1)
+    samp9 = splitter_amplification(item['ch2'], ch9ampli)
     # [[ v_i, ampo_i, amp9_i], ...]
     xy = np.zeros((len(vallist), 3))
     for i, (voltage, [ampo, amp9]) in enumerate(vallist):
