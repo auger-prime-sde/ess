@@ -10,7 +10,7 @@ import string
 import itertools
 from Queue import Empty
 from datetime import datetime
-import numpy
+import numpy as np
 
 # ESS stuff
 from hsfitter import HalfSineFitter, SineFitter
@@ -128,13 +128,13 @@ kwargs and item are merged, item is not modified"""
 
 
 re_labels = [re.compile(regex) for regex in (
-    r'(?P<typ>[a-z]+)',
-    r'(?P<timestamp>20\d{12})',
-    r'u(?P<uubnum>\d{4})',
-    r'c(?P<chan>\d)',
-    r'a(?P<ch2>[01])',
-    r'v(?P<voltage>\d{2,3})',
-    r'f(?P<freq>\d{2,4})')]
+    r'(?P<typ>[a-z]+)$',
+    r'(?P<timestamp>20\d{12})$',
+    r'u(?P<uubnum>\d{4})$',
+    r'c(?P<chan>\d)$',
+    r'a(?P<ch2>[01])$',
+    r'v(?P<voltage>\d{2,3})$',
+    r'f(?P<freq>\d{2,4})$')]
 
 
 def label2item(label):
@@ -273,14 +273,14 @@ output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
     res_out = res_in.copy()
     for key, xy in data.iteritems():
         # xy = [[v1, adc1], [v2, adc2] ....]
-        xy = numpy.array(xy)
+        xy = np.array(xy)
         # xx_xy = [v1, v2, ...] * xy
         xx_xy = xy.T[0].dot(xy)
         slope = xx_xy[1] / xx_xy[0]
-        covm = numpy.cov(xy, rowvar=False)
+        covm = np.cov(xy, rowvar=False)
         # correlation coeff = cov(V, ADC) / sqrt(var(V) * var(ADC))
         if xy.shape[0] > 1:
-            coeff = covm[0][1] / numpy.sqrt(covm[0][0] * covm[1][1])
+            coeff = covm[0][1] / np.sqrt(covm[0][0] * covm[1][1])
         else:
             coeff = 0.0
         label = item2label({'uubnum': key[0]}, chan=key[1])
@@ -323,7 +323,7 @@ class DP_store(object):
         label = item2label(item)
         logging.getLogger('DP_store').debug('Processing %s', label)
         fn = '%s/dataall_%s.txt' % (self.datadir, label)
-        numpy.savetxt(fn, item['yall'], fmt='% 5d')
+        np.savetxt(fn, item['yall'], fmt='% 5d')
 
 
 class DP_freq(object):
@@ -355,4 +355,28 @@ chans - UUB channels to process if ch2 == False (all channels with signal)"""
         for chan, ampli in zip(chans, sfres['ampli']):
             label = item2label(itemr, chan=chan)
             res[label] = ampli
+        self.q_resp.put(res)
+
+
+class DP_ramp(object):
+    """Data processor workhorse to checking test ramp"""
+
+    def __init__(self, q_resp):
+        """Constructor.
+q_resp - a logger queue
+"""
+        self.q_resp = q_resp
+        self.aramp = np.arange(2048, dtype='int16')
+
+    def calculate(self, item):
+        if item['functype'] != 'R':
+            return
+        logging.getLogger('DP_ramp').debug(
+            'Processing %s', item2label(item))
+        itemr = {key: item[key] for key in ('uubnum', 'functype')}
+        res = {'timestamp': item['timestamp']}
+        for ch in range(10):
+            label = item2label(itemr, chan=ch+1)
+            yr = np.array(item['yall'][:, ch], dtype='int16') + self.aramp
+            res[label] = np.amin(yr) == np.amax(yr)
         self.q_resp.put(res)

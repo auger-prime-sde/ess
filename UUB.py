@@ -9,6 +9,7 @@ import httplib
 import logging
 import re
 import socket
+import select
 import threading
 from datetime import datetime, timedelta
 from time import sleep
@@ -21,6 +22,7 @@ import numpy
 HTTPPORT = 80
 DATAPORT = 8888    # UDP port UUB send data to
 CTRLPORT = 8887    # UDP port UUB listen for commands
+ADCPORT = 8886     # UDP port adcramp on UUB communicates
 LADDR = "192.168.31.254"  # IP address of the computer
 
 
@@ -43,6 +45,14 @@ def gener_funcparams():
 return [(timer.name, functype, generator, aflags), ...]
   aflags - parameters to store in q_resp
 """
+    def generR(**kwargs):
+        """Generator for ramp
+kwargs: <empty>
+return afg_dict, item_dict"""
+        afg_dict = {}
+        item_dict = {'functype': 'R'}
+        yield afg_dict, item_dict
+
     def generP(**kwargs):
         """Generator for functype pulse
 kwargs: ch2s, voltages
@@ -84,7 +94,9 @@ return afg_dict, item_dict"""
                         item_dict['voltage'] = v
                     yield afg_dict, item_dict
 
-    return (('meas.pulse', 'P', generP,
+    return (('meas.ramp', 'R', generR,
+             ('meas_ramp_point', 'db_ramp')),
+            ('meas.pulse', 'P', generP,
              ('meas_pulse_point', 'db_pulse')),
             ('meas.freq', 'F', generF,
              ('meas_freq_point', 'db_freq')))
@@ -315,6 +327,7 @@ gener_param - generator of measurement paramters (see gener_funcparams)
         self.uubnums = set()
         self.uubnums2add = []
         self.uubnums2del = []
+        self.adcramp = {}
 
     def run(self):
         logger = logging.getLogger('UUBdaq')
@@ -341,9 +354,13 @@ gener_param - generator of measurement paramters (see gener_funcparams)
 
             # update uubnums
             while self.uubnums2add:
-                self.uubnums.add(self.uubnums2add.pop())
+                uubnum = self.uubnums2add.pop()
+                self.uubnums.add(uubnum)
+                self.adcramp[uubnum] = ADCramp(uubnum)
             while self.uubnums2del:
-                self.uubnums.discard(self.uubnums2del.pop())
+                uubnum = self.uubnums2del.pop()
+                self.uubnums.discard(uubnum)
+                del self.adcramp[uubnum]
 
             # loop over functype/tname
             for tname in self.tnames:
@@ -356,12 +373,13 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                 for afg_dict, item_dict in self.geners[tname](**tflags[tname]):
                     logger.debug("params %s", repr(item_dict))
                     item_dict['timestamp'] = timestamp
-                    self.afg.setParams(**afg_dict)
-                    self.afg.switchOn(True)
                     self.ulisten.done.clear()
                     self.ulisten.details = item_dict.copy()
                     self.ulisten.uubnums = self.uubnums.copy()
-                    sleep(UUBdaq.TOUT_PREP)
+                    if afg_dict:
+                        self.afg.setParams(**afg_dict)
+                        self.afg.switchOn(True)
+                        sleep(UUBdaq.TOUT_PREP)
                     self.afg.trigger()
                     logger.debug('trigger sent')
                     finished = self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
@@ -370,7 +388,8 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     # stop daq at ulisten
                     self.ulisten.uubnums = set()
                     self.ulisten.clear = True
-                    self.afg.switchOn(False)
+                    if afg_dict:
+                        self.afg.switchOn(False)
                     logger.debug('DAQ completed')
         # end while(True)
         logger.info('Timer stopped, stopping UUB daq')
@@ -594,6 +613,9 @@ class UUBtelnet(threading.Thread):
     """Class making telnet to UUBs and run netscope program"""
     CMDS = ("tftp -g -r netscope.elf -l netscope 192.168.31.254",
             "chmod +x netscope",
+            "tftp -g -r adcramp.elf -l adcramp 192.168.31.254",
+            "chmod +x adcramp",
+            "./adcramp &",
             "./netscope >&/dev/null")
     LOGIN = "root"
     PASSWD = "root"
@@ -661,3 +683,81 @@ uubnums - if not None, logs out only from these UUB"""
             if 'power.login' in flags:
                 self.logger.info('login event')
                 self.login(flags['power.login'])
+
+
+def ADCtup2c(tup):
+    """Convert (adc, on/off, channelsel) tuple to char"""
+    chsel = 0
+    if 'A' in tup[2]:
+        chsel += 1
+    if 'B' in tup[2]:
+        chsel += 2
+    on = 0x20 if tup[1] else 0
+    adc = int(tup[0])
+    assert 0 <= adc < 5
+    return chr(0x40 + on + (adc << 2) + chsel)
+
+
+class ADCramp(object):
+    """Switch ADC to/from ramp test mode"""
+    def __init__(self, uubnum):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# !!! seem to be binded to lo instead of enp1s0
+#         while True:
+#             try:
+#                 sport = random.randint(12345, 23456)
+#                 self.sock.bind((LADDR, sport))
+#                 break
+#             except socket.error:
+#                 continue
+#       self.sock.setsockopt(socket.SOL_SOCKET, IN.SO_BINDTODEVICE, LIFACE)
+        self.sock.settimeout(0.01)
+        self.addr = (uubnum2ip(uubnum), ADCPORT)
+        self.logger = logging.getLogger('ADCramp %04d' % uubnum)
+
+    allON = ''.join([ADCtup2c((adc, True, 'AB')) for adc in range(5)])
+    allOFF = ''.join([ADCtup2c((adc, False, 'AB')) for adc in range(5)])
+
+    def _send_recv(self, cmd):
+        """Send command, receive response and check it.
+If OK, return True, else return False"""
+        assert len(cmd) <= 11
+        self.logger.debug('emptying recv buf')
+        self._empty_socket()
+        self.logger.debug('sending %s', repr(cmd))
+        self.sock.sendto(cmd, self.addr)
+        self.logger.debug('sent')
+        try:
+            resp, addr = self.sock.recvfrom(1)
+        except socket.timeout:
+            self.logger.info('timeout')
+            return False
+        expresp = 0x20 + len(cmd)
+        if ord(resp) != expresp:
+            self.logger.info('Unexpected respon %02X (%02X expected)',
+                             ord(resp), expresp)
+            return False
+        self.logger.debug('done OK')
+        return True
+
+    def _empty_socket(self):
+        """remove the data present on the socket"""
+        input = [self.sock]
+        while 1:
+            inputready, o, e = select.select(input, [], [], 0.0)
+            if len(inputready) == 0:
+                break
+            for s in inputready:
+                s.recv(1)
+
+    def switchOn(self):
+        """Switch all ADCs to ramp mode"""
+        self._send_recv(ADCramp.allON)
+
+    def switchOff(self):
+        """Switch all ADCs back to normal mode"""
+        self._send_recv(ADCramp.allOFF)
+
+    def kill(self):
+        """Kill adcramp deamon on UUB"""
+        self._send_recv('!')

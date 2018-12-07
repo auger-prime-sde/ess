@@ -23,30 +23,31 @@ yields (None, value)
             count -= 1
 
 
-def point_ticker(tuples, offset=0, pointname=None):
+def point_ticker(tuples, offset=0, pointname=None, timepoints=None):
     """Generator to provide ticks at points
 tuples - list of (time, detail)
 offset - offset to add to time
 pointname - if not None, add index to flags
             (i.e. flags[pointname] = point index)"""
-    pind = 0
     for t, flags in tuples:
-        if pointname is not None and isinstance(flags, dict):
+        if pointname is not None and isinstance(timepoints, dict) \
+           and isinstance(flags, dict):
             flags = flags.copy()
-            flags[pointname] = pind
-            pind += 1
+            flags[pointname] = timepoints[t]
         yield t + offset, flags
 
 
-def list_ticker(timelist, offset=0, pointname=None):
+def list_ticker(timelist, offset=0, pointname=None, timepoints=None):
     """Generator to provide ticks at <timelist> times
 timelist - list of times to tick
 offset - an offset to add to time
 pointname - if not None, add index to flags
            (i.e. flags[pointname] = point index)"""
-    pind = 0
     for t in timelist:
-        flags = {pointname: pind} if pointname is not None else None
+        if pointname is not None and isinstance(timepoints, dict):
+            flags = {pointname: timepoints[t]}
+        else:
+            flags = None
         yield t + offset, flags
 
 
