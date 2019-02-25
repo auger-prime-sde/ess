@@ -26,6 +26,20 @@ ADCPORT = 8886     # UDP port adcramp on UUB communicates
 LADDR = "192.168.31.254"  # IP address of the computer
 
 
+def uubnum2mac(uubnum):
+    """Calculate MAC address from UUB number"""
+    return '00:0a:35:00:%02x:%02x' % (uubnum >> 8, uubnum & 0xFF)
+
+
+re_mac = re.compile(r'^00:0[aA]:35:00:0([0-9a-fA-F]):([0-9a-fA-F]{2})$')
+def mac2uubnum(mac):
+    """ Calculate UUB number from MAC address"""
+    m = re_mac.match(mac)
+    assert m is not None, 'Wrong MAC address'
+    comps = [int(x, 16) for x in m.groups()]
+    return 0x100*comps[0] + comps[1]
+
+
 def uubnum2ip(uubnum):
     """Calculate IP address from UUB number"""
     return '192.168.%d.%d' % (16 + (uubnum >> 8), uubnum & 0xFF)
@@ -535,7 +549,8 @@ header - data as in `struct shwr_header'"""
         self.__dict__.update(headerdict)
         self.id &= 0x7FFFFFFF
         self.uubnum = uubnum
-        self.details = details
+        self.details = details if details is not None else {
+            'timestampmicro': datetime.now()}
         self.rawdata = bytearray(self.RAWDATASIZE)
         self.yall = None
         self.cover = Coverage(self.RAWDATASIZE)
