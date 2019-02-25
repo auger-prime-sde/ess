@@ -1,6 +1,6 @@
 """
  ESS procedure
- control of AFG 3102C
+ control of AFG 3102C/3252C
 """
 
 import logging
@@ -18,38 +18,32 @@ class AFG(object):
 
     # default values of parameters
     PARAM = {'functype': 'P',
-             'polarity': 'inverted',
-             'ch2': False,
+             'gains': (1.0, None),  # gain for channels, off if None
+             'offsets': (0.0, 0.0),    # offset for channels
              'usernum': 4,
              'hswidth': 0.625,  # us
              'Pvoltage': 1.6,   # pulse amplitude in V
              'freq': 1.0e6,     # Hz
              'Fvoltage': 0.5}    # sine amplitude in V
-    SETINIT = """\
-output1:state off
-source1:burst:mode triggered
-source1:burst:state ON
-source1:burst:tdelay 0
-source1:voltage:level:immediate:low 0
-source1:voltage:unit Vpp
-output1:impedance 50 Ohm
-output1:polarity {polarity:s}
-trigger:sequence:source ext
-output2:state off
-source2:function:shape square
-source2:frequency 2kHz
-source2:voltage:level:immediate:low -2.5V
-source2:voltage:level:immediate:high 2.5V
-output2:impedance 50 Ohm
+    SETCHANNEL = """\
+output{ch:d}:state off
+source{ch:d}:burst:mode triggered
+source{ch:d}:burst:state ON
+source{ch:d}:burst:tdelay 0
+source{ch:d}:voltage:unit Vpp
+output{ch:d}:impedance 50 Ohm
+output{ch:d}:polarity {polarity:s}
+source{ch:d}:voltage:level:immediate:{hilo:s} {zero:f}
 """
     SETFUNPULSE = """\
-source1:function user{usernum:d}
-source1:burst:ncycles 1
-source1:frequency {pulse_freq:f}MHz
+source{ch:d}:function user{usernum:d}
+source{ch:d}:burst:ncycles 1
+source{ch:d}:frequency {pulse_freq:f}MHz
+source{ch:d}:phase 0 deg
 """
     SETFUNFREQ = """\
-source1:function sinusoid
-source1:phase 90 deg
+source{ch:d}:function sinusoid
+source{ch:d}:phase 90 deg
 """
 
     def __init__(self, tmcid=1, zLoadUserfun=False, **kwargs):
@@ -58,15 +52,15 @@ tmcid - number of usbtmc device (default 1, i.e. /dev/usbtmc1)
 zLoadUserfun - if True, load halfsine as a user function
 kwargs - parameters:
   functype - type of signal P (5 half-sine pulses), F (sinusoid), default P
-  polarity - normal | inverted (default inverted)
-  ch2 - True | False - if ch2 in splitter on (default False)
+  gains - 2-tuple of voltage gain (float) or None (if the channel is off)
+  offsets - 2-tuple of voltage offsets for channels (float, volt)
 for functype P:
   usernum - user function number (default 4)
   hswidth - width of half sine in microseconds (default 0.625 us ~ 80kHz)
-  Pvoltage - amplitude of sine in Volt (default 1.6)
+  Pvoltage - amplitude of sine in volt (default 1.6)
 for functype F:
   freq - frequency of sinusiod in Hz (default 1e6)
-  Fvoltage - amplitude of sinusiod in Volt (default 0.5)
+  Fvoltage - amplitude of sinusiod in volt (default 0.5)
 """
         self.logger = logging.getLogger('AFG')
         device = '/dev/usbtmc%d' % tmcid
@@ -92,20 +86,20 @@ for functype F:
         # get parameters from kwargs with PARAM as default
         params = {key: kwargs.get(key, AFG.PARAM[key])
                   for key in AFG.PARAM}
+        # initialize the AFG device
+        self.send('trigger:sequence:source ext')
+        self.param = {'functype': None, 'gains': (None, None)}
+        self.setParams(**params)
         # takes about 15s
         if zLoadUserfun:
             self.writeUserfun(halfsine, params['usernum'],
                               5000, 5000/(20*math.pi))
-        # initialize the AFG device
-        for line in AFG.SETINIT.format(**params).splitlines():
-            self.send(line)
-        self.param = {'functype': None, 'ch2': None}
-        self.setParams(**params)
 
     def __del__(self):
-        self.logger.info('Switching off channels and closing')
-        self.send('output1:state off')
-        self.send('output2:state off')
+        self.logger.info('Switching off channel and closing')
+        for ch in (0, 1):
+            if self.param['gains'][ch] is not None:
+                self.send('output%d:state off' % (ch+1))
         os.close(self.fd)
 
     def send(self, line, lvl=logging.DEBUG):
@@ -123,44 +117,74 @@ Updates self.param and send them to AFG."""
             setFun = d['functype']
         else:
             setFun = None
-        setCh2 = 'ch2' in d and d['ch2'] != self.param['ch2']
+        setChans = set()
+        for ch in (0, 1):
+            if 'gains' in d and d['gains'][ch] != self.param['gains'][ch]:
+                if d['gains'][ch] is None:  # switch off ch before removing
+                    self.switchOn(False, (ch, ))
+                else:
+                    setChans.add(ch)
+            elif (self.param['gains'][ch] is not None and
+                  'offsets' in d and
+                  d['offsets'][ch] != self.param['offsets'][ch]):
+                setChans.add(ch)
         self.param.update({key: d[key]
                            for key in AFG.PARAM.keys() if key in d})
-        if setFun == 'P':
+        for ch in setChans:
+            self._setChannel(ch)
+        if setFun == 'P' or setChans and self.param['functype'] == 'P':
             self.logger.info('setting functype P, usernum %d, hswidth %fus',
                              self.param['usernum'], self.param['hswidth'])
             pulse_freq = 1./(20*self.param['hswidth'])  # us -> MHz
-            paramlines = AFG.SETFUNPULSE.format(pulse_freq=pulse_freq,
-                                                usernum=self.param['usernum'])
-            for line in paramlines.splitlines():
-                self.send(line)
-        if setFun == 'F':
+            chans = (0, 1) if setFun == 'P' else setChans
+            for ch in chans:
+                if self.param['gains'][ch] is None:
+                    continue
+                paramlines = AFG.SETFUNPULSE.format(
+                    ch=ch+1, pulse_freq=pulse_freq,
+                    usernum=self.param['usernum'])
+                for line in paramlines.splitlines():
+                    self.send(line)
+        if setFun == 'F' or setChans and self.param['functype'] == 'F':
             self.logger.info('setting functype F')
-            for line in AFG.SETFUNFREQ.splitlines():
-                self.send(line)
+            chans = (0, 1) if setFun == 'F' else setChans
+            for ch in chans:
+                if self.param['gains'][ch] is None:
+                    continue
+                for line in AFG.SETFUNFREQ.format(ch=ch+1).splitlines():
+                    self.send(line)
         if setFun == 'P' or 'Pvoltage' in d and self.param['functype'] == 'P':
-            self.logger.info('setting Pvoltage %fV', self.param['Pvoltage'])
-            self.send("source1:voltage:level:immediate:high %fV" %
-                      self.param['Pvoltage'])
-        if setFun == 'F' or 'Fvoltage' in d and self.param['functype'] == 'F':
+            voltage = self.param['Pvoltage']
+            self.logger.info('setting Pvoltage %fV', voltage)
+            for ch in (0, 1):
+                self._setAmpli(ch, voltage)
+        elif setFun == 'F' or (
+                'Fvoltage' in d and self.param['functype'] == 'F'):
             self.logger.info('setting Fvoltage %fV', self.param['Fvoltage'])
-            self.send("source1:voltage:level:immediate:high %fV" %
-                      (2*self.param['Fvoltage']))
+            for ch in (0, 1):
+                self._setAmpli(ch, 2*self.param['Fvoltage'])
+        elif setChans:
+            voltage = self.param['Pvoltage'] if self.param['functype'] == 'P' \
+                      else 2 * self.param['Fvoltage']
+            for ch in setChans:
+                self._setAmpli(ch, voltage)
         if setFun == 'F' or 'freq' in d and self.param['functype'] == 'F':
-            self.logger.info('setting freq %fHz', self.param['freq'])
-            ncycles = math.ceil(self.DURATION * self.param['freq'])
-            self.send("source1:frequency %fHz" % self.param['freq'])
-            self.send("source1:burst:ncycles %d" % ncycles)
-        if setCh2:
-            state = 'on' if self.param['ch2'] else 'off'
-            self.logger.info('setting ch2 %s', state)
-            self.send("output2:state " + state)
+            freq = self.param['freq']
+            self.logger.info('setting freq %fHz', freq)
+            ncycles = math.ceil(self.DURATION * freq)
+            for ch in (0, 1):
+                if self.param['gains'][ch] is None:
+                    continue
+                self.send("source%d:frequency %fHz" % (ch+1, freq))
+                self.send("source%d:burst:ncycles %d" % (ch+1, ncycles))
 
-    def switchOn(self, state=True):
-        """Switch on signal on ch1"""
+    def switchOn(self, state=True, chans=(0, 1)):
+        """Switch on/off outputs"""
         state = 'on' if state else 'off'
-        self.logger.info('setting ch1 %s', state)
-        self.send("output1:state " + state)
+        self.logger.info('setting channels %s', state)
+        for ch in chans:
+            if self.param['gains'][ch] is not None:
+                self.send("output%d:state %s" % (ch+1, state))
 
     def trigger(self):
         """Send trigger signal"""
@@ -189,6 +213,33 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
         self.send('data:lock user%d,off' % usernum)
         self.send('data:copy user%d,ememory' % usernum)
         self.send('data:lock user%d,on' % usernum)
+
+    def _setChannel(self, ch):
+        """Initilize channel ch according to gain and offset"""
+        gain = self.param['gains'][ch]
+        if gain is None:
+            return
+        zero = self.param['offsets'][ch]
+        self.logger.info('setting channel %d, gain %f, offset %f',
+                         ch+1, gain, zero)
+        hilo = 'high' if gain > 0 else 'low'  # N.B. inverted against _setAmpli
+        polarity = 'normal' if gain > 0.0 else 'inverted'
+        for line in AFG.SETCHANNEL.format(ch=ch+1, zero=zero, hilo=hilo,
+                                          polarity=polarity).splitlines():
+            self.send(line)
+
+    def _setAmpli(self, ch, voltage):
+        """Set voltage amplitude (p-p) on channel ch,
+according to gain and offset
+voltage - peak to peak amplitude
+ch - AFG channel 0 or 1
+"""
+        gain = self.param['gains'][ch]
+        if gain is None:
+            return
+        hilo = 'low' if gain > 0 else 'high'
+        self.send('source%d:voltage:level:immediate:%s %fV' %
+                  (ch+1, hilo, self.param['offsets'][ch] - gain * voltage))
 
 
 def splitter_amplification(ch2, chan):
