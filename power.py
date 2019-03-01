@@ -17,46 +17,59 @@ Developed for Rohde & Schwarz MHP4040 and for TTi CPX400SP."""
     re_cpx = re.compile(r'.*CPX400')
     re_hmp = re.compile(r'.*HMP4040')
 
-    def __init__(self, port, timer, **kwargs):
+    def __init__(self, port, timer=None, q_resp=None, **kwargs):
         """Constructor.
 port - serial port to connect
 kwargs - parameters for output voltage/current limit configuration
 """
         super(PowerSupply, self).__init__()
         self.timer = timer
-        self.logger = logging.getLogger('PowerSup')
+        self.q_resp = q_resp
+        logger = logging.getLogger('PowerSup')
         s = None
         try:
             s = Serial(port, baudrate=9600, xonxoff=True,
                        bytesize=8, parity='N', stopbits=1, timeout=0.5)
             s.write('*IDN?\n')
             resp = s.read(100)
-            self.logger.info('Connected, %s', resp)
+            logger.info('Connected, %s', resp)
         except SerialException:
-            self.logger.exception('Init serial failed')
+            logger.exception('Init serial failed')
             if isinstance(s, Serial):
-                self.logger.info('Closing serial %s', s.port)
+                logger.info('Closing serial %s', s.port)
                 s.close()
             raise
         self.ser = s
         if PowerSupply.re_cpx.match(resp):
-            setattr(PowerSupply, "output", PowerSupply._output_cpx)
-            setattr(PowerSupply, "setVoltage", PowerSupply._setVoltage_cpx)
-            setattr(PowerSupply, "setCurrLim", PowerSupply._setCurrLim_cpx)
-            setattr(PowerSupply, "setVoltCurrLim",
-                    PowerSupply._setVoltCurrLim_cpx)
+            self.logger = logging.getLogger('PowerSup_cpx')
+            setattr(self, "output",
+                    PowerSupply._output_cpx.__get__(self, PowerSupply))
+            setattr(self, "setVoltage",
+                    PowerSupply._setVoltage_cpx.__get__(self, PowerSupply))
+            setattr(self, "setCurrLim",
+                    PowerSupply._setCurrLim_cpx.__get__(self, PowerSupply))
+            setattr(self, "setVoltCurrLim",
+                    PowerSupply._setVoltCurrLim_cpx.__get__(self, PowerSupply))
+            setattr(self, "readVoltCurr",
+                    PowerSupply._readVoltCurr_cpx.__get__(self, PowerSupply))
             self.NCHAN = 1       # number of output channels
             self.uubch = 1       # the only channel in CPX400
         elif PowerSupply.re_hmp.match(resp):
-            setattr(PowerSupply, "output", PowerSupply._output_hmp)
-            setattr(PowerSupply, "setVoltage", PowerSupply._setVoltage_hmp)
-            setattr(PowerSupply, "setCurrLim", PowerSupply._setCurrLim_hmp)
-            setattr(PowerSupply, "setVoltCurrLim",
-                    PowerSupply._setVoltCurrLim_hmp)
+            self.logger = logging.getLogger('PowerSup_hmp')
+            setattr(self, "output",
+                    PowerSupply._output_hmp.__get__(self, PowerSupply))
+            setattr(self, "setVoltage",
+                    PowerSupply._setVoltage_hmp.__get__(self, PowerSupply))
+            setattr(self, "setCurrLim",
+                    PowerSupply._setCurrLim_hmp.__get__(self, PowerSupply))
+            setattr(self, "setVoltCurrLim",
+                    PowerSupply._setVoltCurrLim_hmp.__get__(self, PowerSupply))
+            setattr(self, "readVoltCurr",
+                    PowerSupply._readVoltCurr_hmp.__get__(self, PowerSupply))
             self.NCHAN = 4       # number of output channels
             self.uubch = None    # undefined for HMP4040
         else:
-            self.logger.error('Unknown power supply')
+            logger.error('Unknown power supply')
             raise ValueError
         self.config(**kwargs)
 
@@ -66,10 +79,15 @@ kwargs - parameters for output voltage/current limit configuration
             if self.timer.stop.is_set():
                 self.logger.info('Timer stopped, quitting PowerSupply.run()')
                 return
-            # timestamp = self.timer.timestamp   # store info from timer
+            timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if 'power' in flags:
                 self.config(**flags['power'])
+            if 'meas.iv' in flags and self.q_resp is not None:
+                voltage, current = self.readVoltCurr()
+                self.q_resp.put({'timestamp': timestamp,
+                                 'ps_u': voltage,
+                                 'ps_i': current})
 
     def config(self, **kwargs):
         """Configuration of output paramters
@@ -138,6 +156,30 @@ state - required state: 'ON' | 'OFF' | 0 | 1
         self.ser.write('INST OUT%d\n' % ch)
         self.ser.write('APPL %f, %f\n' % (voltage, currLim))
 
+    def _readVoltCurr_hmp(self, chans=None):
+        rchans = (self.uubch, ) if chans is None else chans
+        res = {}
+        for ch in rchans:
+            self.ser.write('INST OUT%d\n' % ch)
+            self.ser.write('MEAS:VOLT?\n')
+            respv = self.ser.read(10)
+            self.ser.write('MEAS:CURR?\n')
+            respi = self.ser.read(10)
+            try:
+                m = re.match(r'(-?[0-9]+(\.[0-9]*))', respv)
+                voltage = float(m.groups()[0])
+                m = re.match(r'(-?[0-9]+(\.[0-9]*))', respi)
+                current = float(m.groups()[0])
+            except AttributeError:
+                self.logger.error(
+                    'Error reading HMP voltage/current at ch%d :' +
+                    'respv "%s", respi "%s"', ch, repr(respv), repr(respi))
+                return None
+            self.logger.debug('Read voltage %.3fV, current %.3fA',
+                              voltage, current)
+            res[ch] = (voltage, current)
+        return res[self.uubch] if chans is None else res
+
     # CPX400 methods
     def _output_cpx(self, chans, state):
         if 1 in chans:
@@ -154,10 +196,29 @@ state - required state: 'ON' | 'OFF' | 0 | 1
         self.ser.write('I1 %f\n' % value)
 
     def _setVoltCurrLim_cpx(self, ch, voltage, currLim):
-        self.logger.debug('Set voltage and current limit ch: %fV %fA',
+        self.logger.debug('Set voltage and current limit: %fV %fA',
                           voltage, currLim)
         self.ser.write('V1 %f\n' % voltage)
         self.ser.write('I1 %f\n' % currLim)
+
+    def _readVoltCurr_cpx(self, ch=None):
+        self.ser.write('V1O?\n')
+        respv = self.ser.read(10)
+        self.ser.write('I1O?\n')
+        respi = self.ser.read(10)
+        try:
+            m = re.match(r'(-?[0-9]+(\.[0-9]*))V', respv)
+            voltage = float(m.groups()[0])
+            m = re.match(r'(-?[0-9]+(\.[0-9]*))A', respi)
+            current = float(m.groups()[0])
+        except AttributeError:
+            self.logger.error(
+                'Error reading CPX voltage/current: respv "%s", respi "%s"',
+                repr(respv), repr(respi))
+            return (None, None)
+        self.logger.debug('Read voltage %.3fV, current %.3fA',
+                          voltage, current)
+        return (voltage, current)
 
     def __del__(self):
         self.logger.info('Closing serial')
