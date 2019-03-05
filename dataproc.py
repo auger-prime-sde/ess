@@ -108,6 +108,8 @@ kwargs and item are merged, item is not modified"""
         attr.append(kwargs['typ'])
     if 'timestamp' in kwargs:
         attr.append(kwargs['timestamp'].strftime('%Y%m%d%H%M%S'))
+    elif 'timestampmicro' in kwargs:
+        attr.append(kwargs['timestampmicro'].strftime('%Y%m%d%H%M%S%f'))
     if 'uubnum' in kwargs:
         attr.append('u%04d' % kwargs['uubnum'])
     if 'chan' in kwargs:
@@ -130,6 +132,7 @@ kwargs and item are merged, item is not modified"""
 re_labels = [re.compile(regex) for regex in (
     r'(?P<typ>[a-z]+)$',
     r'(?P<timestamp>20\d{12})$',
+    r'(?P<timestampmicro>20\d{18})$',
     r'u(?P<uubnum>\d{4})$',
     r'c(?P<chan>\d)$',
     r'a(?P<ch2>[01])$',
@@ -180,6 +183,15 @@ def label2item(label):
             logging.getLogger('label2item').warning(
                 'Wrong timestamp %s (label %s)', d['timestamp'], label)
             del d['timestamp']
+    if 'timestampmicro' in d:
+        try:
+            d['timestampmicro'] = datetime.strptime(d['timestampmicro'],
+                                                    '%Y%m%d%H%M%S%f')
+        except ValueError:
+            logging.getLogger('label2item').warning(
+                'Wrong timestampmicro %s (label %s)',
+                d['timestampmicro'], label)
+            del d['timestampmicro']
     return d
 
 
