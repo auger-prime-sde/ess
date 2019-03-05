@@ -49,6 +49,7 @@ q_resp - queue to send response"""
             flags = self.timer.flags
             if all([name not in flags
                     for name in ('binder.state', 'binder.prog', 'meas.sc',
+                                 'meas.ramp', 'meas.noise', 'meas.iv',
                                  'meas.thp', 'meas.pulse', 'meas.freq')]):
                 continue
             logger.debug('Chamber event timestamp %s',
@@ -67,6 +68,7 @@ q_resp - queue to send response"""
                                      repr(flags['binder.state']))
             if any([name in flags
                     for name in ('meas.sc', 'meas.thp',
+                                 'meas.ramp', 'meas.noise', 'meas.iv',
                                  'meas.pulse', 'meas.freq')]):
                 logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
@@ -103,8 +105,11 @@ jsonobj - either json string or json file"""
         self.prog = BinderProg()
         self.time_temp = []
         self.time_humid = []
+        mrs = []   # measurement ADC ramp: [time]
+        mns = []   # measurement noise: [time]
         mps = {}   # measurement pulses, {time: flags}
         mfs = {}   # measurement freqs, {time: flags}
+        ivs = []   # measurement power supply voltage/current: [time]
         tps = []   # test points: [time]
         pps = {}   # power operations: {time: kwargs}
         lis = {}   # logins {time: flags}, flags - None or list of UUBnums
@@ -145,6 +150,24 @@ jsonobj - either json string or json file"""
                 self.time_humid.append((t + dur, humid_end))
             humid_prev = humid_end
             # meas points
+            if "meas.ramp" in segment:
+                meas = self._macro(segment["meas.ramp"])
+                for mp in meas:
+                    mp = self._macro(mp)
+                    offset = self._macro(mp["offset"])
+                    mptime = t + offset
+                    if offset < 0:
+                        mptime += dur
+                    mrs.append(mptime)
+            if "meas.noise" in segment:
+                meas = self._macro(segment["meas.noise"])
+                for mp in meas:
+                    mp = self._macro(mp)
+                    offset = self._macro(mp["offset"])
+                    mptime = t + offset
+                    if offset < 0:
+                        mptime += dur
+                    mns.append(mptime)
             if "meas.pulse" in segment:
                 meas = self._macro(segment["meas.pulse"])
                 for mp in meas:
@@ -165,6 +188,15 @@ jsonobj - either json string or json file"""
                     if offset < 0:
                         mptime += dur
                     mfs[mptime] = flags
+            if "meas.iv" in segment:
+                meas = self._macro(segment["meas.iv"])
+                for mp in meas:
+                    mp = self._macro(mp)
+                    offset = self._macro(mp["offset"])
+                    mptime = t + offset
+                    if offset < 0:
+                        mptime += dur
+                    ivs.append(mptime)
             # power and test
             if "power" in segment:
                 power = self._macro(segment["power"])
@@ -198,12 +230,18 @@ jsonobj - either json string or json file"""
             self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
         if humid_prev is not None:
             self.prog.seg_humid.append(BinderSegment(humid_prev, 1))
+        self.meas_ramps = sorted(mrs)
+        self.meas_noises = sorted(mns)
         self.meas_pulses = [(mptime, mps[mptime]) for mptime in sorted(mps)]
         self.meas_freqs = [(mptime, mfs[mptime]) for mptime in sorted(mfs)]
+        self.meas_ivs = sorted(ivs)
         self.power_points = [(ptime, pps[ptime]) for ptime in sorted(pps)]
         self.test_points = sorted(tps)
         self.logins = [(ptime, lis[ptime]) for ptime in sorted(lis)]
         self.logouts = [(ptime, los[ptime]) for ptime in sorted(los)]
+        self.timepoints = {ptime: pind for pind, ptime in enumerate(
+            sorted(set(mrs, mns, mps.keys(), mfs.keys(), ivs, pps.keys(),
+                       tps, lis.keys(), los.keys())))}
 
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
@@ -240,6 +278,7 @@ return polyline approximation at the time t"""
             if self.starttime is None or self.stoptime < timestamp or all(
                     [name not in flags
                      for name in ('meas.sc', 'meas.thp',
+                                  'meas.ramp', 'meas.noise', 'meas.iv',
                                   'meas.pulse', 'meas.freq')]):
                 continue
             dur = (timestamp - self.starttime).total_seconds()
@@ -268,14 +307,31 @@ and add them to timer"""
         self.timer.add_ticker('binder.state',
                               point_ticker(((0, self.progno),
                                             (self.progdur, None)), offset))
+        if self.meas_ramps:
+            self.timer.add_ticker('meas.ramp',
+                                  list_ticker(self.meas_ramps, offset,
+                                              'meas_ramp_point',
+                                              self.timepoints))
+        if self.meas_noises:
+            self.timer.add_ticker('meas.noise',
+                                  list_ticker(self.meas_noises, offset,
+                                              'meas_noise_point',
+                                              self.timepoints))
         if self.meas_pulses:
             self.timer.add_ticker('meas.pulse',
                                   point_ticker(self.meas_pulses, offset,
-                                               'meas_pulse_point'))
+                                               'meas_pulse_point',
+                                               self.timepoints))
         if self.meas_freqs:
             self.timer.add_ticker('meas.freq',
                                   point_ticker(self.meas_freqs, offset,
-                                               'meas_freq_point'))
+                                               'meas_freq_point',
+                                               self.timepoints))
+        if self.meas_ivs:
+            self.timer.add_ticker('meas.iv',
+                                  list_ticker(self.meas_ivs, offset,
+                                              'meas_iv_point',
+                                              self.timepoints))
         if self.power_points:
             self.timer.add_ticker('power',
                                   point_ticker(self.power_points, offset))
@@ -288,4 +344,5 @@ and add them to timer"""
         if self.test_points:
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,
-                                              'test_point'))
+                                              'test_point',
+                                              self.timepoints))
