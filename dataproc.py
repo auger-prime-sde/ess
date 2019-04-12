@@ -14,7 +14,6 @@ import numpy as np
 
 # ESS stuff
 from hsfitter import HalfSineFitter, SineFitter
-from afg import splitter_amplification
 
 
 def float2expo(x, manlength=3):
@@ -41,6 +40,17 @@ def expo2float(s):
     expo = int(s[0])
     imant = float(s[1:])
     return imant * 10 ** (expo - (len(s) - 2))
+
+
+def splitter_amplification(splitmode, chan):
+    """Amplification of Stastny's splitter
+splitmode - 0, 1, 3
+chan - channel on UUB (1-10)"""
+    if splitmode == 0:
+        return 2.0/32
+    if splitmode == 1 or chan != 9:
+        return 2.0
+    return 8.0
 
 
 class DataProcessor(threading.Thread):
@@ -78,19 +88,18 @@ class DataProcessor(threading.Thread):
 LABEL_DOC = """ Label to item (and back) conversion
 label = attr1_attr2 ... _attrn<functype>
 attr are (optional, but in this order):
-  attr       re in label   python in item       meaning
-----------------------------------------------------------
-  typ        [a-z]+      str              ampli, pede, pedesig ...
-  timestamp  \d{14}      datetime         YYYYmmddHHMMSS
-  uubnum     u\d{4}      int 0-9999       u0015
-  chan       c\d         int 1-10         c1 - c9, c0 .. channels 1 - 10
-  ch2        a[01]       False/True       splitter ch2 on/off
-  voltage    v\d{2,3}    float            voltage coded as v1.v2v3 [volt]
-  freq       f\d{2,4}    float            EM1M2M3 coded freq M1.M2M3*10^E Hz
-  functype   [A-Z]       char             P - pulse series, F - sine
-
-mandatory keys: uubnum, ch2, voltage/freq, functype
-optional keys (typ, timestamp, chan)
+  attr          re in label   python in item       meaning
+-------------------------------------------------------------------------------
+  typ             [a-z]+      str            ampli, pede, pedesig ...
+  timestamp       \d{14}      datetime       YYYYmmddHHMMSS (excl. tsmicro)
+  timestampmicro  \d{14}      datetime       YYYYmmddHHMMSSffffff
+  uubnum          u\d{4}      int 0-9999     u0015
+  chan            c\d         int 1-10       c1 - c9, c0 .. channels 1 - 10
+  splitmode       a[013]      0, 1, 3        splitter mode
+  voltage         v\d{2,3}    float          voltage coded as v1.v2v3 [volt]
+  freq            f\d{2,4}    float          EM1M2M3 coded freq M1.M2M3*10^E Hz
+  functype        [A-Z]       char           P - pulse series, F - sine,
+                                             N - noise, R - ramp
 """
 
 
@@ -115,16 +124,19 @@ kwargs and item are merged, item is not modified"""
     if 'chan' in kwargs:
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
-    if 'ch2' in kwargs:
-        attr.append('a1' if kwargs['ch2'] else 'a0')
     functype = kwargs.get('functype', '')
-    if 'voltage' in kwargs:
+    if 'splitmode' in kwargs and functype in ('P', 'F'):
+        assert kwargs['splitmode'] in (0, 1, 3)
+        attr.append('a%d' % kwargs['splitmode'])
+    if 'voltage' in kwargs and functype in ('P', 'F'):
         svolt = 'v%03d' % int(kwargs['voltage'] * 100.)
         if(svolt[-1] == '0'):
             svolt = svolt[:-1]
         attr.append(svolt)
-    if functype == 'F':
-        if 'freq' in kwargs:
+    if 'functype' == 'F':
+        if 'flabel' in kwargs:
+            attr.append('f' + kwargs['flabel'])
+        elif 'freq' in kwargs:
             attr.append('f' + float2expo(kwargs['freq'], manlength=3))
     return '_'.join(attr) + functype
 
@@ -135,9 +147,9 @@ re_labels = [re.compile(regex) for regex in (
     r'(?P<timestampmicro>20\d{18})$',
     r'u(?P<uubnum>\d{4})$',
     r'c(?P<chan>\d)$',
-    r'a(?P<ch2>[01])$',
+    r'a(?P<splitmode>[013])$',
     r'v(?P<voltage>\d{2,3})$',
-    r'f(?P<freq>\d{2,4})$')]
+    r'f(?P<flabel>\d{2,4})$')]
 
 
 def label2item(label):
@@ -159,23 +171,22 @@ def label2item(label):
         attr = attrs.pop(0)
 
     # change strings from re to Python objects
-    # uubnum and chan to integers
-    d.update({key: int(d[key]) for key in ('uubnum', 'chan') if key in d})
+    # uubnum, chan and splitmode to integers
+    d.update({key: int(d[key])
+              for key in ('uubnum', 'chan', 'splitmode') if key in d})
     if 'chan' in d and d['chan'] == 0:
         d['chan'] = 10
     # convert voltage back to float and chan 0 -> 10
     if 'voltage' in d:
         svolt = d['voltage']
         d['voltage'] = float('%c.%s' % (svolt[0], svolt[1:]))
-    if 'freq' in d:
+    if 'flabel' in d:
         try:
-            d['freq'] = expo2float(d['freq'])
+            d['freq'] = expo2float(d['flabel'])
         except AssertionError:
             logging.getLogger('label2item').warning(
                 'Wrong expo2float argument %s', d['freq'])
-            del d['freq']
-    if 'ch2' in d:
-        d['ch2'] = d['ch2'] == '1'
+            del d['flabel']
     if 'timestamp' in d:
         try:
             d['timestamp'] = datetime.strptime(d['timestamp'], '%Y%m%d%H%M%S')
@@ -198,8 +209,8 @@ def label2item(label):
 class DP_pede(object):
     """Data processor workhorse to calculate pedestals"""
     # parameters
-    BINSTART = 50
-    BINEND = 550
+    BINSTART = 0
+    BINEND = 2047
 
     def __init__(self, q_resp):
         """Constructor.
@@ -208,7 +219,7 @@ q_resp - a logger queue
         self.q_resp = q_resp
 
     def calculate(self, item):
-        if item['functype'] != 'P':
+        if item['functype'] != 'N':
             return
         logging.getLogger('DP_pede').debug(
             'Processing %s', item2label(item))
@@ -217,7 +228,7 @@ q_resp - a logger queue
         stddev = array.std(axis=0)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
-                 for key in ('uubnum', 'voltage', 'ch2', 'functype')}
+                 for key in ('uubnum', 'functype')}
         for ch, (m, s) in enumerate(zip(mean, stddev)):
             for typ, val in (('pede', m), ('pedesig', s)):
                 label = item2label(itemr, typ=typ, chan=ch+1)
@@ -228,12 +239,19 @@ q_resp - a logger queue
 class DP_hsampli(object):
     """Data processor workhorse to calculate amplitude of half-sines"""
 
-    def __init__(self, q_resp, hswidth, lowgains, chans):
+    def __init__(self, q_resp, hswidth, lowgains, chans, **kwargs):
         """Constructor.
 q_resp - a logger queue
 hswidth - width of half-sine in microseconds
-lowgains - UUB channels to process if ch2 == True
-chans - UUB channels to process if ch2 == False (all channels with signal)"""
+lowgains - UUB channels to process if splitmode == 1
+chans - all UUB channels to process (all channels with signal)
+kwargs: splitmode, voltage (fixed paramters)"""
+        self.q_resp = q_resp
+        self.sf = SineFitter()
+        self.lowgains, self.chans = lowgains, chans
+        self.keys = {key: kwargs[key]
+                     for key in ('splitmode', 'voltage')
+                     if key in kwargs}
         self.q_resp = q_resp
         self.hsf = HalfSineFitter(hswidth)
         self.lowgains, self.chans = lowgains, chans
@@ -243,12 +261,14 @@ chans - UUB channels to process if ch2 == False (all channels with signal)"""
             return
         logging.getLogger('DP_hsampli').debug(
             'Processing %s', item2label(item))
-        chans = self.lowgains if item['ch2'] else self.chans
+        item = item.copy()
+        item.update(self.keys)
+        chans = self.lowgains if item['splitmode'] == 1 else self.chans
         yall = item['yall'][:, [chan-1 for chan in chans]]
         hsfres = self.hsf.fit(yall, HalfSineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
-                 for key in ('uubnum', 'voltage', 'ch2', 'functype')}
+                 for key in ('functype', 'uubnum', 'splitmode', 'voltage')}
         itemr['typ'] = 'ampli'
         for chan, ampli in zip(chans, hsfres['ampli']):
             label = item2label(itemr, chan=chan)
@@ -256,84 +276,17 @@ chans - UUB channels to process if ch2 == False (all channels with signal)"""
         self.q_resp.put(res)
 
 
-def dpfilter_linear(res_in):
-    """Dataprocessing filter
- - calculate linear fit & correlation coeff from ampli
-input items: ampli_u<uubnum>_c<uub channel>_v<voltage>_a<afg.ch2>P
-data: x - real voltage amplitude after splitter [mV],
-      y - UUB ADCcount amplitude
-output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
-              r_u<uubnum>_c<uub channel> - correlation coefficient
-"""
-    # logging.getLogger('dpfilter_linear').debug('res_in: %s', repr(res_in))
-    lowgain = (1, 3, 5, 7, 9)  # UUB low and low-low gain channels
-    highgain = (2, 4, 6, 10)   # UUB high gain channels except not connected 8
-    data = {}
-    for label, adcvalue in res_in.iteritems():
-        d = label2item(label)
-        if d is None or 'typ' not in d or d['typ'] != 'ampli':
-            continue
-        chan, ch2 = d['chan'], d['ch2']
-        if not(chan in lowgain or chan in highgain and not ch2):
-            continue
-        # voltage in mV
-        voltage = 1000*d['voltage'] * splitter_amplification(ch2, chan)
-        key = (d['uubnum'], chan)
-        if key not in data:
-            data[key] = []
-        data[key].append((voltage, adcvalue))
-    res_out = res_in.copy()
-    for key, xy in data.iteritems():
-        # xy = [[v1, adc1], [v2, adc2] ....]
-        xy = np.array(xy)
-        # xx_xy = [v1, v2, ...] * xy
-        xx_xy = xy.T[0].dot(xy)
-        slope = xx_xy[1] / xx_xy[0]
-        covm = np.cov(xy, rowvar=False)
-        # correlation coeff = cov(V, ADC) / sqrt(var(V) * var(ADC))
-        if xy.shape[0] > 1:
-            coeff = covm[0][1] / np.sqrt(covm[0][0] * covm[1][1])
-        else:
-            coeff = 0.0
-        label = item2label({'uubnum': key[0]}, chan=key[1])
-        res_out['sens_'+label] = slope
-        res_out['corr_'+label] = coeff
-    return res_out
-
-
-def createDPF_freq(afg, calibration=None):
-    """Create a dataprocessor filter for amplitude vs. freq dependency
-afg - AFG instance to extract Fvoltage
-calibration - not implemented yet"""
-    voltage_mV = afg.param['Fvoltage'] * 1000.
-
-    def dpfilter_freq(res_in):
-        """Dataprocessing filter
-     - calculate linear fit & correlation coeff from ampli
-    input items: ampli_u<uubnum>_c<uub channel>_v<voltage>_a<afg.ch2>P
-    data: x - real voltage amplitude after splitter [mV],
-          y - UUB ADCcount amplitude
-    output items: sens_u<uubnum>_c<uub channel> - sensitivity: ADC counts / mV
-                  r_u<uubnum>_c<uub channel> - correlation coefficient
-    """
-        logger = logging.getLogger('dpfilter_freq')
-        logger.debug('res_in: %s', repr(res_in))
-        logger.debug('voltage_mV: %f', voltage_mV)
-        return res_in
-    return dpfilter_freq
-
-
 class DP_store(object):
     """Data processor workhorse to store 2048x10 data"""
 
     def __init__(self, datadir):
-        """Constructor.
-"""
+        """Constructor."""
         self.datadir = datadir
+        self.logger = logging.getLogger('DP_store')
 
     def calculate(self, item):
         label = item2label(item)
-        logging.getLogger('DP_store').debug('Processing %s', label)
+        self.logger.debug('Processing %s', label)
         fn = '%s/dataall_%s.txt' % (self.datadir, label)
         np.savetxt(fn, item['yall'], fmt='% 5d')
 
@@ -342,27 +295,35 @@ class DP_freq(object):
     """Data processor workhorse to calculate amplitude of sines
 for functype F"""
 
-    def __init__(self, q_resp, lowgains, chans):
+    def __init__(self, q_resp, lowgains, chans, **kwargs):
         """Constructor.
 q_resp - a logger queue
-lowgains - UUB channels to process if ch2 == True
-chans - UUB channels to process if ch2 == False (all channels with signal)"""
+lowgains - UUB channels to process when splitmode > 0
+chans - UUB channels to process when splitmode = 0
+        (all channels with signal)
+kwargs: freq, splitmode, voltage (fixed paramters)"""
         self.q_resp = q_resp
         self.sf = SineFitter()
         self.lowgains, self.chans = lowgains, chans
+        self.keys = {key: kwargs[key]
+                     for key in ('freq', 'splitmode', 'voltage')
+                     if key in kwargs}
 
     def calculate(self, item):
         if item['functype'] != 'F':
             return
         logging.getLogger('DP_freq').debug(
             'Processing %s', item2label(item))
-        chans = self.lowgains if item['ch2'] else self.chans
+        item = item.copy()
+        item.update(self.keys)
+        chans = self.lowgains if item['splitmode'] > 0 else self.chans
         yall = item['yall'][:, [chan-1 for chan in chans]]
         flabel = float2expo(item['freq'])
         sfres = self.sf.fit(yall, flabel, item['freq'], stage=SineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
-                 for key in ('uubnum', 'freq', 'ch2', 'functype')}
+                 for key in ('functype', 'uubnum',
+                             'freq', 'splitmode', 'voltage')}
         itemr['typ'] = 'fampli'
         for chan, ampli in zip(chans, sfres['ampli']):
             label = item2label(itemr, chan=chan)
@@ -390,5 +351,121 @@ q_resp - a logger queue
         for ch in range(10):
             label = item2label(itemr, chan=ch+1)
             yr = np.array(item['yall'][:, ch], dtype='int16') + self.aramp
+            yr %= 4096
             res[label] = np.amin(yr) == np.amax(yr)
         self.q_resp.put(res)
+
+
+def make_DPfilter_linear(lowgains, highgains):
+    """Dataprocessing filter
+ - calculate linear fit & correlation coeff from ampli
+input items:
+   typ: ampli, functype: P + uubnum, chan, splitmode, voltage
+or
+   typ: fampli, functype: F + uubnum, chan, splitmode, voltage, freq
+data: x - real voltage amplitude after splitter [mV],
+      y - UUB ADCcount amplitude
+output items:
+    gain_u<uubnum>_c<uub channel> - gain: ADC counts / mV
+    lin_u<uubnum>_c<uub channel> - linearity measure
+or
+    fgain_u<uubnum>_c<uub channel>_f<freq> - gain: ADC counts / mV
+    flin_u<uubnum>_c<uub channel>_f<freq>  - linearity measure
+"""
+    def filter_linear(res_in):
+        data = {}
+        for label, adcvalue in res_in.iteritems():
+            d = label2item(label)
+            if d is None or 'typ' not in d or \
+               d['typ'] not in ('ampli', 'fampli'):
+                continue
+            chan, splitmode = d['chan'], d['splitmode']
+            if not(chan in lowgains or chan in highgains and splitmode == 0):
+                continue
+            # voltage in mV
+            volt = 1000*d['voltage'] * splitter_amplification(splitmode, chan)
+            if d['typ'] == 'ampli':
+                key = (d['uubnum'], chan)
+            else:
+                key = (d['uubnum'], chan, float2expo(d['freq']))
+            if key not in data:
+                data[key] = []
+            data[key].append((volt, adcvalue))
+        res_out = res_in.copy()
+        for key, xy in data.iteritems():
+            # xy = [[v1, adc1], [v2, adc2] ....]
+            xy = np.array(xy)
+            # xx_xy = [v1, v2, ...] * xy
+            xx_xy = xy.T[0].dot(xy)
+            slope = xx_xy[1] / xx_xy[0]
+            covm = np.cov(xy, rowvar=False)
+            # correlation coeff = cov(V, ADC) / sqrt(var(V) * var(ADC))
+            if xy.shape[0] > 1:
+                coeff = 1.0 - covm[0][1] / np.sqrt(covm[0][0] * covm[1][1])
+            else:
+                coeff = 1.0
+            if d['typ'] == 'ampli':
+                labelgain = item2label(typ='gain', uubnum=key[0], chan=key[1])
+                labellin = item2label(typ='lin', uubnum=key[0], chan=key[1])
+            else:
+                labelgain = item2label(typ='fgain', uubnum=key[0], chan=key[1],
+                                       freq=expo2float(key[2]))
+                labellin = item2label(typ='flin', uubnum=key[0], chan=key[1],
+                                      freq=expo2float(key[2]))
+            res_out[labelgain] = slope
+            res_out[labellin] = coeff
+        return res_out
+    return filter_linear
+
+
+def make_DPfilter_cutoff():
+    """Dataprocessing filter
+ - calculate cut-off frequency from freqency gains
+input items:
+    fgain_u<uubnum>_c<uub channel>_f<freq> - frequency gain: ADC counts / mV
+output items:
+    cutoff_u<uubnum>_c<uub channel> - cut-off frequency [MHz]"""
+    def filter_cutoff(res_in):
+        data = {}
+        for label, value in res_in.iteritems():
+            d = label2item(label)
+            if d is None or 'typ' != 'fgain':
+                continue
+            key = (d['uubnum'], d['chan'], d['flabel'])
+            data[key] = value
+        # process data TBD
+        nkeys = set([(key[0], key[1]) for key in data.iterkeys()])
+        res_out = {item2label(typ='cutoff', uubnum=key[0], chan=key[1]): 56.78
+                   for key in nkeys}
+        res_out['timestamp'] = res_in['timestamp']
+        res_out['meas_point'] = res_in['meas_point']
+        return res_out
+    return filter_cutoff
+
+
+def make_DPfilter_ramp(uubnums):
+    """Dataprocessing filter
+Check that for all UUBs and channels, all ramps are correct
+log failed or missing labels.
+res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
+    def filter_ramp(res_in):
+        data = {item2label(functype='R', uubnum=uubnum, chan=ch+1): None
+                for uubnum in uubnums
+                for ch in range(10)}
+        for label, value in res_in.iteritems():
+            d = label2item(label)
+            if d is None or 'functype' not in d or d['functype'] != 'R':
+                continue
+            data[label] = value
+        missing = [label for label, value in data.iteritems() if value is None]
+        failed = [label for label, value in data.iteritems() if value is False]
+        res_out = {key: res_in[key]
+                   for key in ('timestamp', 'meas_ramp', 'meas_point',
+                               'db_ramp')
+                   if key in res_in}
+        if missing:
+            res_out['ramp_missing'] = missing
+        if failed:
+            res_out['ramp_failed'] = failed
+        return res_out
+    return filter_ramp

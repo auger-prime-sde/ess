@@ -10,6 +10,8 @@ import pickle
 from datetime import datetime, timedelta
 from Queue import Empty
 
+from dataproc import item2label, float2expo
+
 
 class MyFormatter(string.Formatter):
     """Formatter with default values for missing keys"""
@@ -44,6 +46,7 @@ class LogHandlerFile(object):
                  missing='~', missing_keys=None):
         self.f = open(filename, 'a')
         self.f.write(prolog)
+        self.f.flush()
         self.formatstr = formatstr
         formatter = MyFormatter(missing)
         # extract keys from formatstr
@@ -58,17 +61,49 @@ class LogHandlerFile(object):
                                           if k in missing_keys)
         self.formatter = formatter
         self.skiprec = skiprec
-        self.filters = []
 
     def write_rec(self, d):
         """Write one record to log
 d - dictionary key: value"""
         if self.skiprec is not None and self.skiprec(d):
             return
-        for f in self.filters:
-            d = f(d)
         record = self.formatter.format(self.formatstr, **d)
         self.f.write(record)
+        self.f.flush()
+
+    def __del__(self):
+        self.f.close()
+
+
+class LogHandlerRamp(object):
+    prolog = """\
+# Ramp test results
+# date %s
+# columns: timestamp | meas_point | OK
+#   _or_   timestamp | meas_point | failed: <label list> | 
+#   _or_   timestamp | meas_point | missing: <label list>
+"""
+    
+    def __init__(self, filename, dt):
+        self.f = open(filename, 'a')
+        self.f.write(LogHandlerRamp.prolog % dt.strftime('%Y-%m-%d'))
+        self.f.flush()
+        self.skiprec = lambda d: 'meas_ramp' not in d
+        self.formatter = MyFormatter('~')
+        self.formatstr = '{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:2d} '
+
+    def write_rec(self, d):
+        if self.skiprec is not None and self.skiprec(d):
+            return
+        recprefix = self.formatter.format(self.formatstr, **d)
+        missing = d.get('ramp_missing', None)
+        failed = d.get('ramp_failed', None)
+        if failed:
+            self.f.write(recprefix + 'failed: ' + ' '.join(failed) + '\n')
+        if missing:
+            self.f.write(recprefix + 'missing: ' + ' '.join(missing) + '\n')
+        if failed is None and missing is None:
+            self.f.write(recprefix + 'OK\n')
         self.f.flush()
 
     def __del__(self):
@@ -101,10 +136,20 @@ timeout - interval for collecting data
         super(DataLogger, self).__init__()
         self.q_resp = q_resp
         self.timeout = timeout
-        # handlers to be added manually !
         self.handlers = []
+        self.filters = {None: None}
         self.records = {}
         self.stop = threading.Event()
+
+    def add_handler(self, handler, filterlist=None):
+        """Add handler and filters to apply for it"""
+        if filterlist is None:
+            key = None
+        else:
+            key = tuple([id(filt) for filt in filterlist])
+        if key not in self.filters:
+            self.filters[key] = filterlist
+        self.handlers.append((handler, key))
 
     def run(self):
         logger = logging.getLogger('logger')
@@ -151,14 +196,23 @@ timeout - interval for collecting data
                     last_ts = ts
                 rec = self.records.pop(ts)
                 rec['timestamp'] = ts
-                # logger.debug('Rec written to handlers: %s', repr(rec))
-                for h in self.handlers:
-                    h.write_rec(rec)
+                # apply filters to rec
+                recs = {}
+                for key, filterlist in self.filters.iteritems():
+                    if key is None:
+                        recs[None] = rec
+                        continue
+                    nrec = rec
+                    for filt in filterlist:
+                        nrec = filt(nrec)
+                    recs[key] = nrec
+                logger.debug('Rec written to handlers: %s', repr(recs))
+                for h, key in self.handlers:
+                    h.write_rec(recs[key])
         logger.info('run() finished, deleting handlers')
-        for h in self.handlers:
+        for h, key in self.handlers:
             h.__del__()
         self.handlers = None
-#        del self.handlers[:]
 
     def join(self, timeout=None):
         logging.getLogger('logger').debug('DataLogger.join')
@@ -207,3 +261,242 @@ Consume items from queue in, put them to queue out and display them"""
             except Empty:
                 continue
             logger.debug(repr(item))
+
+
+# predefined LogHandlers
+def makeDLtemperature(ctx, uubnums, sc=False):
+    """Create LogHandlerFile for temperatures
+ctx - context object, used keys: datadir + basetime
+uubnums - list of UUB numbers to log
+sc - if True, log also temperatures from SlowControl"""
+    prolog = """\
+# Temperature measurement: BME + chamber + Zynq
+# date %s
+# columns: timestamp | set.temp | BME1.temp | BME2.temp | chamber.temp""" % (
+        ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | UUB-%04d.zynq_temp' % uubnum
+                       for uubnum in uubnums])
+    if sc:
+        prolog += ''.join(
+            [' | UUB-%04d.sc_temp' % uubnum for uubnum in uubnums])
+    prolog += '\n'
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{set_temp:6.1f}',
+               '{bme_temp1:7.2f}',
+               '{bme_temp2:7.2f}',
+               '{chamber_temp:7.2f}']
+    logdata += ['{zynq%04d_temp:5.1f}' % uubnum for uubnum in uubnums]
+    if sc:
+        logdata += ['{sc%04d_temp:5.1f}' % uubnum for uubnum in uubnums]
+    formatstr = ' '.join(logdata) + '\n'
+    fn = ctx.datadir + ctx.basetime.strftime('thp-%Y%m%d.log')
+    return LogHandlerFile(fn, formatstr, prolog=prolog)
+
+
+def makeDLslowcontrol(ctx, uubnum):
+    """Create LogHandlerFile for SlowControl values
+ctx - context object, used keys: datadir + basetime
+uubnum - UUB number to log"""
+    labels_I = ('1V', '1V2', '1V8', '3V3', '3V3_sc', 'P3V3', 'N3V3',
+                '5V', 'radio', 'PMTs')
+    labels_U = ('1V', '1V2', '1V8', '3V3', 'P3V3', 'N3V3',
+                '5V', 'radio', 'PMTs', 'ext1', 'ext2')
+    fn = ctx.datadir + ('sc_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Slow Control measured values
+# UUB #%04d, date %s
+# voltages in mV, currents in mA
+# columns: timestamp""" % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}']
+    prolog += ''.join([' | I_%s' % label for label in labels_I])
+    logdata.extend(['{sc%04d_i_%s:5.2f}' % (uubnum, label)
+                    for label in labels_I])
+    prolog += ''.join([' | U_%s' % label for label in labels_U])
+    logdata.extend(['{sc%04d_u_%s:7.2f}' % (uubnum, label)
+                    for label in labels_U])
+    prolog += '\n'
+    formatstr = ' '.join(logdata) + '\n'
+    return LogHandlerFile(fn, formatstr, prolog=prolog)
+
+
+def makeDLpedestals(ctx, uubnum):
+    """Create LogHandlerFile for pedestals and their sigma
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log"""
+    fn = ctx.datadir + ('pede_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Pedestals and their std. dev.
+# UUB #%04d, date %s
+# columns: timestamp | meas_point""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{meas_point:3d}']
+    for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+        prolog += ''.join([' | %s.ch%d' % (typ, chan) for chan in ctx.chans])
+        logdata += ['{%s:%s}' % (item2label(
+            functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
+                    for chan in ctx.chans]
+    prolog += '\n'
+    formatstr = ' '.join(logdata) + '\n'
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_noise' not in d)
+
+
+def makeDLhsampli(ctx, uubnum, keys):
+    """Create LogHandlerFile for halfsine amplitudes
+ctx - context object, used keys: datadir + basetime + highgains + chans
+uubnum - UUB to log
+keys - voltages and/or splitmodes"""
+    if keys is None:
+        keys = {}
+    voltages = keys.get('voltages', (ctx.afg.param['Pvoltage'], ))
+    splitmodes = keys.get('splitmodes', (ctx.afg.param['splitmode'], ))
+    fn = ctx.datadir + ('ampli_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Amplitudes of halfsines
+# UUB #%04d, date %s
+# columns: timestamp | meas_point | splitmode | voltage | """ % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ' | '.join(['ampli.ch%d' % chan for chan in ctx.chans])
+    prolog += '\n'
+    itemr = {'functype': 'P', 'typ': 'ampli', 'uubnum': uubnum}
+    loglines = []
+    for splitmode in splitmodes:
+        for voltage in voltages:
+            logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                       '{meas_point:2d}',
+                       '%d %.2f' % (splitmode, voltage)]
+            logdata += [' '*7 if (chan in ctx.highgains and splitmode > 0)
+                        else '{%s:7.2f}' % item2label(
+                                itemr, chan=chan,
+                                voltage=voltage, splitmode=splitmode)
+                        for chan in ctx.chans]
+            loglines.append(' '.join(logdata))
+    eorec = '\n\n' if len(splitmodes) * len(voltage) > 1 else '\n'
+    formatstr = '\n'.join(loglines) + eorec
+    return LogHandlerFile(fn, formatstr, prolog=prolog, missing='   ~   ',
+                          skiprec=lambda d: 'meas_pulse' not in d)
+
+
+def makeDLfampli(ctx, uubnum, keys):
+    """Create LogHandlerFile for sine amplitudes
+ctx - context object, used keys: datadir + basetime + highgains + chans
+uubnum - UUB to log
+keys - freqs, voltages and/or splitmodes"""
+    if keys is None:
+        keys = {}
+    voltages = keys.get('voltages', (ctx.afg.param['Fvoltage'], ))
+    splitmodes = keys.get('splitmodes', (ctx.afg.param['splitmode'], ))
+    freqs = keys.get('freqs', (ctx.afg.param['freq'], ))
+    fn = ctx.datadir + ('fampli_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Amplitudes of sines depending on frequency
+# UUB #%04d, date %s
+# columns: timestamp | meas_point | flabel | freq [MHz] \
+| splitmode | voltage | """ % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ' | '.join(['fampli.ch%d' % chan for chan in ctx.chans])
+    prolog += '\n'
+    itemr = {'functype': 'F', 'typ': 'fampli', 'uubnum': uubnum}
+    loglines = []
+    for freq in freqs:
+        for splitmode in splitmodes:
+            for voltage in voltages:
+                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                           '{meas_point:2d}',
+                           '%s %5.2f' % (float2expo(freq), freq/1e6),
+                           '%d %.2f' % (splitmode, voltage)]
+                logdata += [' '*7 if (chan in ctx.highgains and splitmode > 0)
+                            else '{%s:7.2f}' % item2label(
+                                    itemr, chan=chan, freq=freq,
+                                    voltage=voltage, splitmode=splitmode)
+                            for chan in ctx.chans]
+                loglines.append(' '.join(logdata))
+    eorec = '\n\n' if len(splitmodes) * len(voltage) * len(freqs) > 1 else '\n'
+    formatstr = '\n'.join(loglines) + eorec
+    return LogHandlerFile(fn, formatstr, prolog=prolog, missing='   ~   ',
+                          skiprec=lambda d: 'meas_freq' not in d)
+
+
+def makeDLlinear(ctx, uubnum):
+    """Create LogHandlerFile for gain and corr. coeff
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log"""
+    fn = ctx.datadir + ('linear_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Linearity ADC count vs. voltage analysis
+# - gain [ADC count/mV] & correlation coefficient
+# UUB #%04d, date %s
+# columns: timestamp | meas_point""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{meas_point:2d}']
+    itemr = {'uubnum': uubnum}
+    for typ, fmt in (('gain', '6.3f'), ('lin', '7.5f')):
+        prolog += ''.join([' | %s.ch%d' % (typ, chan)
+                           for chan in ctx.chans])
+        logdata += ['{%s:%s}' % (item2label(itemr, chan=chan, typ=typ), fmt)
+                    for chan in ctx.chans]
+    prolog += '\n'
+    formatstr = ' '.join(logdata) + '\n'
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_pulse' not in d)
+
+
+def makeDLfreqgain(ctx, uubnum, freqs):
+    """Create LogHandlerFile for gain and corr. coeff
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log
+freqs - list of frequencies to log"""
+    fn = ctx.datadir + ('linear_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Frequency dependent gain ADC count vs. voltage analysis
+# - freqgain [ADC count/mV] & correlation coefficient
+# UUB #%04d, date %s
+# columns: timestamp | meas_point | flabel | freq [MHz]""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | fgain.ch%d | flin.ch%d' % (chan, chan)
+                       for chan in ctx.chans])
+    prolog += '\n'
+    itemr = {'uubnum': uubnum}
+    loglines = []
+    for freq in freqs:
+        logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                   '{meas_point:2d}',
+                   '%s %5.2f' % (float2expo(freq), freq/1e6)]
+        for typ, fmt in (('fgain', '6.3f'), ('flin', '7.5f')):
+            logdata += ['{%s:%s}' % (item2label(
+                itemr, freq=freq, chan=chan, typ=typ), fmt)
+                        for chan in ctx.chans]
+        loglines.append(' '.join(logdata))
+    eorec = '\n\n' if len(freqs) > 1 else '\n'
+    formatstr = '\n'.join(loglines) + eorec
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_freq' not in d)
+
+
+def makeDLcutoff(ctx, uubnum):
+    """Create LogHandlerFile for frequency cut-off
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log"""
+    fn = ctx.datadir + ('cutoff_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Cut-off frequency [MHz]
+# UUB #%04d, date %s
+# columns: timestamp | meas_point""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | cutoff.ch%d' % chan for chan in ctx.chans]) + '\n'
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{meas_point:2d}']
+    itemr = {'uubnum': uubnum, 'typ': 'cutoff'}
+    logdata += ['{%s:5.2f}' % item2label(itemr, chan=chan)
+                for chan in ctx.chans]
+    formatstr = ' '.join(logdata) + '\n'
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_freq' not in d)

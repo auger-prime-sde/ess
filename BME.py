@@ -10,6 +10,8 @@ from time import sleep
 from datetime import datetime, timedelta
 from serial import Serial
 
+from dataproc import label2item
+
 
 class SerialReadTimeout(AssertionError):
     pass
@@ -79,8 +81,7 @@ timesync - sync Arduino time
                 ts = (datetime.now() + timedelta(seconds=1)).strftime(
                     "t %Y-%m-%dT%H:%M:%S\r")
                 s.write(ts)
-                resp = readSerRE(s, BME.re_bmetimeset,
-                                 timeout=3, logger=logger)
+                readSerRE(s, BME.re_bmetimeset, timeout=3, logger=logger)
                 logger.info('synced to ' + ts)
         except Exception:
             logger.exception("Init serial with BME failed")
@@ -176,6 +177,112 @@ predefined - dict functype: delay with predefined values """
         ndelay = self.predefined.get(delay, delay)
         self.logger.info('setting delay %d * 3/16us', ndelay)
         self.ser.write('d %d\r' % ndelay)
-        resp = readSerRE(self.ser, TrigDelay.re_setdelay,
-                         timeout=1, logger=self.logger)
+        readSerRE(self.ser, TrigDelay.re_setdelay,
+                  timeout=1, logger=self.logger)
         self.logger.debug('delay set')
+
+
+class PowerControl(threading.Thread):
+    """Class managing power control module and splitter mode"""
+    re_init = re.compile(r'.*PowerControl (?P<version>[-0-9]+)\r\n', re.DOTALL)
+    re_set = re.compile(r'.*OK', re.DOTALL)
+    # ten floats separated by whitespaces + OK
+    re_readcurr = re.compile(r'.*?' + (r'(-?\d+\.?\d*)\s+' * 10) +
+                             'OK', re.DOTALL)
+    # ten 0/1 symbols + OK
+    re_readrelay = re.compile(r'.*?([01]{10})\s*OK', re.DOTALL)
+    NCHANS = 10   # number of channel
+
+    def __init__(self, port, timer, q_resp, uubnums):
+        """Constructor
+port - serial port to connect
+timer - instance of timer
+q_resp - queue to send response
+uubnums - list of UUBnums in order of connections.  None if port skipped"""
+        self.logger = logging.getLogger('PowerControl')
+        s = None               # avoid NameError on isinstance(s, Serial) check
+        try:
+            s = Serial(port, baudrate=115200)
+            self.logger.info('Opening serial %s', repr(s))
+            sleep(0.5)  # ad hoc constant to avoid timeout
+            # s.write('?\r')
+            resp = readSerRE(s, PowerControl.re_init, timeout=1,
+                             logger=self.logger)
+            self.version = PowerControl.re_init.match(
+                resp).groupdict()['version']
+        except Exception:
+            self.logger.exception("Init serial with PowerControl failed")
+            if isinstance(s, Serial):
+                self.logger.info('Closing serial %s', s.port)
+                s.close()
+            raise SerialReadTimeout
+        self.ser = s
+        super(PowerControl, self).__init__()
+        assert len(uubnums) <= 10
+        self.uubnums = {uubnum: port for port, uubnum in enumerate(uubnums)
+                        if uubnum is not None}
+
+    def splitterMode(self, mode):
+        """Set splitter mode (0: attenuated, 1: frequency, 3: amplified)"""
+        assert mode in (0, 1, 3)  # allowed values
+        self.logger.info('setting splitter mode %d', mode)
+        self.ser.write('m %d\r' % mode)
+        readSerRE(self.ser, PowerControl.re_set, timeout=1, logger=self.logger)
+        self.logger.debug('splitter mode set')
+
+    def switch(self, state, uubs=None):
+        """Switch on/off relays
+state - True to switch ON, False to OFF
+uubs - list of uubnums to switch or None to switch all"""
+        if uubs is not None:
+            chans = sum([1 << self.uubnums[uubnum] for uubnum in uubs])
+        else:
+            chans = (1 << self.NCHANS) - 1  # all chans
+        cmd = 'n' if state else 'f'
+        self.ser.write('%c %o\r' % (cmd, chans))
+        readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
+
+    def relays(self):
+        """Read status of relays
+return tuple of two list: (uubsOn, uubsOff)"""
+        self.ser.write('d\r')
+        resp = readSerRE(self.ser, PowerControl.re_readrelay,
+                         logger=self.logger)
+        states = PowerControl.re_readrelay.match(resp).groups()[0]
+        uubsOn = [uubnum for uubnum, port in self.uubnums.iteritems()
+                  if states[port] == '1']
+        uubsOff = [uubnum for uubnum, port in self.uubnums.iteritems()
+                   if states[port] == '0']
+        return uubsOn, uubsOff
+
+    def _readCurrents(self):
+        """Read currents [mA]. Return as tuple of ten floats"""
+        self.logger.info('reading currents')
+        self.ser.write('r\r')
+        resp = readSerRE(self.ser, PowerControl.re_readcurr,
+                         timeout=8, logger=self.logger)
+        return [float(s)
+                for s in PowerControl.re_readcurr.match(resp).groups()]
+
+    def run(self):
+        while True:
+            self.timer.evt.wait()
+            if self.timer.stop.is_set():
+                self.logger.info('Timer stopped, closing serial')
+                self.ser.close()
+                return
+            timestamp = self.timer.timestamp   # store info from timer
+            flags = self.timer.flags
+            if 'meas.iv' in flags:
+                currents = self._readCurrents()
+                res = {label2item(typ='itot', uubnum=uubnum): currents[port]
+                       for uubnum, port in self.uubnums.iteritems()}
+                res['timestamp'] = timestamp
+                self.q_resp.put(res)
+
+    def __del__(self):
+        try:
+            self.logger.info('Closing serial')
+            self.ser.close()
+        except Exception:
+            pass

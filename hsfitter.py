@@ -4,10 +4,7 @@
 """
 
 from math import pi
-from numpy import arange, linspace, unwrap, full_like
-from numpy import fft, angle, zeros, ones
-from numpy import dot, outer, matmul, linalg
-from numpy import sqrt, sin, cos
+import numpy as np
 import numba
 
 
@@ -45,23 +42,24 @@ Calculate train of half sine pulses of width w, separated by 3*w pedestal
         if binstart is None:
             binstart = self.binstart
         argsine = pi/self.w/self.FREQ * (
-            linspace(0, self.N, self.N, endpoint=False) - binstart)
+            np.linspace(0, self.N, self.N, endpoint=False) - binstart)
         mask = (argsine % (4*pi) < pi) & (argsine > 0) & \
                (argsine < self.Npeak*4*pi)
-        res = zeros(self.N) + pede
-        res[mask] += ampli * sin(argsine[mask])
+        res = np.zeros(self.N) + pede
+        res[mask] += ampli * np.sin(argsine[mask])
         return res
 
     def _calc_model(self):
         """Calculate model data and its fft"""
         assert self.Nampli >= self.Nphase
         self.y = self.halfsine()      # model
-        yfft = fft.fft(self.y, axis=0)
+        yfft = np.fft.fft(self.y, axis=0)
         self.abs2 = abs2(yfft[:self.Nampli])   # norm of coefficients
-        self.power = dot(self.abs2[1:], self.abs2[1:])
+        self.power = np.dot(self.abs2[1:], self.abs2[1:])
         self.c0 = abs(yfft[0])
-        self.mphase = angle(yfft[:self.Nphase])
-        self.normphase = dot(arange(0, self.Nphase), self.abs2[:self.Nphase])
+        self.mphase = np.angle(yfft[:self.Nphase])
+        self.normphase = np.dot(np.arange(0, self.Nphase),
+                                self.abs2[:self.Nphase])
 
     def fit(self, yall, stage=YVAL):
         """Perform fit
@@ -70,9 +68,9 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
         N, Ncol = yall.shape
         assert N == self.N
         # calculate amplitudes
-        yfft = fft.fft(yall, axis=0)
+        yfft = np.fft.fft(yall, axis=0)
         yabs = abs2(yfft[1:self.Nampli, :])
-        ampli = sqrt(dot(self.abs2[1:], yabs) / self.power)
+        ampli = np.sqrt(np.dot(self.abs2[1:], yabs) / self.power)
 
         res = {'ampli': ampli}
         if stage == HalfSineFitter.AMPLI:
@@ -86,9 +84,9 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
             return res
 
         # calculate binstart
-        mphase = outer(self.mphase, ones(Ncol))
-        phasedif = unwrap(angle(yfft[:self.Nphase, :]) - mphase, axis=0)
-        slope = dot(self.abs2[:self.Nphase], phasedif) / self.normphase
+        mphase = np.outer(self.mphase, np.ones(Ncol))
+        phasedif = np.unwrap(np.angle(yfft[:self.Nphase, :]) - mphase, axis=0)
+        slope = np.dot(self.abs2[:self.Nphase], phasedif) / self.normphase
         binstart = self.binstart - N/2/pi * slope
 
         res['binstart'] = binstart
@@ -96,7 +94,7 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
             return res
 
         # calculate function values
-        yf = zeros((self.N, Ncol))
+        yf = np.zeros((self.N, Ncol))
         for i in range(Ncol):
             yf[:, i] = self.halfsine(ampli=ampli[i], binstart=binstart[i],
                                      pede=pede[i])
@@ -117,9 +115,9 @@ class SineFitter(object):
         self.NPOLY = NPOLY     # degree of baseline polynomial
         self.NHARM = NHARM     # number of harmonics
         self.freqs = {}
-        x = arange(N, dtype='float64')
+        x = np.arange(N, dtype='float64')
         # vander: vandermont matrix normalized to 1
-        self.vander = ones((N, NPOLY+1))
+        self.vander = np.ones((N, NPOLY+1))
         if NPOLY >= 1:
             self.vander[:, 1] = (2*x + 1.0)/N - 1.0
             for i in xrange(2, NPOLY):
@@ -137,10 +135,10 @@ return matrix freqs[flabel]
         if flabel in self.freqs:
             return self.freqs[flabel]
         omega = 2*pi/self.FREQ * freq/1.e6
-        matX = zeros((self.N, 2*self.NHARM + self.NPOLY+1))
+        matX = np.zeros((self.N, 2*self.NHARM + self.NPOLY+1))
         for n in xrange(self.NHARM):
-            matX[:, 2*n] = cos((n+1)*omega*self.x)
-            matX[:, 2*n+1] = sin((n+1)*omega*self.x)
+            matX[:, 2*n] = np.cos((n+1)*omega*self.x)
+            matX[:, 2*n+1] = np.sin((n+1)*omega*self.x)
         matX[:, 2*self.NHARM:] = self.vander
         self.freqs[flabel] = matX
         return matX
@@ -155,33 +153,33 @@ return dict with keys: ampli, param, chi, yval
         N, Ncol = yall.shape
         assert N == self.N
         matX = self.addFreq(flabel, freq)
-        res = {'ampli': zeros(Ncol)}
+        res = {'ampli': np.zeros(Ncol)}
         if stage >= SineFitter.PARAM:
-            res['param'] = zeros((Ncol, 2*self.NHARM + 1 + self.NPOLY))
+            res['param'] = np.zeros((Ncol, 2*self.NHARM + 1 + self.NPOLY))
         if stage >= SineFitter.CHI:
-            res['chi'] = zeros(Ncol)
+            res['chi'] = np.zeros(Ncol)
         if stage >= SineFitter.YFIT:
-            res['yfit'] = zeros((self.N, Ncol))
+            res['yfit'] = np.zeros((self.N, Ncol))
         for col in xrange(Ncol):
             y = yall[:, col]
             if self.crop:
                 ind = (0 < y) & (y < SineFitter.YMAX)
                 ind4095 = y >= SineFitter.YMAX
             else:
-                ind = full_like(y, True, dtype=bool)
-                ind4095 = full_like(y, False, dtype=bool)
+                ind = np.full_like(y, True, dtype=bool)
+                ind4095 = np.full_like(y, False, dtype=bool)
             matX1 = matX[ind]
             y1 = y[ind]
             N1 = y1.shape[0]
-            matM = linalg.inv(matmul(matX1.T, matX1)/N1)
-            b = matmul(matX1.T, y1)/N1
-            a = matmul(matM, b)
-            res['ampli'][col] = sqrt(a[0]*a[0] + a[1]*a[1])
+            matM = np.linalg.inv(np.matmul(matX1.T, matX1)/N1)
+            b = np.matmul(matX1.T, y1)/N1
+            a = np.matmul(matM, b)
+            res['ampli'][col] = np.sqrt(a[0]*a[0] + a[1]*a[1])
             if stage >= SineFitter.PARAM:
                 res['param'][col, :] = a
             if stage >= SineFitter.CHI:
-                res['chi'][col] = sqrt(dot(y1, y1)/N1 - dot(a, b))
+                res['chi'][col] = np.sqrt(np.dot(y1, y1)/N1 - np.dot(a, b))
             if stage >= SineFitter.YFIT:
                 res['yfit'][ind4095, col] = SineFitter.YMAX
-                res['yfit'][ind, col] = matmul(matX1, a)
+                res['yfit'][ind, col] = np.matmul(matX1, a)
         return res

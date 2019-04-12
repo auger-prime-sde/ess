@@ -14,16 +14,23 @@ from prc import PRCServer
 
 # ESS stuff
 from timer import Timer, periodic_ticker, one_tick
-from logger import LogHandlerFile, LogHandlerPickle, DataLogger
-from BME import BME, TrigDelay
+from logger import LogHandlerFile, LogHandlerRamp, LogHandlerPickle, DataLogger
+from logger import makeDLtemperature, makeDLslowcontrol, makeDLpedestals
+from logger import makeDLhsampli, makeDLfampli, makeDLlinear
+from logger import makeDLfreqgain, makeDLcutoff
+from logger import QuePipeView
+from BME import BME, TrigDelay, PowerControl
 from UUB import UUBdaq, UUBlisten, UUBconvData, UUBtelnet, UUBtsc
+from UUB import uubnum2mac
 from chamber import Chamber, ESSprogram
-from dataproc import DataProcessor, item2label, DP_pede, DP_hsampli
-from dataproc import DP_store, DP_freq, dpfilter_linear
-from afg import AFG
+from dataproc import DataProcessor, item2label
+from dataproc import DP_store, DP_freq, DP_pede, DP_hsampli, DP_ramp
+from dataproc import make_DPfilter_linear, make_DPfilter_ramp
+from dataproc import make_DPfilter_cutoff
+from afg import AFG, RPiTrigger
 from power import PowerSupply
 
-VERSION = '20181022'
+VERSION = '20190408'
 
 
 class ESS(object):
@@ -35,12 +42,16 @@ class ESS(object):
         else:
             d = json.loads(js)
 
+        # basetime
+        dt = datetime.now()
+        dt = dt.replace(second=0, microsecond=0) + timedelta(seconds=60)
+
         # event to stop
         self.evtstop = threading.Event()
         self.prcport = d['ports'].get('prc', None)
 
         # datadir
-        self.datadir = datetime.now().strftime(
+        self.datadir = dt.strftime(
             d.get('datadir', 'data-%Y%m%d/'))
         if self.datadir[-1] != '/':
             self.datadir += '/'
@@ -56,14 +67,12 @@ class ESS(object):
                       for key in ('level', 'format', 'filename')
                       if key in d['logging']}
             if 'filename' in kwargs:
-                kwargs['filename'] = datetime.now().strftime(
-                    kwargs['filename'])
+                kwargs['filename'] = dt.strftime(kwargs['filename'])
                 if kwargs['filename'][0] not in ('.', '/'):
                     kwargs['filename'] = self.datadir + kwargs['filename']
             logging.basicConfig(**kwargs)
 
-        dt = datetime.now()
-        dt = dt.replace(second=0, microsecond=0) + timedelta(seconds=60)
+        self.basetime = dt
         self.timer = Timer(dt)
         self.timer.start()
 
@@ -95,23 +104,39 @@ class ESS(object):
             self.chamber = Chamber(port, self.timer, self.q_resp)
             self.chamber.start()
 
-        # AFG
-        kwargs = d.get("afg", {})
-        self.afg = AFG(**kwargs)
+        # AFG & RPi trigger
+        self.afg = None
+        self.trigger = None
+        if 'afg' in d:
+            kwargs = d.get("afg", {})
+            self.afg = AFG(**kwargs)
+            self.trigger = self.afg.trigger
+        if d.get('RPiTrigger', False):
+            self.trigger = RPiTrigger().trigger
 
         # TrigDelay
         if 'trigdelay' in d['ports']:
-            kwargs = d.get('trigdelay', {})
-            self.td = TrigDelay(d['ports']['trigdelay'], kwargs)
+            predefined = d.get('trigdelay', None)
+            self.td = TrigDelay(d['ports']['trigdelay'], predefined)
+        else:
+            self.td = None
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
+        # PowerControl
+        self.splitmode = None
+        if 'powercontrol' in d['ports']:
+            self.pc = PowerControl(d['ports']['powercontrol'], self.timer,
+                                   self.q_resp, self.uubnums)
+            self.splitmode = self.pc.splitterMode
+
         # UUBs - UUBdaq and UUBlisten
         self.ulisten = UUBlisten(self.q_ndata)
         self.ulisten.start()
         self.uconv = UUBconvData(self.q_ndata, self.q_dp)
         self.uconv.start()
-        self.udaq = UUBdaq(self.timer, self.afg, self.ulisten, self.td,
-                           self.q_resp)
+        self.udaq = UUBdaq(self.timer, self.ulisten, self.q_resp,
+                           self.afg, self.splitmode, self.td,
+                           self.trigger)
         self.udaq.start()
         self.udaq.uubnums2add.extend(self.uubnums)
 
@@ -127,12 +152,14 @@ class ESS(object):
 
         # data processing
         self.dp0 = DataProcessor(self.q_dp)
+        self.dp0.workhorses.append(DP_ramp(self.q_resp))
         self.dp0.workhorses.append(DP_pede(self.q_resp))
-        self.dp0.workhorses.append(DP_hsampli(
-            self.q_resp, self.afg.param['hswidth'],
-            self.lowgains, self.chans))
-        self.dp0.workhorses.append(DP_freq(
-            self.q_resp, self.lowgains, self.chans))
+        if self.afg is not None:
+            self.dp0.workhorses.append(DP_hsampli(
+                self.q_resp, self.afg.param['hswidth'],
+                self.lowgains, self.chans))
+            self.dp0.workhorses.append(DP_freq(
+                self.q_resp, self.lowgains, self.chans))
         self.dp0.workhorses.append(DP_store(self.datadir))
         self.dp0.start()
 
@@ -143,233 +170,134 @@ class ESS(object):
         if 'meas.sc' in d['tickers']:
             sc_period = d['tickers'].get('meas.sc', 30)
             self.timer.add_ticker('meas.sc', periodic_ticker(sc_period))
+        if 'meas.iv' in d['tickers']:
+            iv_period = d['tickers'].get('meas.iv', 30)
+            self.timer.add_ticker('meas.iv', periodic_ticker(iv_period))
+
+        # ESS program
+        self.starttime = None
         if 'essprogram' in d['tickers']:
             fn = d['tickers']['essprogram']
+            essprog_macros = d['tickers'].get('essprogram.macros', None)
             with open(fn, 'r') as fp:
-                self.essprog = ESSprogram(fp, self.timer, self.q_resp)
+                self.essprog = ESSprogram(fp, self.timer, self.q_resp,
+                                          essprog_macros)
             self.essprog.start()
             if 'startprog' in d['tickers']:
                 self.essprog.startprog(int(d['tickers']['startprog']))
+                self.starttime = self.essprog.starttime
 
         #  ===== DataLogger & handlers =====
-        # handler for amplitudes
-
-        self.dl = DataLogger(self.q_resp)
+        DEBUG_Q_RESP = True
+        if DEBUG_Q_RESP:
+            q_resp_out = Queue()
+            qpv = QuePipeView(self.timer, self.q_resp, q_resp_out)
+            qpv.start()
+        else:
+            q_resp_out = self.q_resp
+        self.dl = DataLogger(q_resp_out)
+        dpfilter_linear = None
+        dpfilter_cutoff = None
+        dpfilter_ramp = None
         # temperature
         if d['dataloggers'].get('temperature', False):
-            prolog = """\
-# Temperature measurement: BME + chamber + Zynq
-# date %s
-# columns: timestamp | set.temp | BME1.temp | BME2.temp | chamber.temp""" % (
-                dt.strftime('%Y-%m-%d'))
-            prolog += ''.join([' | UUB-%04d.zynq_temp' % uubnum
-                               for uubnum in self.uubnums])
-            if 'meas.sc' in d['tickers']:
-                prolog += ''.join([' | UUB-%04d.sc_temp' % uubnum
-                                   for uubnum in self.uubnums])
-            prolog += '\n'
-            logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                       '{set_temp:6.1f}',
-                       '{bme_temp1:7.2f}',
-                       '{bme_temp2:7.2f}',
-                       '{chamber_temp:7.2f}']
-            logdata += ['{zynq%04d_temp:5.1f}' % uubnum
-                        for uubnum in self.uubnums]
-            if 'meas.sc' in d['tickers']:
-                logdata += ['{sc%04d_temp:5.1f}' % uubnum
-                            for uubnum in self.uubnums]
-            formatstr = ' '.join(logdata) + '\n'
-            fn = self.datadir + dt.strftime('thp-%Y%m%d.log')
-            self.dl.handlers.append(LogHandlerFile(
-                fn, formatstr, prolog=prolog))
+            self.dl.add_handler(
+                makeDLtemperature(self, self.uubnums,
+                                  'meas.sc' in d['tickers']))
 
         # slow control measured values
         if d['dataloggers'].get('slowcontrol', False):
-            labels_I = ('1V', '1V2', '1V8', '3V3', '3V3_sc', 'P3V3', 'N3V3',
-                        '5V', 'radio', 'PMTs')
-            labels_U = ('1V', '1V2', '1V8', '3V3', 'P3V3', 'N3V3',
-                        '5V', 'radio', 'PMTs', 'ext1', 'ext2')
             for uubnum in self.uubnums:
-                fn = self.datadir + ('sc_uub%04d' % uubnum) +\
-                     dt.strftime('-%Y%m%d.log')
-                prolog = """\
-# Slow Control measured values
-# UUB #%04d, date %s
-# voltages in mV, currents in mA
-# columns: timestamp""" % (uubnum, dt.strftime('%Y-%m-%d'))
-                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}']
-                prolog += ''.join([' | I_%s' % label for label in labels_I])
-                logdata.extend(['{sc%04d_i_%s:5.2f}' % (uubnum, label)
-                                for label in labels_I])
-                prolog += ''.join([' | U_%s' % label for label in labels_U])
-                logdata.extend(['{sc%04d_u_%s:7.2f}' % (uubnum, label)
-                                for label in labels_U])
-                prolog += '\n'
-                formatstr = ' '.join(logdata) + '\n'
-                lh = LogHandlerFile(fn, formatstr, prolog=prolog)
-                self.dl.handlers.append(lh)
+                self.dl.add_handler(makeDLslowcontrol(self, uubnum))
 
         # pedestals & their std
-        if 'pede' in d['dataloggers']:
-            item = {key: d['dataloggers']['pede'][key]
-                    for key in ('voltage', 'ch2')}
-            item['functype'] = 'P'
+        if d['dataloggers'].get('pede', False):
             for uubnum in self.uubnums:
-                fn = self.datadir + ('pede_uub%04d' % uubnum) +\
-                     dt.strftime('-%Y%m%d.log')
-                prolog = """\
-# Pedestals and their std. dev.
-# UUB #%04d, date %s
-# columns: timestamp | meas_pulse_point""" % (uubnum, dt.strftime('%Y-%m-%d'))
-                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                           '{meas_pulse_point:2d}']
-                for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
-                    prolog += ''.join([' | %s.ch%d' % (typ, chan)
-                                       for chan in self.chans])
-                    logdata += ['{%s:%s}' % (item2label(item, uubnum=uubnum,
-                                                        chan=chan, typ=typ),
-                                             fmt)
-                                for chan in self.chans]
-                prolog += '\n'
-                formatstr = ' '.join(logdata) + '\n'
-                lh = LogHandlerFile(
-                    fn, formatstr, prolog=prolog,
-                    skiprec=lambda d: 'meas_pulse_point' not in d)
-                self.dl.handlers.append(lh)
+                self.dl.add_handler(makeDLpedestals(self, uubnum))
 
         # amplitudes of halfsines
         if 'ampli' in d['dataloggers']:
-            voltages, ch2s = (d['dataloggers']['ampli'][key]
-                              for key in ('voltages', 'ch2s'))
-            item = {'functype': 'P', 'typ': 'ampli'}
             for uubnum in self.uubnums:
-                fn = self.datadir + ('ampli_uub%04d' % uubnum) +\
-                     dt.strftime('-%Y%m%d.log')
-                prolog = """\
-# Amplitudes of halfsines
-# UUB #%04d, date %s
-# columns: timestamp | meas_pulse_point | ch2 | voltage | """ % (
-                    uubnum, dt.strftime('%Y-%m-%d'))
-                prolog += ' | '.join(['ampli.ch%d' % chan
-                                      for chan in self.chans])
-                prolog += '\n'
-                loglines = []
-                for ch2 in ch2s:
-                    for voltage in voltages:
-                        logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                                   '{meas_pulse_point:2d}',
-                                   '%d %.1f' % (ch2, voltage)]
-                        logdata += [' '*7 if (chan in self.highgains and ch2)
-                                    else '{%s:7.2f}' % item2label(
-                                            item, uubnum=uubnum, chan=chan,
-                                            voltage=voltage, ch2=ch2)
-                                    for chan in self.chans]
-                        loglines.append(' '.join(logdata))
-                formatstr = '\n'.join(loglines) + '\n\n'
-                self.dl.handlers.append(LogHandlerFile(
-                    fn, formatstr, prolog=prolog, missing='   ~   ',
-                    skiprec=lambda d: 'meas_pulse_point' not in d))
+                self.dl.add_handler(makeDLhsampli(
+                    self, uubnum, d['dataloggers']['ampli']))
 
         # amplitudes of sines vs freq
-        if 'freq' in d['dataloggers']:
-            freqs, ch2s = (d['dataloggers']['freq'][key]
-                           for key in ('freqs', 'ch2s'))
-            item = {'functype': 'F', 'typ': 'fampli'}
+        if 'fampli' in d['dataloggers']:
             for uubnum in self.uubnums:
-                fn = self.datadir + ('fampli_uub%04d' % uubnum) +\
-                     dt.strftime('-%Y%m%d.log')
-                prolog = """\
-# Amplitudes of sines depending on frequency
-# UUB #%04d, date %s
-# columns: timestamp | meas_freq_point | ch2 | freq [MHz] | """ % (
-                    uubnum, dt.strftime('%Y-%m-%d'))
-                prolog += ' | '.join(['fampli.ch%d' % chan
-                                      for chan in self.chans])
-                prolog += '\n'
-                loglines = []
-                for ch2 in ch2s:
-                    for freq in freqs:
-                        logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                                   '{meas_freq_point:2d}',
-                                   '%d %5.2f' % (ch2, freq/1e6)]
-                        logdata += [' '*7 if (chan in self.highgains and ch2)
-                                    else '{%s:7.2f}' % item2label(
-                                            item, uubnum=uubnum, chan=chan,
-                                            freq=freq, ch2=ch2)
-                                    for chan in self.chans]
-                        loglines.append(' '.join(logdata))
-                formatstr = '\n'.join(loglines) + '\n\n'
-                self.dl.handlers.append(LogHandlerFile(
-                    fn, formatstr, prolog=prolog, missing='   ~   ',
-                    skiprec=lambda d: 'meas_freq_point' not in d))
+                self.dl.add_handler(makeDLfampli(
+                    self, uubnum, d['dataloggers']['fampli']))
 
-        # linearity
+        # gain/linearity
         if d['dataloggers'].get('linearity', False):
+            if dpfilter_linear is None:
+                dpfilter_linear = make_DPfilter_linear(self.lowgains,
+                                                       self.highgains)
             for uubnum in self.uubnums:
-                fn = self.datadir + ('linear_uub%04d' % uubnum) +\
-                     dt.strftime('-%Y%m%d.log')
-                prolog = """\
-# Linearity ADC count vs. voltage analysis
-# - sensitivity [ADC count/mV] & correlation coefficient
-# UUB #%04d, date %s
-# columns: timestamp | meas_pulse_point""" % (uubnum, dt.strftime('%Y-%m-%d'))
-                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                           '{meas_pulse_point:2d}']
-                for typ, fmt in (('sens', '6.3f'), ('corr', '7.5f')):
-                    prolog += ''.join([' | %s.ch%d' % (typ, chan)
-                                       for chan in self.chans])
-                    logdata += ['{%s:%s}' % (item2label(
-                        uubnum=uubnum, chan=chan, typ=typ), fmt)
-                                for chan in self.chans]
-                prolog += '\n'
-                formatstr = ' '.join(logdata) + '\n'
-                lh = LogHandlerFile(
-                    fn, formatstr, prolog=prolog,
-                    skiprec=lambda d: 'meas_pulse_point' not in d)
-                lh.filters.append(dpfilter_linear)
-                self.dl.handlers.append(lh)
+                self.dl.add_handler(makeDLlinear(self, uubnum),
+                                    (dpfilter_linear, ))
 
-        # fsensitivity TBD
-        if d['dataloggers'].get('fsensitivity', False):
-            pass
+        # freqgain
+        if 'freqgain' in d['dataloggers']:
+            if dpfilter_linear is None:
+                dpfilter_linear = make_DPfilter_linear(self.lowgains,
+                                                       self.highgains)
+            freqs = d['dataloggers']['freqgain']
+            for uubnum in self.uubnums:
+                self.dl.add_handler(makeDLfreqgain(self, uubnum, ),
+                                    (dpfilter_linear, ))
+
+        # cut-off
+        if d['dataloggers'].get('freqgain', False):
+            if dpfilter_linear is None:
+                dpfilter_linear = make_DPfilter_linear(self.lowgains,
+                                                       self.highgains)
+            if dpfilter_cutoff is None:
+                dpfilter_cutoff = make_DPfilter_cutoff(self.lowgains,
+                                                       self.highgains)
+            for uubnum in self.uubnums:
+                self.dl.add_handler(makeDLfreqgain(self, uubnum, ),
+                                    (dpfilter_linear, dpfilter_cutoff))
+
+        # ramp
+        if d['dataloggers'].get('ramp', False):
+            if dpfilter_ramp is None:
+                dpfilter_ramp = make_DPfilter_ramp(self.uubnums)
+            fn = self.datadir + self.basetime.strftime('ramp-%Y%m%d.log')
+            lh = LogHandlerRamp(fn, self.basetime)
+            self.dl.add_handler(lh, (dpfilter_ramp, ))
 
         # database
-        if d['dataloggers'].get('db_pulse', False):
-            itemr = {key: d['dataloggers']['pede'][key]
-                     for key in ('voltage', 'ch2')}
-            itemr['functype'] = 'P'
-            prolog = """\
-# Export to database
-# date """ + dt.strftime('%Y%m%d') + "\n"
-            fn = self.datadir + dt.strftime('db-%Y%m%d.js')
-            logdata = []
-            for uubnum in self.uubnums:
-                for chan in self.chans:
-                    items = [('meas_pulse_point', '{meas_pulse_point:d}'),
-                             ('temp', '{set_temp:6.1f}'),
-                             ('uub', '%d' % uubnum),
-                             ('chan', '%d' % chan)]
-                    for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
-                        items.append((typ, '{%s:%s}' % (item2label(
-                            itemr, uubnum=uubnum, chan=chan, typ=typ), fmt)))
-                    for typ, fmt in (('sens', '6.3f'), ('corr', '7.5f')):
-                        items.append((typ, '{%s:%s}' % (item2label(
-                            uubnum=uubnum, chan=chan, typ=typ), fmt)))
-                    linedata = '{{ ' + ', '.join(['"%s": %s' % item
-                                                  for item in items]) + ' }}\n'
-                    logdata.append(linedata)
-            formatstr = ''.join(logdata)
-            lh = LogHandlerFile(
-                fn, formatstr, prolog=prolog, missing='"NaN"',
-                skiprec=lambda d: 'db_pulse' not in d)
-            lh.filters.append(dpfilter_linear)
-            self.dl.handlers.append(lh)
+        if 'db' in d['dataloggers']:
+            self.db = DBconnector(self, d['dataloggers']['db'])
+            for item in d['dataloggers']['db']['logitems']:
+                if item == 'ramp':
+                    if dpfilter_ramp is None:
+                        dpfilter_ramp = make_DPfilter_ramp(self.uubnums)
+                    self.dl.add_handler(self.db.getLogHandler(item),
+                                        (dpfilter_ramp, ))
+                elif item == 'cutoff':
+                    if dpfilter_linear is None:
+                        dpfilter_linear = make_DPfilter_linear(
+                            self.lowgains, self.highgains)
+                    if dpfilter_cutoff is None:
+                        dpfilter_cutoff = make_DPfilter_cutoff(
+                            self.lowgains, self.highgains)
+                    self.dl.add_handler(self.db.getLogHandler(item),
+                                        (dpfilter_linear, dpfilter_cutoff))
+                elif item in ('gain', 'freqgain'):
+                    if dpfilter_linear is None:
+                        dpfilter_linear = make_DPfilter_linear(self.lowgains,
+                                                               self.highgains)
+                    self.dl.add_handler(self.db.getLogHandler(item),
+                                        (dpfilter_linear, ))
+                else:
+                    self.dl.add_handler(self.db.getLogHandler(item))
 
         # pickle
         if d['dataloggers'].get('pickle', False):
             fn = self.datadir + dt.strftime('pickle-%Y%m%d')
             lh = LogHandlerPickle(fn)
-            self.dl.handlers.append(lh)
+            self.dl.add_handler(lh)
 
         self.dl.start()
 
@@ -381,6 +309,17 @@ class ESS(object):
         self.dp0.stop.set()
         self.ulisten.stop.set()
         self.uconv.stop.set()
+
+
+def Pretest(jsconf, uubnum):
+    """Wrap for ESS with uubnum"""
+    subst = {'UUBNUM': uubnum,
+             'MACADDR': uubnum2mac(uubnum)}
+    with open(jsconf, 'r') as fp:
+        js = fp.read()
+    for key, val in subst.iteritems():
+        js = js.replace('$'+key, str(val))
+    return js
 
 
 if __name__ == '__main__':

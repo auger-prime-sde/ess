@@ -155,12 +155,14 @@ offset - an offset to basetime (seconds)
                 logger.info('Exhausted ticker %s removed', name)
 
             if delta >= delta0:
+                nimmediate = []
                 while self.immediate:
-                    name = self.immediate[0][0]
-                    if name in newflags:
-                        break  # duplicate ticker.name
                     name, detail = self.immediate.pop(0)
-                    newflags[name] = detail
+                    if name in newflags:
+                        nimmediate.append((name, detail))
+                    else:
+                        newflags[name] = detail
+                self.immediate.extend(nimmediate)
 
             timestamp = self.basetime + timedelta(seconds=delta)
             now = datetime.now()

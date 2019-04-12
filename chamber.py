@@ -89,7 +89,7 @@ q_resp - queue to send response"""
 class ESSprogram(threading.Thread):
     """Build BinderProg and ticker from JSON description"""
 
-    def __init__(self, jsonobj, timer, q_resp):
+    def __init__(self, jsonobj, timer, q_resp, essprog_macros=None):
         """Constructor
 jsonobj - either json string or json file"""
         super(ESSprogram, self).__init__()
@@ -100,20 +100,23 @@ jsonobj - either json string or json file"""
         else:
             jso = json.loads(jsonobj)
         self.macros = jso.get('macros', {})
+        if essprog_macros is not None:
+            self.macros.update(essprog_macros)
         self.progno = jso.get('progno', 0)
         self.load = jso.get('load', False)
         self.prog = BinderProg()
         self.time_temp = []
         self.time_humid = []
-        mrs = []   # measurement ADC ramp: [time]
-        mns = []   # measurement noise: [time]
+        mrs = {}   # measurement ADC ramp: [time]
+        mns = {}   # measurement noise: [time]
         mps = {}   # measurement pulses, {time: flags}
         mfs = {}   # measurement freqs, {time: flags}
-        ivs = []   # measurement power supply voltage/current: [time]
+        ivs = {}   # measurement power supply voltage/current: [time]
         tps = []   # test points: [time]
         pps = {}   # power operations: {time: kwargs}
         lis = {}   # logins {time: flags}, flags - None or list of UUBnums
         los = {}   # logouts {time: flags}, flags - None or list of UUBnums
+        cms = {}   # telnet cmds {time: flags}, flags - cmdlist + uubnums
         temp_prev = None
         humid_prev = None
         operc = 0
@@ -158,7 +161,9 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
-                    mrs.append(mptime)
+                    mrs[mptime] = {key: mp[key]
+                                   for key in ('db', )
+                                   if key in mp}
             if "meas.noise" in segment:
                 meas = self._macro(segment["meas.noise"])
                 for mp in meas:
@@ -167,7 +172,9 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
-                    mns.append(mptime)
+                    mns[mptime] = {key: mp[key]
+                                   for key in ('db', )
+                                   if key in mp}
             if "meas.pulse" in segment:
                 meas = self._macro(segment["meas.pulse"])
                 for mp in meas:
@@ -193,10 +200,11 @@ jsonobj - either json string or json file"""
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
+                    flags = self._macro(mp["flags"])
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
-                    ivs.append(mptime)
+                    ivs[mptime] = flags
             # power and test
             if "power" in segment:
                 power = self._macro(segment["power"])
@@ -208,10 +216,6 @@ jsonobj - either json string or json file"""
                         ptime += dur
                     if "test" in pp:
                         tps.append(ptime)
-                    if "login" in pp:
-                        lis[ptime] = self._macro(pp["login"])
-                    if "logout" in pp:
-                        los[ptime] = self._macro(pp["logout"])
                     # kwargs for PowerSupply.config()
                     # e.g. {'ch1': (12.0, None, True, False)}
                     kwargs = {}
@@ -223,6 +227,27 @@ jsonobj - either json string or json file"""
                             kwargs[chan] = args
                     if kwargs:
                         pps[ptime] = kwargs
+            # telnet
+            if "telnet" in segment:
+                telnet = self._macro(segment["telnet"])
+                for tp in telnet:
+                    tp = self._macro(tp)
+                    offset = self._macro(tp["offset"])
+                    ttime = t + offset
+                    if offset < 0:
+                        ttime += dur
+                    if "login" in tp:
+                        lis[ttime] = self._macro(tp["login"])
+                    if "logout" in tp:
+                        los[ttime] = self._macro(tp["logout"])
+                    if "cmds" in tp:
+                        cmdlist = [str(self._macro(cmd))
+                                   for cmd in self._macro(tp["cmds"])]
+                        if "cmds.uubs" in tp:
+                            uubnums = self._macro(tp["cmds.uubs"])
+                        else:
+                            uubnums = None
+                        cms[ttime] = {"cmdlist": cmdlist, "uubnums": uubnums}
             t += dur
         self.progdur = t
         # append the last segments
@@ -230,18 +255,20 @@ jsonobj - either json string or json file"""
             self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
         if humid_prev is not None:
             self.prog.seg_humid.append(BinderSegment(humid_prev, 1))
-        self.meas_ramps = sorted(mrs)
-        self.meas_noises = sorted(mns)
+        self.meas_ramps = [(mptime, mrs[mptime]) for mptime in sorted(mrs)]
+        self.meas_noises = [(mptime, mns[mptime]) for mptime in sorted(mns)]
         self.meas_pulses = [(mptime, mps[mptime]) for mptime in sorted(mps)]
         self.meas_freqs = [(mptime, mfs[mptime]) for mptime in sorted(mfs)]
-        self.meas_ivs = sorted(ivs)
+        self.meas_ivs = [(mptime, ivs[mptime]) for mptime in sorted(ivs)]
         self.power_points = [(ptime, pps[ptime]) for ptime in sorted(pps)]
         self.test_points = sorted(tps)
-        self.logins = [(ptime, lis[ptime]) for ptime in sorted(lis)]
-        self.logouts = [(ptime, los[ptime]) for ptime in sorted(los)]
+        self.logins = [(ttime, lis[ttime]) for ttime in sorted(lis)]
+        self.logouts = [(ttime, los[ttime]) for ttime in sorted(los)]
+        self.cmds = [(ttime, cms[ttime]) for ttime in sorted(cms)]
         self.timepoints = {ptime: pind for pind, ptime in enumerate(
-            sorted(set(mrs, mns, mps.keys(), mfs.keys(), ivs, pps.keys(),
-                       tps, lis.keys(), los.keys())))}
+            sorted(set(mrs.keys() + mns.keys() + mps.keys() + mfs.keys() +
+                       ivs.keys() + pps.keys() + tps +
+                       lis.keys() + los.keys() + cms.keys())))}
 
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
@@ -285,6 +312,14 @@ return polyline approximation at the time t"""
             if dur < 0:
                 continue
             res = {'timestamp': timestamp}
+            for name in ('meas.ramp', 'meas.noise', 'meas.pulse', 'meas.freq'):
+                if name in flags:
+                    mname = name.split('.')[1]
+                    res['meas_' + mname] = True
+                    if 'db' in flags[name]:
+                        res['db_' + mname] = flags[name]['db']
+            if dur in self.timepoints:
+                res['meas_point'] = self.timepoints[dur]
             if self.time_temp:
                 res['set_temp'] = self.polyline(dur, self.time_temp)
             if self.time_humid:
@@ -309,38 +344,41 @@ and add them to timer"""
                                             (self.progdur, None)), offset))
         if self.meas_ramps:
             self.timer.add_ticker('meas.ramp',
-                                  list_ticker(self.meas_ramps, offset,
-                                              'meas_ramp_point',
-                                              self.timepoints))
+                                  point_ticker(self.meas_ramps, offset,
+                                               'meas_point',
+                                               self.timepoints))
         if self.meas_noises:
             self.timer.add_ticker('meas.noise',
-                                  list_ticker(self.meas_noises, offset,
-                                              'meas_noise_point',
-                                              self.timepoints))
+                                  point_ticker(self.meas_noises, offset,
+                                               'meas_point',
+                                               self.timepoints))
         if self.meas_pulses:
             self.timer.add_ticker('meas.pulse',
                                   point_ticker(self.meas_pulses, offset,
-                                               'meas_pulse_point',
+                                               'meas_point',
                                                self.timepoints))
         if self.meas_freqs:
             self.timer.add_ticker('meas.freq',
                                   point_ticker(self.meas_freqs, offset,
-                                               'meas_freq_point',
+                                               'meas_point',
                                                self.timepoints))
         if self.meas_ivs:
             self.timer.add_ticker('meas.iv',
-                                  list_ticker(self.meas_ivs, offset,
-                                              'meas_iv_point',
-                                              self.timepoints))
+                                  point_ticker(self.meas_ivs, offset,
+                                               'meas_point',
+                                               self.timepoints))
         if self.power_points:
             self.timer.add_ticker('power',
                                   point_ticker(self.power_points, offset))
         if self.logins:
-            self.timer.add_ticker('power.login',
+            self.timer.add_ticker('telnet.login',
                                   point_ticker(self.logins, offset))
         if self.logouts:
-            self.timer.add_ticker('power.logout',
+            self.timer.add_ticker('telnet.logout',
                                   point_ticker(self.logouts, offset))
+        if self.cmds:
+            self.timer.add_ticker('telnet.cmds',
+                                  point_ticker(self.cmds, offset))
         if self.test_points:
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,

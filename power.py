@@ -221,8 +221,8 @@ state - required state: 'ON' | 'OFF' | 0 | 1
         return (voltage, current)
 
     def __del__(self):
-        self.logger.info('Closing serial')
         try:
+            self.logger.info('Closing serial')
             self.ser.close()
         except Exception:
             pass

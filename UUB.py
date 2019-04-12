@@ -17,7 +17,7 @@ from struct import unpack
 from struct import error as struct_error
 from Queue import Empty
 from telnetlib import Telnet
-import numpy
+import numpy as np
 
 HTTPPORT = 80
 DATAPORT = 8888    # UDP port UUB send data to
@@ -67,18 +67,26 @@ return afg_dict, item_dict"""
         item_dict = {'functype': 'R'}
         yield afg_dict, item_dict
 
+    def generN(**kwargs):
+        """Generator for noise
+kwargs: <empty>
+return afg_dict, item_dict"""
+        afg_dict = {}
+        item_dict = {'functype': 'N'}
+        yield afg_dict, item_dict
+
     def generP(**kwargs):
         """Generator for functype pulse
-kwargs: ch2s, voltages
+kwargs: splitmodes, voltages
 return afg_dict, item_dict"""
         afg_dict = {'functype': 'P'}
         item_dict = afg_dict.copy()
-        ch2s = kwargs.get('ch2s', (None, ))
+        splitmodes = kwargs.get('splitmodes', (None, ))
         voltages = kwargs.get('voltages', (None, ))
-        for ch2 in ch2s:
-            if ch2 is not None:
-                afg_dict['ch2'] = ch2
-                item_dict['ch2'] = ch2
+        for splitmode in splitmodes:
+            if splitmode is not None:
+                afg_dict['splitmode'] = splitmode
+                item_dict['splitmode'] = splitmode
             for v in voltages:
                 if v is not None:
                     afg_dict['Pvoltage'] = v
@@ -87,17 +95,17 @@ return afg_dict, item_dict"""
 
     def generF(**kwargs):
         """Generator for functype freq
-kwargs: ch2s, freqs, voltages
+kwargs: splitmodes, freqs, voltages
 return afg_dict, item_dict"""
         afg_dict = {'functype': 'F'}
         item_dict = afg_dict.copy()
-        ch2s = kwargs.get('ch2s', (None, ))
+        splitmodes = kwargs.get('splitmodes', (None, ))
         freqs = kwargs.get('freqs', (None, ))
         voltages = kwargs.get('voltages', (None, ))
-        for ch2 in ch2s:
-            if ch2 is not None:
-                afg_dict['ch2'] = ch2
-                item_dict['ch2'] = ch2
+        for splitmode in splitmodes:
+            if splitmode is not None:
+                afg_dict['splitmode'] = splitmode
+                item_dict['splitmode'] = splitmode
             for freq in freqs:
                 if freq is not None:
                     afg_dict['freq'] = freq
@@ -108,12 +116,10 @@ return afg_dict, item_dict"""
                         item_dict['voltage'] = v
                     yield afg_dict, item_dict
 
-    return (('meas.ramp', 'R', generR,
-             ('meas_ramp_point', 'db_ramp')),
-            ('meas.pulse', 'P', generP,
-             ('meas_pulse_point', 'db_pulse')),
-            ('meas.freq', 'F', generF,
-             ('meas_freq_point', 'db_freq')))
+    return (('meas.ramp', 'R', generR),
+            ('meas.noise', 'N', generN),
+            ('meas.pulse', 'P', generP),
+            ('meas.freq', 'F', generF))
 
 
 def isLive(uub, timeout=0):
@@ -214,11 +220,14 @@ q_resp - queue to send response
                 self.logger.debug('UUB not live yet, next try')
             else:
                 self.serial = s
+                dt = datetime.now().replace(microsecond=0)
+                self.q_resp.put({'timestamp': dt,
+                                 'internalSN_u%04d' % self.uubnum: s})
             if self.timer.stop.is_set():
                 self.logger.info('UUBtsc stopped')
                 return
-        self.logger.info('added immediate power.login')
-        self.timer.add_immediate('power.login', [self.uubnum])
+        # self.logger.info('added immediate telnet.login')
+        # self.timer.add_immediate('telnet.login', [self.uubnum])
         self.logger.debug('UUB live, entering while loop')
         while True:
             self.timer.evt.wait()
@@ -269,7 +278,7 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
             # self.logger.debug('conn.getresponse')
             resp = conn.getresponse().read()
             # self.logger.debug('re_sernum')
-            res = re_sernum.match(resp).groupdict()
+            res = re_sernum.match(resp).groupdict()['sernum']
             # self.logger.debug('breaking')
         except (httplib.CannotSendRequest, socket.error, AttributeError):
             conn.close()
@@ -319,25 +328,29 @@ return dictionary: sc<uubnum>_<variable>: value
 class UUBdaq(threading.Thread):
     """Thread managing data acquisition from UUBs"""
     TOUT_PREP = 0.2   # delay between afg setting and trigger in s
-    TOUT_DAQ = 0.1    # timeout between trigger and UUBlisten cancel
+    TOUT_RAMP = 0.05  # delay between setting ADC ramp and trigger in s
+    TOUT_DAQ = 0.2    # timeout between trigger and UUBlisten cancel
 
-    def __init__(self, timer, afg, ulisten, trigdelay, q_resp,
+    def __init__(self, timer, ulisten, q_resp,
+                 afg, splitmode, trigdelay, trigger,
                  gener_param=gener_funcparams()):
         """Constructor
 timer - instance of timer
-afg - instance of AFG
 ulisten - instance of UUBlistener
+q_resp - queue for responses (for meas_point/meas_<name>/db_<name>
+afg - instance of AFG
+splitmode - bound method PowerControl.splitterMode
 trigdelay - instance of TrigDelay
+trigger - bound method for trigger
 gener_param - generator of measurement paramters (see gener_funcparams)
 """
         super(UUBdaq, self).__init__()
-        self.timer, self.afg, self.ulisten = timer, afg, ulisten
-        self.trigdelay, self.q_resp = trigdelay, q_resp
+        self.timer, self.ulisten, self.q_resp = timer, ulisten, q_resp
+        self.afg, self.splitmode, self.trigger = afg, splitmode, trigger
+        self.trigdelay = trigdelay
         self.tnames = [rec[0] for rec in gener_param]  # timer names
         self.functypes = {rec[0]: rec[1] for rec in gener_param}
         self.geners = {rec[0]: rec[2] for rec in gener_param}
-        self.aflags = {rec[0]: rec[3] for rec in gener_param}
-        self.ulisten = ulisten
         self.uubnums = set()
         self.uubnums2add = []
         self.uubnums2del = []
@@ -358,13 +371,8 @@ gener_param - generator of measurement paramters (see gener_funcparams)
             tflags = {tname: self.timer.flags[tname]
                       for tname in self.tnames
                       if tname in self.timer.flags}
-            # copy other relevant flags
-            aflags = {'timestamp': timestamp}
-            for tname, flags in tflags.iteritems():
-                aflags.update({key: flags[key] for key in self.aflags[tname]
-                               if key in flags})
-            if len(aflags) > 1:
-                self.q_resp.put(aflags)
+            if not tflags:
+                continue
 
             # update uubnums
             while self.uubnums2add:
@@ -382,7 +390,14 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     continue
                 logger.info('executing %s, flags %s',
                             tname, repr(tflags[tname]))
-                self.trigdelay.delay = self.functypes[tname]
+                if self.trigdelay is not None:
+                    self.trigdelay.delay = self.functypes[tname]
+                if tname == 'meas.ramp':
+                    for adcr in self.adcramp.itervalues():
+                        adcr.switchOn()
+                    sleep(UUBdaq.TOUT_RAMP)
+                elif tname in ('meas.pulse', 'meas.freq'):
+                    self.afg.switchOn(True)
                 # run measurement for all parameters
                 for afg_dict, item_dict in self.geners[tname](**tflags[tname]):
                     logger.debug("params %s", repr(item_dict))
@@ -392,9 +407,10 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     self.ulisten.uubnums = self.uubnums.copy()
                     if afg_dict:
                         self.afg.setParams(**afg_dict)
-                        self.afg.switchOn(True)
+                        if 'splitmode' in afg_dict:
+                            self.splitmode(afg_dict['splitmode'])
                         sleep(UUBdaq.TOUT_PREP)
-                    self.afg.trigger()
+                    self.trigger()
                     logger.debug('trigger sent')
                     finished = self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
                     if not finished:
@@ -402,9 +418,13 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     # stop daq at ulisten
                     self.ulisten.uubnums = set()
                     self.ulisten.clear = True
-                    if afg_dict:
-                        self.afg.switchOn(False)
                     logger.debug('DAQ completed')
+                if tname == 'meas.ramp':
+                    for adcr in self.adcramp.itervalues():
+                        adcr.switchOff()
+                    sleep(UUBdaq.TOUT_RAMP)
+                elif tname in ('meas.pulse', 'meas.freq'):
+                    self.afg.switchOn(False)
         # end while(True)
         logger.info('Timer stopped, stopping UUB daq')
 
@@ -581,7 +601,7 @@ header - data as in `struct shwr_header'"""
         """Convert raw data to numpy 2048x10 array"""
         if self.yall is not None:
             return self.yall
-        yall = numpy.zeros([self.NPOINT, 10], dtype=float)
+        yall = np.zeros([self.NPOINT, 10], dtype=float)
         start = self.shwr_buf_start
         for i in xrange(self.NPOINT):
             index = (i + start) % self.NPOINT
@@ -626,55 +646,109 @@ q_dp - a queue to send numpy data
 
 class UUBtelnet(threading.Thread):
     """Class making telnet to UUBs and run netscope program"""
-    CMDS = ("tftp -g -r netscope.elf -l netscope 192.168.31.254",
-            "chmod +x netscope",
-            "tftp -g -r adcramp.elf -l adcramp 192.168.31.254",
-            "chmod +x adcramp",
-            "./adcramp &",
-            "./netscope >&/dev/null")
-    LOGIN = "root"
-    PASSWD = "root"
 
     def __init__(self, timer, *uubnums):
         super(UUBtelnet, self).__init__()
         self.timer = timer
         self.uubnums = list(uubnums)
-        self.telnets = [Telnet() for uubnum in self.uubnums]
+        self.telnets = [None] * len(self.uubnums)
         self.uubnums2add = []
         self.uubnums2del = []
         self.logger = logging.getLogger('UUBtelnet')
+        # parameters
+        self.TOUT = 1  # timeout for read_until
+        self.LOGIN = "root"
+        self.PASSWD = "root"
+        self.PROMPT = "#"     # prompt to expect after successfull login
 
-    def login(self, uubnums=None):
+    def _read_until(self, tn, match):
+        """Telnet.read_until but raise AssertionError if does not match"""
+        resp = tn.read_until(match, self.TOUT)
+        assert resp.find(match) >= 0
+        return resp
+
+    def _login(self, uubnums=None):
         """Login to UUBs
-uubnums - if not None, logs in only to these UUB"""
-        for uubnum, tn in zip(self.uubnums, self.telnets):
+uubnums - if not None, logs in only to these UUB
+return list of failed UUBs or None"""
+        failed = []
+        for ind, uubnum in enumerate(self.uubnums):
             if uubnums is not None and uubnum not in uubnums:
                 continue
-            self.logger.debug('logging to UUB %04d', uubnum)
-            tn.open(uubnum2ip(uubnum))
-            tn.read_until("login: ")
-            tn.write(UUBtelnet.LOGIN + "\n")
-            tn.read_until("Password: ")
-            tn.write(UUBtelnet.PASSWD + "\n")
-            for cmd in UUBtelnet.CMDS:
-                tn.write(cmd + "\n")
-                tn.read_until(cmd + "\r\n")
+            tn = self.telnets[ind]
+            if tn is not None:   # close previously open telnet
+                self.logger.debug('closing UUB %04d before login', uubnum)
+                tn.close()
+            try:
+                self.logger.debug('logging to UUB %04d', uubnum)
+                tn = Telnet(uubnum2ip(uubnum))
+                self._read_until(tn, "login: ")
+                tn.write(self.LOGIN + "\n")
+                self._read_until(tn, "Password: ")
+                tn.write(self.PASSWD + "\n")
+                self._read_until(tn, self.PROMPT)
+                self.telnets[ind] = tn
+            except (socket.error, EOFError, AssertionError):
+                self.logger.warning('logging to UUB %04d failed', uubnum)
+                self.telnets[ind] = None
+                failed.append(uubnum)
+        return failed if failed else None
 
-    def logout(self, uubnums=None):
+    def _logout(self, uubnums=None):
         """Logout from UUBs
 uubnums - if not None, logs out only from these UUB"""
-        for uubnum, tn in zip(self.uubnums, self.telnets):
+        for ind, uubnum in enumerate(self.uubnums):
             if uubnums is not None and uubnum not in uubnums:
                 continue
-            self.logger.debug('logging out of UUB %04d', uubnum)
-            tn.close()
+            tn = self.telnets[ind]
+            if tn is None:   # close previously open telnet
+                self.logger.debug('UUB %04d already closed', uubnum)
+            else:
+                self.logger.debug('logging off UUB %04d', uubnum)
+                tn.close()
+                self.telnets[ind] = None
+
+    def _runcmds(self, cmdlist, uubnums=None):
+        """Run commands on UUBs
+cmdlist - list of commands to run
+uubnums - if not None, logs in only to these UUB
+return list of failed UUBs or None"""
+        failed = []
+        for ind, uubnum in enumerate(self.uubnums):
+            if uubnums is not None and uubnum not in uubnums:
+                continue
+            tn = self.telnets[ind]
+            if tn is None:
+                self.logger.warning('not logged to UUB %04d yet', uubnum)
+                if self._login(uubnums=(uubnum, )) is not None:
+                    failed.append(uubnum)
+                    continue
+                tn = self.telnets[ind]
+            for cmd in cmdlist:
+                try:
+                    self.logger.debug('sending command "%s" to UUB %04d',
+                                      cmd, uubnum)
+                    tn.write(cmd + "\n")
+                    self._read_until(tn, cmd + "\r\n")
+                except (socket.error, EOFError, AssertionError):
+                    self.logger.warning('sending commands to UUB %04d failed',
+                                        uubnum)
+                    self.telnets[ind] = None
+                    failed.append(uubnum)
+                    break  # for cmd in cmdlist
+        return failed if failed else None
+
+    def __del__(self):
+        for tn in self.telnets:
+            if tn is not None:
+                tn.close()
 
     def run(self):
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
                 self.logger.info('Timer stopped, closing telnets')
-                self.logout()
+                self._logout()
                 return
             # timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
@@ -683,21 +757,27 @@ uubnums - if not None, logs out only from these UUB"""
                 if uubnum in self.uubnums:
                     continue
                 self.uubnums.append(uubnum)
-                self.telnets.append(Telnet())
+                self.telnets.append(None)
             while self.uubnums2del:
                 uubnum = self.uubnums2del.pop()
                 if uubnum not in self.uubnums:
                     continue
                 ind = self.uubnums.index(uubnum)
                 tn = self.telnets.pop(ind)
-                tn.close()
+                if tn is not None:
+                    tn.close()
                 self.uubnums.pop(ind)
-            if 'power.logout' in flags:
+            if 'telnet.logout' in flags:
                 self.logger.info('logout event')
-                self.logout(flags['power.logout'])
-            if 'power.login' in flags:
+                self._logout(flags['telnet.logout'])
+            if 'telnet.login' in flags:
                 self.logger.info('login event')
-                self.login(flags['power.login'])
+                self._login(flags['telnet.login'])
+            if 'telnet.cmds' in flags:
+                self.logger.info('telnet commands')
+                cmdlist = flags['telnet.cmds']['cmdlist']
+                uubnums = flags['telnet.cmds'].get('uubnums', None)
+                self._runcmds(cmdlist, uubnums=uubnums)
 
 
 def ADCtup2c(tup):
@@ -749,7 +829,7 @@ If OK, return True, else return False"""
             return False
         expresp = 0x20 + len(cmd)
         if ord(resp) != expresp:
-            self.logger.info('Unexpected respon %02X (%02X expected)',
+            self.logger.info('Unexpected response %02X (%02X expected)',
                              ord(resp), expresp)
             return False
         self.logger.debug('done OK')
