@@ -161,7 +161,7 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
-                    mrs[mptime] = {key: mp[key]
+                    mrs[mptime] = {key: self._macro(mp[key])
                                    for key in ('db', )
                                    if key in mp}
             if "meas.noise" in segment:
@@ -172,7 +172,7 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
-                    mns[mptime] = {key: mp[key]
+                    mns[mptime] = {key: self._macro(mp[key])
                                    for key in ('db', )
                                    if key in mp}
             if "meas.pulse" in segment:
@@ -302,16 +302,18 @@ return polyline approximation at the time t"""
                 continue   # already processed timestamp
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if self.starttime is None or self.stoptime < timestamp or all(
-                    [name not in flags
-                     for name in ('meas.sc', 'meas.thp',
-                                  'meas.ramp', 'meas.noise', 'meas.iv',
-                                  'meas.pulse', 'meas.freq')]):
-                continue
-            dur = (timestamp - self.starttime).total_seconds()
-            if dur < 0:
-                continue
-            res = {'timestamp': timestamp}
+            if self.starttime is None or self.stoptime < timestamp:
+                # or all(
+                #     [name not in flags
+                #      for name in ('meas.sc', 'meas.thp',
+                #                   'meas.ramp', 'meas.noise', 'meas.iv',
+                #                   'meas.pulse', 'meas.freq')]):
+                dur = None
+            else:
+                dur = (timestamp - self.starttime).total_seconds()
+                if dur < 0:
+                    dur = None
+            res = {'timestamp': timestamp, 'rel_time': dur}
             for name in ('meas.ramp', 'meas.noise', 'meas.pulse', 'meas.freq'):
                 if name in flags:
                     mname = name.split('.')[1]
@@ -320,12 +322,11 @@ return polyline approximation at the time t"""
                         res['db_' + mname] = flags[name]['db']
             if dur in self.timepoints:
                 res['meas_point'] = self.timepoints[dur]
-            if self.time_temp:
+            if self.time_temp and dur is not None:
                 res['set_temp'] = self.polyline(dur, self.time_temp)
-            if self.time_humid:
+            if self.time_humid and dur is not None:
                 res['set_humid'] = self.polyline(dur, self.time_humid)
-            if len(res) > 1:
-                self.q_resp.put(res)
+            self.q_resp.put(res)
 
     def startprog(self, delay=31):
         """Create tickers for meas.*, power.*, telnet.* and binder.state

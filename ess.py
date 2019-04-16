@@ -29,8 +29,9 @@ from dataproc import make_DPfilter_linear, make_DPfilter_ramp
 from dataproc import make_DPfilter_cutoff
 from afg import AFG, RPiTrigger
 from power import PowerSupply
+from db import DBconnector
 
-VERSION = '20190408'
+VERSION = '20190415'
 
 
 class ESS(object):
@@ -41,6 +42,9 @@ class ESS(object):
             d = json.load(js)
         else:
             d = json.loads(js)
+
+        self.phase = d['phase']
+        self.tester = d['tester']
 
         # basetime
         dt = datetime.now()
@@ -269,6 +273,7 @@ class ESS(object):
         # database
         if 'db' in d['dataloggers']:
             self.db = DBconnector(self, d['dataloggers']['db'])
+            flabels = d['dataloggers']['db'].get('flabels', None)
             for item in d['dataloggers']['db']['logitems']:
                 if item == 'ramp':
                     if dpfilter_ramp is None:
@@ -288,7 +293,7 @@ class ESS(object):
                     if dpfilter_linear is None:
                         dpfilter_linear = make_DPfilter_linear(self.lowgains,
                                                                self.highgains)
-                    self.dl.add_handler(self.db.getLogHandler(item),
+                    self.dl.add_handler(self.db.getLogHandler(item, flabels),
                                         (dpfilter_linear, ))
                 else:
                     self.dl.add_handler(self.db.getLogHandler(item))

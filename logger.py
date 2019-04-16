@@ -80,10 +80,10 @@ class LogHandlerRamp(object):
 # Ramp test results
 # date %s
 # columns: timestamp | meas_point | OK
-#   _or_   timestamp | meas_point | failed: <label list> | 
+#   _or_   timestamp | meas_point | failed: <label list> |
 #   _or_   timestamp | meas_point | missing: <label list>
 """
-    
+
     def __init__(self, filename, dt):
         self.f = open(filename, 'a')
         self.f.write(LogHandlerRamp.prolog % dt.strftime('%Y-%m-%d'))

@@ -1,4 +1,6 @@
 {
+  "phase": "pretest",
+  "tester": "Petr Tobiska",
   "datadir": "data-%Y%m%d/",
   "logging": {
     "level": 10,
@@ -19,6 +21,11 @@
   "dataloggers": {
     "ramp": true,
     "pede": true,
-    "pickle": false },
+    "pickle": false,
+    "db": { "dbuser": "sdeu-fzu",
+	    "dbpass": "xxxxxxx",
+	    "urlGetUUB": "https://auger-sdeu.farm.particle.cz/db/getuub/{uubnum}",
+	    "urlCommit": "https://auger-sdeu.farm.particle.cz/db/commit",
+	    "logitems": [ "noise" ]}},
   "uubnums": [ 3840, $UUBNUM ]
 }
