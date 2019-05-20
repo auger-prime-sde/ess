@@ -47,7 +47,8 @@ class MDO(object):
 
     def __del__(self):
         self.logger.info('closing')
-        os.close(self.fd)
+        if self.fd is not None:
+            os.close(self.fd)
 
     def send(self, line, lvl=logging.DEBUG, resplen=0):
         """Send line to MDO3000

@@ -17,14 +17,15 @@ def abs2(x):
 
 class HalfSineFitter(object):
     """Fit a train of half sine pulses using FFT"""
-    (AMPLI, PEDE, PHASE, YVAL) = range(4)
+    (AMPLI, PEDE, PHASE, YVAL, CHI) = range(5)
 
-    def __init__(self, w, N=2048, FREQ=120., Npeak=5):
+    def __init__(self, w, N=2048, FREQ=120., Npeak=5, zInvert=False):
         self.w = w             # half period of sine in us
         # fixed parameters
         self.N = N             # number of bins
         self.FREQ = FREQ       # ADC sampling rate in MHz
         self.Npeak = Npeak     # how many halfsines
+        self.zInvert = zInvert  # halfsines negative?
         # parameters for fitting, set before calling model()
         self.binstart = 600
         self.Nampli = 200      # cut on fft coefs for calculation of amplitudes
@@ -41,6 +42,8 @@ Calculate train of half sine pulses of width w, separated by 3*w pedestal
     """
         if binstart is None:
             binstart = self.binstart
+        if self.zInvert:
+            ampli = -ampli
         argsine = pi/self.w/self.FREQ * (
             np.linspace(0, self.N, self.N, endpoint=False) - binstart)
         mask = (argsine % (4*pi) < pi) & (argsine > 0) & \
@@ -56,10 +59,10 @@ Calculate train of half sine pulses of width w, separated by 3*w pedestal
         yfft = np.fft.fft(self.y, axis=0)
         self.abs2 = abs2(yfft[:self.Nampli])   # norm of coefficients
         self.power = np.dot(self.abs2[1:], self.abs2[1:])
-        self.c0 = abs(yfft[0])
-        self.mphase = np.angle(yfft[:self.Nphase])
-        self.normphase = np.dot(np.arange(0, self.Nphase),
-                                self.abs2[:self.Nphase])
+        self.c0 = np.real(yfft[0])
+        self.mphase = np.angle(yfft[1:self.Nphase])
+        self.normphase = np.dot(np.arange(1, self.Nphase),
+                                self.abs2[1:self.Nphase])
 
     def fit(self, yall, stage=YVAL):
         """Perform fit
@@ -77,7 +80,7 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
             return res
 
         # calculate pedestals
-        pede = (abs(yfft[0, :]) - ampli * self.c0) / self.N
+        pede = (np.real(yfft[0, :]) - ampli * self.c0) / self.N
 
         res['pede'] = pede
         if stage == HalfSineFitter.PEDE:
@@ -85,8 +88,8 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
 
         # calculate binstart
         mphase = np.outer(self.mphase, np.ones(Ncol))
-        phasedif = np.unwrap(np.angle(yfft[:self.Nphase, :]) - mphase, axis=0)
-        slope = np.dot(self.abs2[:self.Nphase], phasedif) / self.normphase
+        phasedif = np.unwrap(np.angle(yfft[1:self.Nphase, :]) - mphase, axis=0)
+        slope = np.dot(self.abs2[1:self.Nphase], phasedif) / self.normphase
         binstart = self.binstart - N/2/pi * slope
 
         res['binstart'] = binstart
@@ -100,6 +103,11 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
                                      pede=pede[i])
 
         res['yval'] = yf
+        if stage == HalfSineFitter.YVAL:
+            return res
+
+        # calculate chi
+        res['chi'] = np.std(yall - yf, axis=0)
         return res
 
 

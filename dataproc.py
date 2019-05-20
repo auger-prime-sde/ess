@@ -42,6 +42,84 @@ def expo2float(s):
     return imant * 10 ** (expo - (len(s) - 2))
 
 
+class SplitterGain(object):
+    """Gain of Stastny's splitter"""
+    # mapping UUB chan to splitchan + high gain (True)
+    UUB2SPLIT = (None,  # placeholder to allow chan 1 .. 10
+                 ('A', False), ('A', True),
+                 ('B', False), ('B', True),
+                 ('C', False), ('C', True),
+                 ('D', False),
+                 ('E', False),
+                 ('F', False), ('F', True))
+
+    def __init__(self, pregains=(1, None), mdochans=None, uubnums=None,
+                 calibration=None):
+        """Constructor.
+pregain - afg.gains for splitter input (float)
+mdochans - list of upto 4 splitter channels
+uubnums - list of upto 10 UUB numbers
+calibration - TBD
+"""
+        assert len(pregains) == 2
+        self.pregains = [float(p) if p is not None else None
+                         for p in pregains]
+        self.mdomap = None
+        if mdochans is not None:
+            assert 0 < len(mdochans) <= 4
+            self.mdomap = {ch+1: str(splitch)
+                           for ch, splitch in enumerate(mdochans)
+                           if splitch is not None and (
+                                   len(splitch) == 2 and
+                                   splitch[0] in 'ABCDEF' and
+                                   splitch[1] in '0123456789') or
+                           splitch == 'REF'}
+            if any([len(splitch) == 2 for splitch in self.mdomap.values()]):
+                assert self.pregains[0] is not None
+            if 'REF' in self.mdomap.values():
+                assert self.pregains[1] is not None
+        if uubnums is not None:
+            assert len(uubnums) < 10 and \
+                all([0 < uubnum < 4000
+                     for uubnum in uubnums if uubnum is not None])
+            self.uubnums = uubnums
+        else:
+            self.uubnums = [None] * 10
+
+    def gainMDO(self, splitmode, mdoch):
+        """Return gain for MDO channel
+mdoch - 1 .. 4"""
+        return self._gain(splitmode, self.mdomap[mdoch])
+
+    def gainUUB(self, splitmode, uubnum, chan):
+        """Return gain for UUB channel chan on UUB <uubnum>
+uubnum - 1 .. 4000
+chan - 1 .. 10"""
+        index = self.uubnums.index(uubnum)
+        group = SplitterGain.UUB2SPLIT[chan]
+        return self._gain(splitmode, '%c%d' % (group, index))
+
+    def _checksplitch(self, splitch):
+        assert isinstance(splitch, str) and len(splitch) == 2
+        assert splitch[0] in 'ABCDEF' and splitch[1] in '0123456789'
+
+    def _gain(self, splitmode, splitch):
+        """Return gain for splitter channel
+splitch - i.e. C8"""
+        if splitch == 'REF':
+            return self.pregains[1]
+        self._checksplitch(splitch)
+        assert splitmode in (0, 1, 3)
+        if splitmode == 0:
+            gain = 1.0 / 32
+        elif splitmode == 1 or splitch[0] != 'F':
+            gain = 1.0
+        else:
+            gain = 4.0
+        # 0.5 hardcoded gain due impedance matching
+        return 0.5 * self.pregains[0] * gain
+
+
 def splitter_amplification(splitmode, chan):
     """Amplification of Stastny's splitter
 splitmode - 0, 1, 3
@@ -95,9 +173,11 @@ attr are (optional, but in this order):
   timestampmicro  \d{14}      datetime       YYYYmmddHHMMSSffffff
   uubnum          u\d{4}      int 0-9999     u0015
   chan            c\d         int 1-10       c1 - c9, c0 .. channels 1 - 10
+  splitch         s[A-F]\d    str            A-F .. 12, 34, 56, 7, 8, 9
   splitmode       a[013]      0, 1, 3        splitter mode
   voltage         v\d{2,3}    float          voltage coded as v1.v2v3 [volt]
   freq            f\d{2,4}    float          EM1M2M3 coded freq M1.M2M3*10^E Hz
+  index           i\d{1,3}    int            index of measurement
   functype        [A-Z]       char           P - pulse series, F - sine,
                                              N - noise, R - ramp
 """
@@ -124,6 +204,12 @@ kwargs and item are merged, item is not modified"""
     if 'chan' in kwargs:
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
+    if 'splitch' in kwargs:
+        arg = kwargs['splitch']
+        assert isinstance(arg, str)
+        assert arg == 'REF' or len(arg) == 2 and \
+            arg[0] in 'ABCDEF' and arg[1] in '0123456789'
+        attr.append('s' + arg)
     functype = kwargs.get('functype', '')
     if 'splitmode' in kwargs and functype in ('P', 'F'):
         assert kwargs['splitmode'] in (0, 1, 3)
@@ -133,11 +219,13 @@ kwargs and item are merged, item is not modified"""
         if(svolt[-1] == '0'):
             svolt = svolt[:-1]
         attr.append(svolt)
-    if 'functype' == 'F':
+    if functype == 'F':
         if 'flabel' in kwargs:
             attr.append('f' + kwargs['flabel'])
         elif 'freq' in kwargs:
             attr.append('f' + float2expo(kwargs['freq'], manlength=3))
+    if 'index' in kwargs:
+        attr.append('i%03d' % kwargs['index'])
     return '_'.join(attr) + functype
 
 
@@ -147,9 +235,11 @@ re_labels = [re.compile(regex) for regex in (
     r'(?P<timestampmicro>20\d{18})$',
     r'u(?P<uubnum>\d{4})$',
     r'c(?P<chan>\d)$',
+    r's(?P<splitch>[A-F]\d|REF)$',
     r'a(?P<splitmode>[013])$',
     r'v(?P<voltage>\d{2,3})$',
-    r'f(?P<flabel>\d{2,4})$')]
+    r'f(?P<flabel>\d{2,4})$',
+    r'i(?P<index>\d{3})$')]
 
 
 def label2item(label):
@@ -171,9 +261,9 @@ def label2item(label):
         attr = attrs.pop(0)
 
     # change strings from re to Python objects
-    # uubnum, chan and splitmode to integers
+    # uubnum, chan, splitmode and index to integers
     d.update({key: int(d[key])
-              for key in ('uubnum', 'chan', 'splitmode') if key in d})
+              for key in ('uubnum', 'chan', 'splitmode', 'index') if key in d})
     if 'chan' in d and d['chan'] == 0:
         d['chan'] = 10
     # convert voltage back to float and chan 0 -> 10

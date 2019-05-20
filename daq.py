@@ -17,7 +17,7 @@ from Queue import Queue
 from UUB import UUBlisten, UUBconvData, UUBtelnet
 from dataproc import DataProcessor, DP_store
 
-VERSION = '20190124'
+VERSION = '20190520'
 
 
 class DAQ(object):
@@ -66,8 +66,12 @@ class DAQ(object):
         self.uconv.start()
 
         # UUBs - UUBtelnet
-        self.telnet = UUBtelnet(None, *self.uubnums)
-        self.telnet.login()
+        telnetcmds = d.get('telnetcmds', None)
+        if telnetcmds is not None:
+            self.telnet = UUBtelnet(None, *self.uubnums)
+            self.telnet._runcmds(map(str, telnetcmds))
+        else:
+            self.telnet = None
 
         # data processing
         self.dp0 = DataProcessor(self.q_dp)
@@ -76,10 +80,11 @@ class DAQ(object):
 
     def stop(self):
         """Stop all threads"""
-        self.telnet.logout()
         self.dp0.stop.set()
         self.ulisten.stop.set()
         self.uconv.stop.set()
+        if self.telnet is not None:
+            self.telnet.__del__()
 
 
 if __name__ == '__main__':

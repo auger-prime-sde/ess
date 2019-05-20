@@ -31,7 +31,7 @@ from afg import AFG, RPiTrigger
 from power import PowerSupply
 from db import DBconnector
 
-VERSION = '20190415'
+VERSION = '20190515'
 
 
 class ESS(object):
@@ -57,8 +57,8 @@ class ESS(object):
         # datadir
         self.datadir = dt.strftime(
             d.get('datadir', 'data-%Y%m%d/'))
-        if self.datadir[-1] != '/':
-            self.datadir += '/'
+        if self.datadir[-1] != os.sep:
+            self.datadir += os.sep
         if not os.path.isdir(self.datadir):
             os.mkdir(self.datadir)
 
@@ -72,7 +72,7 @@ class ESS(object):
                       if key in d['logging']}
             if 'filename' in kwargs:
                 kwargs['filename'] = dt.strftime(kwargs['filename'])
-                if kwargs['filename'][0] not in ('.', '/'):
+                if kwargs['filename'][0] not in ('.', os.sep):
                     kwargs['filename'] = self.datadir + kwargs['filename']
             logging.basicConfig(**kwargs)
 

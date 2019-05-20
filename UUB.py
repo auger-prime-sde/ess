@@ -19,6 +19,8 @@ from Queue import Empty
 from telnetlib import Telnet
 import numpy as np
 
+from dataproc import float2expo
+
 HTTPPORT = 80
 DATAPORT = 8888    # UDP port UUB send data to
 CTRLPORT = 8887    # UDP port UUB listen for commands
@@ -85,7 +87,6 @@ return afg_dict, item_dict"""
         voltages = kwargs.get('voltages', (None, ))
         for splitmode in splitmodes:
             if splitmode is not None:
-                afg_dict['splitmode'] = splitmode
                 item_dict['splitmode'] = splitmode
             for v in voltages:
                 if v is not None:
@@ -104,12 +105,12 @@ return afg_dict, item_dict"""
         voltages = kwargs.get('voltages', (None, ))
         for splitmode in splitmodes:
             if splitmode is not None:
-                afg_dict['splitmode'] = splitmode
                 item_dict['splitmode'] = splitmode
             for freq in freqs:
                 if freq is not None:
                     afg_dict['freq'] = freq
                     item_dict['freq'] = freq
+                    item_dict['flabel'] = float2expo(freq)
                 for v in voltages:
                     if v is not None:
                         afg_dict['Fvoltage'] = v
@@ -455,7 +456,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         logger = logging.getLogger('UUBlisten')
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((self.laddr, self.port))
-        self.sock.settimeout(0.0001)
+        self.sock.settimeout(self.SLEEPTIME)
         logger.info("Listening on %s:%d", self.laddr, self.port)
         while not self.stop.is_set():
             if self.clear:

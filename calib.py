@@ -11,11 +11,14 @@ from datetime import datetime
 from time import sleep
 import numpy as np
 # ESS stuff
-from afg import AFG, splitter_amplification
+from afg import AFG
+from BME import TrigDelay, PowerControl
 from mdo import MDO
 from UUB import gener_funcparams
-from dataproc import item2label, label2item, float2expo
-from hsfitter import SineFitter
+from dataproc import item2label, SplitterGain
+from hsfitter import HalfSineFitter, SineFitter
+
+VERSION = "20190516"
 
 try:
     with open(sys.argv[1], 'r') as fp:
@@ -27,10 +30,14 @@ except (IndexError, IOError, ValueError):
 # timeouts
 TOUT_PREP = 0.4   # delay between afg setting and trigger in s
 TOUT_DAQ = 0.1    # timeout between trigger and oscilloscope readout
+MINVOLTSCALE = 0.005  # minimal voltage scale on MDO [V]
 
-datadir = datetime.now().strftime(d.get('datadir', './'))
+dt = datetime.now()
+datadir = dt.strftime(d.get('datadir', './'))
+if datadir[-1] != os.sep:
+    datadir += os.sep
 if not os.path.isdir(datadir):
-    os.mkdir(datadir)
+    os.makedirs(datadir)
 
 if 'comment' in d:
     with open(datadir + 'README.txt', 'w') as f:
@@ -42,138 +49,207 @@ if 'logging' in d:
               if key in d['logging']}
     if 'filename' in kwargs:
         kwargs['filename'] = datetime.now().strftime(kwargs['filename'])
+        if kwargs['filename'][0] not in ('.', '/'):
+            kwargs['filename'] = datadir + kwargs['filename']
     logging.basicConfig(**kwargs)
 logger = logging.getLogger('calib')
 
-afg = AFG(tmcid=d['usbtmc']['afg'], functype='F')
+
+td_predefined = d.get('trigdelay', {'P': 0, 'F': 30})
+td = TrigDelay(d['ports']['trigdelay'], td_predefined)
+pc = PowerControl(d['ports']['powercontrol'], None, None, [None]*10)
+afgparams = d.get('afgparams', {})
+afg = AFG(tmcid=d['usbtmc']['afg'], **afgparams)
+afg_chans = [i for i, gain in enumerate(afg.param['gains'])
+             if gain is not None]
+
 mdo = MDO(tmcid=d['usbtmc']['mdo'])
-for item in d['setup']:
-    mdo.send(item)
+mdochans = d.get('mdochans')
+ref = mdochans.index('REF') if 'REF' in mdochans else None
+try:
+    trig = mdochans.index('TRIG')
+    mdochans[trig] = None
+except IndexError:
+    logger.error('No TRIG in mdochans')
+    raise
+
+splitgain = SplitterGain(pregains=afg.param['gains'], mdochans=mdochans)
+
+for item in d['setup_mdo']:
+    mdo.send(item.format(TRIG=trig+1))
+for CH, splitch in splitgain.mdomap.iteritems():
+    for item in d['setup_mdoch']:
+        mdo.send(item.format(CH=CH))
 
 generF = [rec[2] for rec in gener_funcparams() if rec[1] == 'F'][0]
-afgkwargs = d.get('afgkwargs', {})
+generP = [rec[2] for rec in gener_funcparams() if rec[1] == 'P'][0]
 
-dataslice = d['dataslice'] if 'dataslice' in d else None
-
-# oscilloscope channels with signals
-cho = d.get('cho')
-ch9 = d.get('ch9')
-ch9ampli = d.get('ch9ampli')
-
-# sampling frequency and number of datapoints after dataslice
-mdo.send('HEADER 0')
-resp = mdo.send('HORIZONTAL:SCALE?', resplen=100)
-horscale = float(resp.rstrip())
-resp = mdo.send('HORIZONTAL:RECORDLENGTH?', resplen=100)
-N = int(resp.rstrip())
-FREQ = 1e-6 * N/10 / horscale  # in MHz
-if dataslice is not None:
-    start, stop, step = dataslice
-    if start is None:
-        start = 0
-    if stop is None:
-        stop = N
-    if step is None:
-        step = 1
-    N = (stop - start)/step
-    FREQ /= step
-logger.debug('N = %d, FREQ = %f, dataslice: %d:%d:%d',
-             N, FREQ, *dataslice)
+dataslice = d.get('dataslice')
+dataslice_max = (min([ds[0] for ds in dataslice.itervalues()]),
+                 max([ds[1] for ds in dataslice.itervalues()]), 1)
+FREQs = {'hr': 2500., 'lr': 125.}
 nharm = d.get('nharm', 1)
-sf = SineFitter(N=N, FREQ=FREQ, NHARM=nharm)
-sf.crop = False
-
-datalog = open(datadir + 'datalog.txt', 'w')
-prolog = """\
-# calibration of splitter: trace fit results
-# columns: flabel | freq[MHz] | ch2 | input voltage[V] |
-#          ampli_o[V] | ampli_9[V] | chi_o[V] | chi_9[V] |
-#          cos/sin coeffs[V]: n*omega, n = 1..%d
-#          vandermont coeffs: x**k, k = 0..%d
-#              x = (2*t + 1)/N - 1, t = 0..N - timebin
-""" % (sf.NHARM, sf.NPOLY)
-datalog.write(prolog)
-dlog_formstr = ("%-4s %5.2f  %d %4.2f" +
-                "   %7.5f %7.5f   %7.5f %7.5f" +
-                " %8.5f"*(2*sf.NHARM + 1 + sf.NPOLY) + "   " +
-                " %8.5f"*(2*sf.NHARM + 1 + sf.NPOLY) + "\n")
-
-fitlog = open(datadir + 'fitlog.txt', 'w')
-prolog = """\
-# calibration of splitter: linearity fit
-# columns: flabel | freq[MHz] | ch2 | senso | sens9 | 1-rho_o | 1-rho_9
-"""
-fitlog.write(prolog)
-fit_formstr = "%-4s %5.2f  %d   %7.5f %7.5f  %7.5f %7.5f\n"
-
-# run measurement for all parameters
-calibdata = {}
-afg.switchOn(True)
-for afg_dict, item_dict in generF(**afgkwargs):
-    logger.debug("params %s", repr(item_dict))
-    afg.setParams(**afg_dict)
-    # oscilloscope y-scale
-    voltage = afg.param['Fvoltage']
-    ch2 = afg.param['ch2']
-    freq = afg.param['freq']
-    flabel = float2expo(freq)
-    for ch_mdo, chan_uub in ((cho, 1), (ch9, ch9ampli)):
-        scale = 2 * voltage * splitter_amplification(ch2, chan_uub) / 1.0
-        mdo.send('CH%d:SCALE %f' % (ch_mdo, scale))
-    mdo.send('ACQUIRE:STATE ON')
-    sleep(TOUT_PREP)
-    afg.trigger()
-    logger.debug('trigger sent')
-    sleep(TOUT_DAQ)
-    vlabel = item2label(functype='F', ch2=ch2, voltage=voltage, freq=freq)
-    label = item2label(functype='F', ch2=ch2, freq=freq)
-    if label not in calibdata:
-        calibdata[label] = []
-    yall = np.zeros((N, 0))
-    for ch_mdo, typ in ((cho, 'datao'), (ch9, 'data9')):
-        res = mdo.readWFM(ch_mdo, dataslice)
-        fname = datadir + typ + '_' + vlabel + '.txt'
-        np.savetxt(fname, res[0])
-        yall = np.append(yall, res[0].reshape((N, 1)), axis=1)
-    resd = sf.fit(yall, flabel, freq, SineFitter.CHI)
-    calibdata[label].append((voltage, resd['ampli'].tolist()))
-    datalog.write(dlog_formstr % tuple([flabel, freq/1e6, ch2, voltage] +
-                                       resd['ampli'].tolist() +
-                                       resd['chi'].tolist() +
-                                       resd['param'].flatten('C').tolist()))
-afg.switchOn(False)
-datalog.close()
-
-# calculate sensitivity fit calibdata vs. voltage
-calibration = {}
-for label in sorted(calibdata.keys(),
-                    key=lambda label: (label2item(label)['ch2'],
-                                       label2item(label)['freq'])):
-    vallist = calibdata[label]
-    item = label2item(label)
-    sampo = splitter_amplification(item['ch2'], 1)
-    samp9 = splitter_amplification(item['ch2'], ch9ampli)
-    # [[ v_i, ampo_i, amp9_i], ...]
-    xy = np.zeros((len(vallist), 3))
-    for i, (voltage, [ampo, amp9]) in enumerate(vallist):
-        xy[i, :] = voltage, ampo/sampo, amp9/samp9
-    # xx_xy = [v1, v2, ...] * xy
-    xx_xy = xy.T[0].dot(xy)
-    slopes = xx_xy[1:] / xx_xy[0]
-    # correlation coeff = cov(V, ADC) / sqrt(var(V) * var(ADC))
-    if xy.shape[0] > 1:
-        covm = np.cov(xy, rowvar=False)
-        coeffo = 1.0 - covm[0][1] / np.sqrt(covm[0][0] * covm[1][1])
-        coeff9 = 1.0 - covm[0][2] / np.sqrt(covm[0][0] * covm[2][2])
+npoly = d.get('npoly', 1)
+hswidth = afg.param['hswidth']
+sf = {}
+hsf = {}
+for resol in ('hr', 'lr'):
+    if 'freq_' + resol in dataslice:
+        start, stop, step = dataslice['freq_' + resol]
+        N = (stop - start)/step
+        sf[resol] = SineFitter(N=N, FREQ=FREQs[resol],
+                               NHARM=nharm, NPOLY=npoly)
+        sf[resol].crop = False
     else:
-        coeffo, coeff9 = 0.0, 0.0
-    freq = item['freq']
-    flabel = float2expo(freq)
-    fitlog.write(fit_formstr % (flabel, freq/1.e6, item['ch2'],
-                                slopes[0], slopes[1], coeffo, coeff9))
-    calibration[label] = slopes.tolist()
+        sf[resol] = None
 
-fitlog.close()
+    if 'pulse_' + resol in dataslice:
+        start, stop, step = dataslice['pulse_' + resol]
+        N = (stop - start)/step
+        if N & (N-1):   # not a power of 2
+            logger.warning('N for pulse_%s (%d) not power of 2', resol, N)
+        hsf[resol] = HalfSineFitter(hswidth, N=N, FREQ=FREQs[resol],
+                                    zInvert=True)
+    else:
+        hsf[resol] = None
 
-with open(datadir + 'calib.json', 'w') as fp:
-    json.dump(calibration, fp, indent=2, sort_keys=True)
+# data logs
+if any(hsf):
+    datapulses = open(datadir + 'datapulses.txt', 'a')
+    prolog = """\
+# calibration of splitter by pulses
+# {dt:%Y-%m-%d}
+# columns: splitch | resol | splitmode | Pvoltage[V] |
+#          ampli[V] | pede[V] | chi[V]
+""".format(dt=dt)
+    datapulses.write(prolog)
+    logdata = ['{splitch:3s}', '{resol:2s}',
+               '{splitmode:1d}', '{voltage:3.1f}',
+               '{ampli:7.5f}', '{pede:8.5f}', '{chi:7.5f}']
+    datapulses_formstr = '  '.join(logdata) + '\n'
+    fitpulses = {splitch: [] for splitch in splitgain.mdomap.itervalues()}
+
+if any(sf):
+    datafreqs = open(datadir + 'datafreqs.txt', 'a')
+    prolog = """\
+# calibration of splitter by sines
+# {dt:%Y-%m-%d}
+# columns: splitch | resol | flabel | freq[MHz] | splitmode | Fvoltage[V] |
+#          ampli[V] | chi[V] | <params>
+# params: cos/sin coeffs[V]: n*omega, n = 1..{nharm:d}
+#         vandermont coeffs: x**k, k = 0..{npoly:d}
+#             x = (2*t + 1)/N - 1, t = 0..N-1 - timebin
+""".format(dt=dt, nharm=nharm, npoly=npoly)
+    datafreqs.write(prolog)
+    logdata = ['{splitch:2s}', '{resol:2s}',
+               '{flabel:3s}', '{freq:6.2f}', '{splitmode:1d}',
+               '{voltage:3.1f}', '{ampli:7.5f}', '{chi:7.5f}']
+    datafreqs_formstr = '  '.join(logdata)
+    fitfreqs = {splitch: [] for splitch in splitgain.mdomap.itervalues()}
+
+
+# data acquisition - pulses
+if 'P' in d['daqparams'] and any(hsf):
+    td.delay = 'P'
+    afg.setParams(functype='P')
+    afg.switchOn(True, afg_chans)
+    for afg_dict, item_dict in generP(**d['daqparams']['P']):
+        afg.setParams(**afg_dict)
+        if 'splitmode' in item_dict:
+            splitmode = item_dict['splitmode']
+            pc.splitterMode(splitmode)
+        else:
+            splitmode = None
+        # set optimal MDO vertical scale for each channel
+        for mdoch in splitgain.mdomap.iterkeys():
+            amplif = splitgain.gainMDO(splitmode, mdoch)
+            scale = item_dict['voltage'] * amplif / 6.0
+            if scale < MINVOLTSCALE:
+                scale = MINVOLTSCALE
+            mdo.send('CH%d:SCALE %f' % (mdoch, scale))
+        mdo.send('ACQUIRE:STATE ON')
+        sleep(TOUT_PREP)
+        afg.trigger()
+        logger.debug('trigger sent')
+        sleep(TOUT_DAQ)
+        for mdoch, splitch in splitgain.mdomap.iteritems():
+            res = mdo.readWFM(mdoch, dataslice_max)
+            fname = datadir + item2label(item_dict, splitch=splitch) + '.txt'
+            logger.info('saving %s', fname)
+            np.savetxt(fname, res[0])
+            for resol in ('hr', 'lr'):
+                if not hsf[resol]:
+                    continue
+                start, stop, step = dataslice['pulse_' + resol]
+                N = (stop - start)/step
+                yall = res[0][start:stop:step].reshape((N, 1))
+                resfit = hsf[resol].fit(yall, HalfSineFitter.CHI)
+                ampli = resfit['ampli'][0]
+                datapulses.write(datapulses_formstr.format(
+                    splitch=splitch, resol=resol, ampli=ampli,
+                    pede=resfit['pede'][0], chi=resfit['chi'][0], **item_dict))
+                eV = splitgain.gainMDO(splitmode, mdoch)*item_dict['voltage']
+                fitpulses[splitch].append((resol, eV, ampli))
+    afg.switchOn(False, afg_chans)
+
+# data acquisition - freqs
+if 'F' in d['daqparams'] and any(sf):
+    td.delay = 'F'
+    afg.setParams(functype='F')
+    afg.switchOn(True, afg_chans)
+    for afg_dict, item_dict in generF(**d['daqparams']['F']):
+        afg.setParams(**afg_dict)
+        freq, flabel = item_dict['freq'], item_dict['flabel']
+        if 'splitmode' in item_dict:
+            splitmode = item_dict['splitmode']
+            pc.splitterMode(splitmode)
+        else:
+            splitmode = None
+        # set optimal MDO vertical scale for each channel
+        for mdoch in splitgain.mdomap.iterkeys():
+            amplif = splitgain.gainMDO(splitmode, mdoch)
+            scale = 2 * item_dict['voltage'] * amplif / 6.0
+            if scale < MINVOLTSCALE:
+                scale = MINVOLTSCALE
+            mdo.send('CH%d:SCALE %f' % (mdoch, scale))
+        mdo.send('ACQUIRE:STATE ON')
+        sleep(TOUT_PREP)
+        afg.trigger()
+        logger.debug('trigger sent')
+        sleep(TOUT_DAQ)
+        for mdoch, splitch in splitgain.mdomap.iteritems():
+            res = mdo.readWFM(mdoch, dataslice_max)
+            fname = datadir + item2label(item_dict, splitch=splitch) + '.txt'
+            logger.info('saving %s', fname)
+            np.savetxt(fname, res[0])
+            for resol in ('hr', 'lr'):
+                if not hsf[resol]:
+                    continue
+                start, stop, step = dataslice['freq_' + resol]
+                N = (stop - start)/step
+                yall = res[0][start:stop:step].reshape((N, 1))
+                resfit = sf[resol].fit(yall, flabel, freq, SineFitter.CHI)
+                ampli = resfit['ampli'][0]
+                datafreqs.write(datafreqs_formstr.format(
+                    splitch=splitch, resol=resol,
+                    flabel=flabel, freq=1e-6*freq,
+                    splitmode=item_dict['splitmode'],
+                    voltage=item_dict['voltage'],
+                    ampli=ampli, chi=resfit['chi'][0]))
+                params = resfit['param'].flatten('C').tolist()
+                datafreqs.write('  ' + ' '.join(['%9.6f' % par
+                                                 for par in params]))
+                datafreqs.write('\n')
+                eV = splitgain.gainMDO(splitmode, mdoch)*item_dict['voltage']
+                fitfreqs[splitch].append((resol, eV, 'f'+flabel, ampli))
+    afg.switchOn(False, afg_chans)
+
+# epilog
+if any(hsf):
+    datapulses.close()
+    with open(datadir + 'fitpulses.json', 'a') as fp:
+        json.dump(fitpulses, fp, indent=2)
+if any(sf):
+    datafreqs.close()
+    with open(datadir + 'fitfreqs.json', 'a') as fp:
+        json.dump(fitfreqs, fp, indent=2)
