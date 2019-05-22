@@ -63,23 +63,33 @@ return [(timer.name, functype, generator, aflags), ...]
 """
     def generR(**kwargs):
         """Generator for ramp
-kwargs: <empty>
+kwargs: count
 return afg_dict, item_dict"""
-        afg_dict = {}
+        afg_dict = None
         item_dict = {'functype': 'R'}
-        yield afg_dict, item_dict
+        if 'count' in kwargs:
+            for i in xrange(kwargs['count']):
+                item_dict['index'] = i
+                yield afg_dict, item_dict
+        else:
+            yield afg_dict, item_dict
 
     def generN(**kwargs):
         """Generator for noise
-kwargs: <empty>
+kwargs: count
 return afg_dict, item_dict"""
-        afg_dict = {}
+        afg_dict = None
         item_dict = {'functype': 'N'}
-        yield afg_dict, item_dict
+        if 'count' in kwargs:
+            for i in xrange(kwargs['count']):
+                item_dict['index'] = i
+                yield afg_dict, item_dict
+        else:
+            yield afg_dict, item_dict
 
     def generP(**kwargs):
         """Generator for functype pulse
-kwargs: splitmodes, voltages
+kwargs: splitmodes, voltages, count
 return afg_dict, item_dict"""
         afg_dict = {'functype': 'P'}
         item_dict = afg_dict.copy()
@@ -92,11 +102,19 @@ return afg_dict, item_dict"""
                 if v is not None:
                     afg_dict['Pvoltage'] = v
                     item_dict['voltage'] = v
-                yield afg_dict, item_dict
+                if 'count' in kwargs:
+                    item_dict['index'] = 0
+                    yield afg_dict, item_dict
+                    afg_dict = None
+                    for i in xrange(1, kwargs['count']):
+                        item_dict['index'] = i
+                        yield afg_dict, item_dict
+                else:
+                    yield afg_dict, item_dict
 
     def generF(**kwargs):
         """Generator for functype freq
-kwargs: splitmodes, freqs, voltages
+kwargs: splitmodes, freqs, voltages, count
 return afg_dict, item_dict"""
         afg_dict = {'functype': 'F'}
         item_dict = afg_dict.copy()
@@ -115,7 +133,15 @@ return afg_dict, item_dict"""
                     if v is not None:
                         afg_dict['Fvoltage'] = v
                         item_dict['voltage'] = v
-                    yield afg_dict, item_dict
+                    if 'count' in kwargs:
+                        item_dict['index'] = 0
+                        yield afg_dict, item_dict
+                        afg_dict = None
+                        for i in xrange(1, kwargs['count']):
+                            item_dict['index'] = i
+                            yield afg_dict, item_dict
+                    else:
+                        yield afg_dict, item_dict
 
     return (('meas.ramp', 'R', generR),
             ('meas.noise', 'N', generN),
@@ -406,10 +432,10 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     self.ulisten.done.clear()
                     self.ulisten.details = item_dict.copy()
                     self.ulisten.uubnums = self.uubnums.copy()
-                    if afg_dict:
+                    if afg_dict is not None:
                         self.afg.setParams(**afg_dict)
-                        if 'splitmode' in afg_dict:
-                            self.splitmode(afg_dict['splitmode'])
+                        if 'splitmode' in item_dict:
+                            self.splitmode(item_dict['splitmode'])
                         sleep(UUBdaq.TOUT_PREP)
                     self.trigger()
                     logger.debug('trigger sent')

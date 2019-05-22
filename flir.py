@@ -20,13 +20,14 @@ class FLIR(threading.Thread):
     MAXBAUDRATE = 115200
     BLOCKSIZE = 512
     TOUT = 0.3
+    IMTYPES = {'p': '.fff', 'o': '.fff', 'e': '.jpg', 'j': '.jpg'}
     re_cmd = re.compile(r'(.*)\r\nOK>', re.DOTALL)
     re_fblock = re.compile(r'\r\nOK\r\n' +
                            r'(?P<size>..)(?P<crc>..)(?P<data>.*)\r\nOK>',
                            re.DOTALL)
     re_baudrate = re.compile(r'.*\r\n(?P<baudrate>\d+)\r\nOK>', re.DOTALL)
 
-    def __init__(self, port, timer, q_att, datadir, uubnum=0):
+    def __init__(self, port, timer, q_att, datadir, uubnum=0, imtype=None):
         """Detect baudrate, set termecho to off and switch baudrate to max"""
         super(FLIR, self).__init__()
         self.timer,  self.q_att, self.datadir = timer, q_att, datadir
@@ -48,7 +49,12 @@ class FLIR(threading.Thread):
         self.ser = s
         resp = self._send_recv('version')
         self.logger.info('detected: %s', resp.splitlines()[1])
-        self.typ = ('p', '.fff')  # <store> parameter and filename extensionx
+        # <store> parameter and filename suffix
+        if imtype not in FLIR.IMTYPES.keys():
+            if imtype is not None:
+                self.logger.error('Unknown image type "%s" ignored', imtype)
+            imtype = 'p'  # default: .fff with PNG rawdata
+        self.typ = (imtype, FLIR.IMTYPES[imtype])
 
     def __del__(self):
         if isinstance(self.ser, Serial) and self.ser.isOpen():

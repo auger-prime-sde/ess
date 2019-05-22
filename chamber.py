@@ -107,8 +107,8 @@ jsonobj - either json string or json file"""
         self.prog = BinderProg()
         self.time_temp = []
         self.time_humid = []
-        mrs = {}   # measurement ADC ramp: [time]
-        mns = {}   # measurement noise: [time]
+        mrs = {}   # measurement ADC ramp: {time: flags}
+        mns = {}   # measurement noise: {time: flags}
         mps = {}   # measurement pulses, {time: flags}
         mfs = {}   # measurement freqs, {time: flags}
         ivs = {}   # measurement power supply voltage/current: [time]
@@ -117,6 +117,7 @@ jsonobj - either json string or json file"""
         lis = {}   # logins {time: flags}, flags - None or list of UUBnums
         los = {}   # logouts {time: flags}, flags - None or list of UUBnums
         cms = {}   # telnet cmds {time: flags}, flags - cmdlist + uubnums
+        fls = {}   # flir operations {time: flags}
         temp_prev = None
         humid_prev = None
         operc = 0
@@ -162,7 +163,7 @@ jsonobj - either json string or json file"""
                     if offset < 0:
                         mptime += dur
                     mrs[mptime] = {key: self._macro(mp[key])
-                                   for key in ('db', )
+                                   for key in ('db', 'count')
                                    if key in mp}
             if "meas.noise" in segment:
                 meas = self._macro(segment["meas.noise"])
@@ -173,27 +174,39 @@ jsonobj - either json string or json file"""
                     if offset < 0:
                         mptime += dur
                     mns[mptime] = {key: self._macro(mp[key])
-                                   for key in ('db', )
+                                   for key in ('db', 'count')
                                    if key in mp}
             if "meas.pulse" in segment:
                 meas = self._macro(segment["meas.pulse"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
-                    flags = self._macro(mp["flags"])
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'flags' in mp:
+                        flags = self._macro(mp["flags"])
+                    else:
+                        flags = {key: self._macro(mp[key])
+                                 for key in ('db', 'voltages', 'splitmodes',
+                                             'count')
+                                 if key in mp}
                     mps[mptime] = flags
             if "meas.freq" in segment:
                 meas = self._macro(segment["meas.freq"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
-                    flags = self._macro(mp["flags"])
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'flags' in mp:
+                        flags = self._macro(mp["flags"])
+                    else:
+                        flags = {key: self._macro(mp[key])
+                                 for key in ('db', 'voltages', 'splitmodes',
+                                             'freqs', 'count')
+                                 if key in mp}
                     mfs[mptime] = flags
             if "meas.iv" in segment:
                 meas = self._macro(segment["meas.iv"])
@@ -248,6 +261,23 @@ jsonobj - either json string or json file"""
                         else:
                             uubnums = None
                         cms[ttime] = {"cmdlist": cmdlist, "uubnums": uubnums}
+            # FLIR
+            if 'flir' in segment:
+                flir = self._macro(segment["flir"])
+                for fp in flir:
+                    fp = self._macro(fp)
+                    offset = self._macro(fp["offset"])
+                    ftime = t + offset
+                    if offset < 0:
+                        ftime += dur
+                    flags = {key: self._macro(fp[key])
+                             for key in ('imagename', 'attname', 'description',
+                                         'snapshot', 'download', 'delete')
+                             if key in fp}
+                    if 'snapshot' in flags:
+                        assert 'imagename' in flags, \
+                            "Imagename mandatory for snapshot"
+                    fls[ftime] = flags
             t += dur
         self.progdur = t
         # append the last segments
@@ -265,10 +295,11 @@ jsonobj - either json string or json file"""
         self.logins = [(ttime, lis[ttime]) for ttime in sorted(lis)]
         self.logouts = [(ttime, los[ttime]) for ttime in sorted(los)]
         self.cmds = [(ttime, cms[ttime]) for ttime in sorted(cms)]
+        self.flirs = [(ftime, fls[ftime]) for ftime in sorted(fls)]
         self.timepoints = {ptime: pind for pind, ptime in enumerate(
             sorted(set(mrs.keys() + mns.keys() + mps.keys() + mfs.keys() +
                        ivs.keys() + pps.keys() + tps +
-                       lis.keys() + los.keys() + cms.keys())))}
+                       lis.keys() + los.keys() + cms.keys() + fls.keys())))}
 
     def _macro(self, o):
         if isinstance(o, (str, unicode)):
@@ -380,6 +411,9 @@ and add them to timer"""
         if self.cmds:
             self.timer.add_ticker('telnet.cmds',
                                   point_ticker(self.cmds, offset))
+        if self.flirs:
+            self.timer.add_ticker('flir',
+                                  point_ticker(self.flirs, offset))
         if self.test_points:
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,

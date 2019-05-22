@@ -29,6 +29,7 @@ from dataproc import make_DPfilter_linear, make_DPfilter_ramp
 from dataproc import make_DPfilter_cutoff
 from afg import AFG, RPiTrigger
 from power import PowerSupply
+from flir import FLIR
 from db import DBconnector
 
 VERSION = '20190515'
@@ -84,6 +85,7 @@ class ESS(object):
         self.q_resp = Queue()
         self.q_ndata = Queue()
         self.q_dp = Queue()
+        self.q_att = Queue()
 
         # UUB channels
         self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
@@ -101,6 +103,15 @@ class ESS(object):
             port = d['ports']['BME']
             self.bme = BME(port, self.timer, self.q_resp)
             self.bme.start()
+
+        # FLIR
+        if 'flir' in d['ports']:
+            port = d['ports']['flir']
+            uubnum = d.get('flir.uubnum', 0)
+            imtype = str(d['flir.imtype']) if 'flir.imtype' in d else None
+            self.flir = FLIR(port, self.timer, self.q_att, self.datadir,
+                             uubnum, imtype)
+            self.flir.start()
 
         # chamber
         if 'chamber' in d['ports']:
@@ -182,7 +193,11 @@ class ESS(object):
         self.starttime = None
         if 'essprogram' in d['tickers']:
             fn = d['tickers']['essprogram']
-            essprog_macros = d['tickers'].get('essprogram.macros', None)
+            if 'essprogram.macros' in d['tickers']:
+                dm = d['tickers']['essprogram.macros']
+                essprog_macros = {key: str(val) for key, val in dm.iteritems()}
+            else:
+                essprog_macros = None
             with open(fn, 'r') as fp:
                 self.essprog = ESSprogram(fp, self.timer, self.q_resp,
                                           essprog_macros)
@@ -319,6 +334,7 @@ class ESS(object):
 def Pretest(jsconf, uubnum):
     """Wrap for ESS with uubnum"""
     subst = {'UUBNUM': uubnum,
+             'UUBNUMSTR': '%04d' % uubnum,
              'MACADDR': uubnum2mac(uubnum)}
     with open(jsconf, 'r') as fp:
         js = fp.read()
