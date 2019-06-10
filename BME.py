@@ -184,6 +184,7 @@ predefined - dict functype: delay with predefined values """
 
 class PowerControl(threading.Thread):
     """Class managing power control module and splitter mode"""
+    SPLITMODE_DEFAULT = 1
     re_init = re.compile(r'.*PowerControl (?P<version>[-0-9]+)\r\n', re.DOTALL)
     re_set = re.compile(r'.*OK', re.DOTALL)
     # ten floats separated by whitespaces + OK
@@ -193,7 +194,7 @@ class PowerControl(threading.Thread):
     re_readrelay = re.compile(r'.*?([01]{10})\s*OK', re.DOTALL)
     NCHANS = 10   # number of channel
 
-    def __init__(self, port, timer, q_resp, uubnums):
+    def __init__(self, port, timer, q_resp, uubnums, splitmode=None):
         """Constructor
 port - serial port to connect
 timer - instance of timer
@@ -221,14 +222,21 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
         assert len(uubnums) <= 10
         self.uubnums = {uubnum: port for port, uubnum in enumerate(uubnums)
                         if uubnum is not None}
+        if splitmode is None:
+            splitmode = PowerControl.SPLITMODE_DEFAULT
+        self.splitterMode(splitmode)
 
-    def splitterMode(self, mode):
-        """Set splitter mode (0: attenuated, 1: frequency, 3: amplified)"""
+    def splitterMode(self, mode=None):
+        """Set splitter mode (0: attenuated, 1: frequency, 3: amplified)
+return current setting without parameters"""
+        if mode is None:
+            return self.splitmode
         assert mode in (0, 1, 3)  # allowed values
         self.logger.info('setting splitter mode %d', mode)
         self.ser.write('m %d\r' % mode)
         readSerRE(self.ser, PowerControl.re_set, timeout=1, logger=self.logger)
         self.logger.debug('splitter mode set')
+        self.splitmode = mode
 
     def switch(self, state, uubs=None):
         """Switch on/off relays

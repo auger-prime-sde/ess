@@ -320,7 +320,7 @@ uubnum - UUB number to log"""
     return LogHandlerFile(fn, formatstr, prolog=prolog)
 
 
-def makeDLpedestals(ctx, uubnum):
+def makeDLpedestals(ctx, uubnum, count=None):
     """Create LogHandlerFile for pedestals and their sigma
 ctx - context object, used keys: datadir + basetime + chans
 uubnum - UUB to log"""
@@ -331,9 +331,52 @@ uubnum - UUB to log"""
 # UUB #%04d, date %s
 # columns: timestamp | meas_point""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    if count is not None:
+        prolog += " | index"
+    for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+        prolog += ''.join([' | %s.ch%d' % (typ, chan)
+                           for chan in ctx.chans])
+    prolog += '\n'
+
+    if count is None:
+        logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                   '{meas_point:3d}']
+        for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+            logdata += ['{%s:%s}' % (item2label(
+                functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
+                        for chan in ctx.chans]
+        formatstr = ' '.join(logdata) + '\n'
+    else:
+        loglines = []
+        for ind in xrange(count):
+            logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                       '{meas_point:3d}', "%03d" % ind]
+            for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+                logdata += ['{%s:%s}' % (
+                    item2label(functype='N', uubnum=uubnum, chan=chan,
+                               typ=typ, index=ind), fmt)
+                            for chan in ctx.chans]
+            loglines.append(' '.join(logdata) + '\n')
+        formatstr = ''.join(loglines)
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_noise' not in d)
+
+
+def makeDLpedestalstat(ctx, uubnum):
+    """Create LogHandlerFile for staticstics of pedestals (mean + std)
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log"""
+    fn = ctx.datadir + ('pedestat_uub%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# Pedestals and their std. dev. - staticstics
+# UUB #%04d, date %s
+# columns: timestamp | meas_point""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                '{meas_point:3d}']
-    for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+    for typ, fmt in (('pedemean', '7.2f'), ('pedestddev', '7.2f'),
+                     ('pedesigmean', '7.2f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan) for chan in ctx.chans])
         logdata += ['{%s:%s}' % (item2label(
             functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
@@ -347,12 +390,17 @@ uubnum - UUB to log"""
 def makeDLhsampli(ctx, uubnum, keys):
     """Create LogHandlerFile for halfsine amplitudes
 ctx - context object, used keys: datadir + basetime + highgains + chans
+      afg.params, splitmode
 uubnum - UUB to log
-keys - voltages and/or splitmodes"""
+keys - voltages and/or splitmodes and/or count"""
     if keys is None:
         keys = {}
     voltages = keys.get('voltages', (ctx.afg.param['Pvoltage'], ))
-    splitmodes = keys.get('splitmodes', (ctx.afg.param['splitmode'], ))
+    splitmodes = keys.get('splitmodes', (ctx.splitmode(), ))
+    if 'count' in keys:
+        indices = range(keys['count'])
+    else:
+        indices = (None, )
     fn = ctx.datadir + ('ampli_uub%04d' % uubnum) +\
         ctx.basetime.strftime('-%Y%m%d.log')
     prolog = """\
@@ -360,23 +408,28 @@ keys - voltages and/or splitmodes"""
 # UUB #%04d, date %s
 # columns: timestamp | meas_point | splitmode | voltage | """ % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    itemr = {'functype': 'P', 'typ': 'ampli', 'uubnum': uubnum}
+    if indices[0] is not None:
+        prolog += "index | "
     prolog += ' | '.join(['ampli.ch%d' % chan for chan in ctx.chans])
     prolog += '\n'
-    itemr = {'functype': 'P', 'typ': 'ampli', 'uubnum': uubnum}
     loglines = []
     for splitmode in splitmodes:
         for voltage in voltages:
-            logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                       '{meas_point:2d}',
-                       '%d %.2f' % (splitmode, voltage)]
-            logdata += [' '*7 if (chan in ctx.highgains and splitmode > 0)
-                        else '{%s:7.2f}' % item2label(
-                                itemr, chan=chan,
-                                voltage=voltage, splitmode=splitmode)
-                        for chan in ctx.chans]
-            loglines.append(' '.join(logdata))
-    eorec = '\n\n' if len(splitmodes) * len(voltage) > 1 else '\n'
-    formatstr = '\n'.join(loglines) + eorec
+            for ind in indices:
+                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                           '{meas_point:2d}',
+                           '%d %.2f' % (splitmode, voltage)]
+                if ind is not None:
+                    logdata.append('%03d' % ind)
+                    itemr['index'] = ind
+                logdata += [' '*7 if (chan in ctx.highgains and splitmode > 0)
+                            else '{%s:7.2f}' % item2label(
+                                    itemr, chan=chan,
+                                    voltage=voltage, splitmode=splitmode)
+                            for chan in ctx.chans]
+                loglines.append(' '.join(logdata) + '\n')
+    formatstr = ''.join(loglines)
     return LogHandlerFile(fn, formatstr, prolog=prolog, missing='   ~   ',
                           skiprec=lambda d: 'meas_pulse' not in d)
 
@@ -389,8 +442,12 @@ keys - freqs, voltages and/or splitmodes"""
     if keys is None:
         keys = {}
     voltages = keys.get('voltages', (ctx.afg.param['Fvoltage'], ))
-    splitmodes = keys.get('splitmodes', (ctx.afg.param['splitmode'], ))
+    splitmodes = keys.get('splitmodes', (ctx.splitmode(), ))
     freqs = keys.get('freqs', (ctx.afg.param['freq'], ))
+    if 'count' in keys:
+        indices = range(keys['count'])
+    else:
+        indices = (None, )
     fn = ctx.datadir + ('fampli_uub%04d' % uubnum) +\
         ctx.basetime.strftime('-%Y%m%d.log')
     prolog = """\
@@ -398,25 +455,32 @@ keys - freqs, voltages and/or splitmodes"""
 # UUB #%04d, date %s
 # columns: timestamp | meas_point | flabel | freq [MHz] \
 | splitmode | voltage | """ % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    itemr = {'functype': 'F', 'typ': 'fampli', 'uubnum': uubnum}
+    if indices[0] is not None:
+        prolog += "index | "
     prolog += ' | '.join(['fampli.ch%d' % chan for chan in ctx.chans])
     prolog += '\n'
-    itemr = {'functype': 'F', 'typ': 'fampli', 'uubnum': uubnum}
     loglines = []
     for freq in freqs:
+        flabel = float2expo(freq, manlength=3)
         for splitmode in splitmodes:
             for voltage in voltages:
-                logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                           '{meas_point:2d}',
-                           '%s %5.2f' % (float2expo(freq), freq/1e6),
-                           '%d %.2f' % (splitmode, voltage)]
-                logdata += [' '*7 if (chan in ctx.highgains and splitmode > 0)
-                            else '{%s:7.2f}' % item2label(
-                                    itemr, chan=chan, freq=freq,
-                                    voltage=voltage, splitmode=splitmode)
-                            for chan in ctx.chans]
-                loglines.append(' '.join(logdata))
-    eorec = '\n\n' if len(splitmodes) * len(voltage) * len(freqs) > 1 else '\n'
-    formatstr = '\n'.join(loglines) + eorec
+                for ind in indices:
+                    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                               '{meas_point:2d}',
+                               '%3s %5.2f' % (flabel, freq/1e6),
+                               '%d %.2f' % (splitmode, voltage)]
+                    if ind is not None:
+                        logdata.append('%03d' % ind)
+                        itemr['index'] = ind
+                    logdata += [' '*7 if (chan in ctx.highgains and
+                                          splitmode > 0)
+                                else '{%s:7.2f}' % item2label(
+                                        itemr, chan=chan, flabel=flabel,
+                                        voltage=voltage, splitmode=splitmode)
+                                for chan in ctx.chans]
+                    loglines.append(' '.join(logdata) + '\n')
+    formatstr = ''.join(loglines)
     return LogHandlerFile(fn, formatstr, prolog=prolog, missing='   ~   ',
                           skiprec=lambda d: 'meas_freq' not in d)
 
@@ -435,7 +499,7 @@ uubnum - UUB to log"""
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                '{meas_point:2d}']
-    itemr = {'uubnum': uubnum}
+    itemr = {'functype': 'P', 'uubnum': uubnum}
     for typ, fmt in (('gain', '6.3f'), ('lin', '7.5f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan)
                            for chan in ctx.chans])
@@ -452,7 +516,7 @@ def makeDLfreqgain(ctx, uubnum, freqs):
 ctx - context object, used keys: datadir + basetime + chans
 uubnum - UUB to log
 freqs - list of frequencies to log"""
-    fn = ctx.datadir + ('linear_uub%04d' % uubnum) +\
+    fn = ctx.datadir + ('fgain_uub%04d' % uubnum) +\
         ctx.basetime.strftime('-%Y%m%d.log')
     prolog = """\
 # Frequency dependent gain ADC count vs. voltage analysis
@@ -463,19 +527,19 @@ freqs - list of frequencies to log"""
     prolog += ''.join([' | fgain.ch%d | flin.ch%d' % (chan, chan)
                        for chan in ctx.chans])
     prolog += '\n'
-    itemr = {'uubnum': uubnum}
+    itemr = {'functype': 'F', 'uubnum': uubnum}
     loglines = []
     for freq in freqs:
+        flabel = float2expo(freq, manlength=3)
         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                    '{meas_point:2d}',
-                   '%s %5.2f' % (float2expo(freq), freq/1e6)]
+                   '%3s %5.2f' % (flabel, freq/1e6)]
         for typ, fmt in (('fgain', '6.3f'), ('flin', '7.5f')):
             logdata += ['{%s:%s}' % (item2label(
-                itemr, freq=freq, chan=chan, typ=typ), fmt)
+                itemr, flabel=flabel, chan=chan, typ=typ), fmt)
                         for chan in ctx.chans]
-        loglines.append(' '.join(logdata))
-    eorec = '\n\n' if len(freqs) > 1 else '\n'
-    formatstr = '\n'.join(loglines) + eorec
+        loglines.append(' '.join(logdata) + '\n')
+    formatstr = ''.join(loglines)
     return LogHandlerFile(fn, formatstr, prolog=prolog,
                           skiprec=lambda d: 'meas_freq' not in d)
 

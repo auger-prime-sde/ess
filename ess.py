@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 """
  ESS procedure
  main program
@@ -15,7 +17,8 @@ from prc import PRCServer
 # ESS stuff
 from timer import Timer, periodic_ticker, one_tick
 from logger import LogHandlerFile, LogHandlerRamp, LogHandlerPickle, DataLogger
-from logger import makeDLtemperature, makeDLslowcontrol, makeDLpedestals
+from logger import makeDLtemperature, makeDLslowcontrol
+from logger import makeDLpedestals, makeDLpedestalstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain, makeDLcutoff
 from logger import QuePipeView
@@ -23,16 +26,16 @@ from BME import BME, TrigDelay, PowerControl
 from UUB import UUBdaq, UUBlisten, UUBconvData, UUBtelnet, UUBtsc
 from UUB import uubnum2mac
 from chamber import Chamber, ESSprogram
-from dataproc import DataProcessor, item2label
+from dataproc import DataProcessor, item2label, SplitterGain
 from dataproc import DP_store, DP_freq, DP_pede, DP_hsampli, DP_ramp
 from dataproc import make_DPfilter_linear, make_DPfilter_ramp
-from dataproc import make_DPfilter_cutoff
+from dataproc import make_DPfilter_cutoff, make_DPfilter_stat
 from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
 
-VERSION = '20190515'
+VERSION = '20190606'
 
 
 class ESS(object):
@@ -95,7 +98,7 @@ class ESS(object):
         # power supply
         if 'power' in d and 'power' in d['ports']:
             port = d['ports']['power']
-            self.ps = PowerSupply(port, self.timer, **d['power'])
+            self.ps = PowerSupply(port, self.timer, self.q_resp, **d['power'])
             self.ps.start()
 
         # BME
@@ -140,9 +143,17 @@ class ESS(object):
         # PowerControl
         self.splitmode = None
         if 'powercontrol' in d['ports']:
+            splitmode = d.get('splitmode', None)
             self.pc = PowerControl(d['ports']['powercontrol'], self.timer,
-                                   self.q_resp, self.uubnums)
+                                   self.q_resp, self.uubnums, splitmode)
             self.splitmode = self.pc.splitterMode
+
+        # SplitterGain
+        self.splitgain = None
+        if self.afg is not None:
+            calibration = d.get('splitter_calibration', None)
+            self.splitgain = SplitterGain(self.afg.param['gains'], None,
+                                          self.uubnums, calibration)
 
         # UUBs - UUBdaq and UUBlisten
         self.ulisten = UUBlisten(self.q_ndata)
@@ -218,6 +229,8 @@ class ESS(object):
         dpfilter_linear = None
         dpfilter_cutoff = None
         dpfilter_ramp = None
+        dpfilter_stat_pede = None
+        dpfilter_stat_pedesig = None
         # temperature
         if d['dataloggers'].get('temperature', False):
             self.dl.add_handler(
@@ -231,8 +244,18 @@ class ESS(object):
 
         # pedestals & their std
         if d['dataloggers'].get('pede', False):
+            count = d['dataloggers'].get('pedestatcount', None)
             for uubnum in self.uubnums:
-                self.dl.add_handler(makeDLpedestals(self, uubnum))
+                self.dl.add_handler(makeDLpedestals(self, uubnum, count))
+            if count is not None:
+                if dpfilter_stat_pede is None:
+                    dpfilter_stat_pede = make_DPfilter_stat('pede')
+                if dpfilter_stat_pedesig is None:
+                    dpfilter_stat_pedesig = make_DPfilter_stat('pedesig')
+                for uubnum in self.uubnums:
+                    self.dl.add_handler(makeDLpedestalstat(self, uubnum),
+                                        (dpfilter_stat_pede,
+                                         dpfilter_stat_pedesig))
 
         # amplitudes of halfsines
         if 'ampli' in d['dataloggers']:
@@ -249,8 +272,8 @@ class ESS(object):
         # gain/linearity
         if d['dataloggers'].get('linearity', False):
             if dpfilter_linear is None:
-                dpfilter_linear = make_DPfilter_linear(self.lowgains,
-                                                       self.highgains)
+                dpfilter_linear = make_DPfilter_linear(
+                    self.lowgains, self.highgains, self.splitgain)
             for uubnum in self.uubnums:
                 self.dl.add_handler(makeDLlinear(self, uubnum),
                                     (dpfilter_linear, ))
@@ -258,21 +281,20 @@ class ESS(object):
         # freqgain
         if 'freqgain' in d['dataloggers']:
             if dpfilter_linear is None:
-                dpfilter_linear = make_DPfilter_linear(self.lowgains,
-                                                       self.highgains)
+                dpfilter_linear = make_DPfilter_linear(
+                    self.lowgains, self.highgains, self.splitgain)
             freqs = d['dataloggers']['freqgain']
             for uubnum in self.uubnums:
-                self.dl.add_handler(makeDLfreqgain(self, uubnum, ),
+                self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
                                     (dpfilter_linear, ))
 
         # cut-off
-        if d['dataloggers'].get('freqgain', False):
+        if d['dataloggers'].get('cutoff', False):
             if dpfilter_linear is None:
-                dpfilter_linear = make_DPfilter_linear(self.lowgains,
-                                                       self.highgains)
+                dpfilter_linear = make_DPfilter_linear(
+                    self.lowgains, self.highgains, self.splitgain)
             if dpfilter_cutoff is None:
-                dpfilter_cutoff = make_DPfilter_cutoff(self.lowgains,
-                                                       self.highgains)
+                dpfilter_cutoff = make_DPfilter_cutoff()
             for uubnum in self.uubnums:
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, ),
                                     (dpfilter_linear, dpfilter_cutoff))
@@ -298,16 +320,15 @@ class ESS(object):
                 elif item == 'cutoff':
                     if dpfilter_linear is None:
                         dpfilter_linear = make_DPfilter_linear(
-                            self.lowgains, self.highgains)
+                            self.lowgains, self.highgains, self.splitgain)
                     if dpfilter_cutoff is None:
-                        dpfilter_cutoff = make_DPfilter_cutoff(
-                            self.lowgains, self.highgains)
+                        dpfilter_cutoff = make_DPfilter_cutoff()
                     self.dl.add_handler(self.db.getLogHandler(item),
                                         (dpfilter_linear, dpfilter_cutoff))
                 elif item in ('gain', 'freqgain'):
                     if dpfilter_linear is None:
-                        dpfilter_linear = make_DPfilter_linear(self.lowgains,
-                                                               self.highgains)
+                        dpfilter_linear = make_DPfilter_linear(
+                            self.lowgains, self.highgains, self.splitgain)
                     self.dl.add_handler(self.db.getLogHandler(item, flabels),
                                         (dpfilter_linear, ))
                 else:
@@ -320,6 +341,9 @@ class ESS(object):
             self.dl.add_handler(lh)
 
         self.dl.start()
+
+    def __del__(self):
+        self.stop()
 
     def stop(self):
         """Stop all threads"""

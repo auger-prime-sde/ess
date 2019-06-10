@@ -7,6 +7,7 @@ import re
 import threading
 import logging
 import string
+import json
 import itertools
 from Queue import Empty
 from datetime import datetime
@@ -59,7 +60,9 @@ class SplitterGain(object):
 pregain - afg.gains for splitter input (float)
 mdochans - list of upto 4 splitter channels
 uubnums - list of upto 10 UUB numbers
-calibration - TBD
+calibration - dict(key: correction_value),
+              key: "%d%s%s" % (splitmode, splitch, flabel)
+              correction_value: 1.0 in ideal case
 """
         assert len(pregains) == 2
         self.pregains = [float(p) if p is not None else None
@@ -85,25 +88,30 @@ calibration - TBD
             self.uubnums = uubnums
         else:
             self.uubnums = [None] * 10
+        if calibration is not None:
+            self.calibration = json.load(file(calibration))
+        else:
+            self.calibration = {}
 
-    def gainMDO(self, splitmode, mdoch):
+    def gainMDO(self, splitmode, mdoch, flabel=""):
         """Return gain for MDO channel
 mdoch - 1 .. 4"""
-        return self._gain(splitmode, self.mdomap[mdoch])
+        return self._gain(splitmode, self.mdomap[mdoch], flabel)
 
-    def gainUUB(self, splitmode, uubnum, chan):
+    def gainUUB(self, splitmode, uubnum, chan, flabel=""):
         """Return gain for UUB channel chan on UUB <uubnum>
 uubnum - 1 .. 4000
-chan - 1 .. 10"""
+chan - 1 .. 10
+flabel - freq for sine wave or pulse if empty string"""
         index = self.uubnums.index(uubnum)
-        group = SplitterGain.UUB2SPLIT[chan]
-        return self._gain(splitmode, '%c%d' % (group, index))
+        group = SplitterGain.UUB2SPLIT[chan][0]
+        return self._gain(splitmode, '%c%d' % (group, index), flabel)
 
     def _checksplitch(self, splitch):
         assert isinstance(splitch, str) and len(splitch) == 2
         assert splitch[0] in 'ABCDEF' and splitch[1] in '0123456789'
 
-    def _gain(self, splitmode, splitch):
+    def _gain(self, splitmode, splitch, flabel):
         """Return gain for splitter channel
 splitch - i.e. C8"""
         if splitch == 'REF':
@@ -116,19 +124,11 @@ splitch - i.e. C8"""
             gain = 1.0
         else:
             gain = 4.0
+        # splitter calibration as correction if available
+        key = "%d%s%s" % (splitmode, splitch, flabel)
+        correction = self.calibration.get(key, 1.0)
         # 0.5 hardcoded gain due impedance matching
-        return 0.5 * self.pregains[0] * gain
-
-
-def splitter_amplification(splitmode, chan):
-    """Amplification of Stastny's splitter
-splitmode - 0, 1, 3
-chan - channel on UUB (1-10)"""
-    if splitmode == 0:
-        return 2.0/32
-    if splitmode == 1 or chan != 9:
-        return 2.0
-    return 8.0
+        return 0.5 * self.pregains[0] * gain * correction
 
 
 class DataProcessor(threading.Thread):
@@ -318,7 +318,8 @@ q_resp - a logger queue
         stddev = array.std(axis=0)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
-                 for key in ('uubnum', 'functype')}
+                 for key in ('uubnum', 'functype', 'index')
+                 if key in item}
         for ch, (m, s) in enumerate(zip(mean, stddev)):
             for typ, val in (('pede', m), ('pedesig', s)):
                 label = item2label(itemr, typ=typ, chan=ch+1)
@@ -358,7 +359,9 @@ kwargs: splitmode, voltage (fixed paramters)"""
         hsfres = self.hsf.fit(yall, HalfSineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
-                 for key in ('functype', 'uubnum', 'splitmode', 'voltage')}
+                 for key in ('functype', 'uubnum', 'splitmode', 'voltage',
+                             'index')
+                 if key in item}
         itemr['typ'] = 'ampli'
         for chan, ampli in zip(chans, hsfres['ampli']):
             label = item2label(itemr, chan=chan)
@@ -412,8 +415,9 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
         sfres = self.sf.fit(yall, flabel, item['freq'], stage=SineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
-                 for key in ('functype', 'uubnum',
-                             'freq', 'splitmode', 'voltage')}
+                 for key in ('functype', 'uubnum', 'flabel',
+                             'freq', 'splitmode', 'voltage', 'index')
+                 if key in item}
         itemr['typ'] = 'fampli'
         for chan, ampli in zip(chans, sfres['ampli']):
             label = item2label(itemr, chan=chan)
@@ -446,7 +450,43 @@ q_resp - a logger queue
         self.q_resp.put(res)
 
 
-def make_DPfilter_linear(lowgains, highgains):
+def make_DPfilter_stat(typ):
+    """Dataprocessing filter
+ - calculate staticstics on <typ>
+input items:
+   typ: <typ>, index, <others>
+output items:
+   typ: <typ>mean, <others>
+   typ: <typ>stddev, <others>
+others: uubnum, chan, splitmode, voltage, flabel (optional), functype
+"""
+    otherkeys = ('uubnum', 'chan', 'splitmode', 'voltage', 'flabel',
+                 'functype')
+
+    def filter_stat(res_in):
+        data = {}
+        for label, value in res_in.iteritems():
+            d = label2item(label)
+            if d is None or 'typ' not in d or d['typ'] != typ:
+                continue
+            if 'freq' in d and 'flabel' not in d:
+                d['flabel'] = float2expo(d['freq'])
+            key = tuple([d.get(k, None) for k in otherkeys])
+            if key not in data:
+                data[key] = []
+            data[key].append(value)
+        res_out = res_in.copy()
+        for key, valuelist in data.iteritems():
+            y = np.array(valuelist)
+            item = {k: val for k, val in zip(otherkeys, key)
+                    if val is not None}
+            res_out[item2label(item, typ=typ+'mean')] = y.mean()
+            res_out[item2label(item, typ=typ+'stddev')] = y.std()
+        return res_out
+    return filter_stat
+
+
+def make_DPfilter_linear(lowgains, highgains, splitgain):
     """Dataprocessing filter
  - calculate linear fit & correlation coeff from ampli
 input items:
@@ -456,12 +496,14 @@ or
 data: x - real voltage amplitude after splitter [mV],
       y - UUB ADCcount amplitude
 output items:
-    gain_u<uubnum>_c<uub channel> - gain: ADC counts / mV
-    lin_u<uubnum>_c<uub channel> - linearity measure
+    gain_u<uubnum>_c<uub channel>P - gain: ADC counts / mV
+    lin_u<uubnum>_c<uub channel>P - linearity measure
 or
-    fgain_u<uubnum>_c<uub channel>_f<freq> - gain: ADC counts / mV
-    flin_u<uubnum>_c<uub channel>_f<freq>  - linearity measure
+    fgain_u<uubnum>_c<uub channel>_f<freq>F - gain: ADC counts / mV
+    flin_u<uubnum>_c<uub channel>_f<freq>F  - linearity measure
 """
+    keys = ('functype', 'uubnum', 'chan', 'flabel')
+
     def filter_linear(res_in):
         data = {}
         for label, adcvalue in res_in.iteritems():
@@ -469,15 +511,20 @@ or
             if d is None or 'typ' not in d or \
                d['typ'] not in ('ampli', 'fampli'):
                 continue
-            chan, splitmode = d['chan'], d['splitmode']
+            chan, splitmode, uubnum = d['chan'], d['splitmode'], d['uubnum']
             if not(chan in lowgains or chan in highgains and splitmode == 0):
                 continue
-            # voltage in mV
-            volt = 1000*d['voltage'] * splitter_amplification(splitmode, chan)
             if d['typ'] == 'ampli':
-                key = (d['uubnum'], chan)
+                flabel = ''
+                key = ('P', uubnum, chan)
+                outtypes = ('gain', 'lin')
             else:
-                key = (d['uubnum'], chan, float2expo(d['freq']))
+                flabel = d.get('flabel', float2expo(d['freq']))
+                key = ('F', uubnum, chan, flabel)
+                outtypes = ('fgain', 'flin')
+            gain = splitgain.gainUUB(splitmode, uubnum, chan, flabel)
+            # voltage in mV
+            volt = 1000*d['voltage'] * gain
             if key not in data:
                 data[key] = []
             data[key].append((volt, adcvalue))
@@ -494,16 +541,10 @@ or
                 coeff = 1.0 - covm[0][1] / np.sqrt(covm[0][0] * covm[1][1])
             else:
                 coeff = 1.0
-            if d['typ'] == 'ampli':
-                labelgain = item2label(typ='gain', uubnum=key[0], chan=key[1])
-                labellin = item2label(typ='lin', uubnum=key[0], chan=key[1])
-            else:
-                labelgain = item2label(typ='fgain', uubnum=key[0], chan=key[1],
-                                       freq=expo2float(key[2]))
-                labellin = item2label(typ='flin', uubnum=key[0], chan=key[1],
-                                      freq=expo2float(key[2]))
-            res_out[labelgain] = slope
-            res_out[labellin] = coeff
+            item = dict(zip(keys, key))
+            for typ, value in zip(outtypes, (slope, coeff)):
+                label = item2label(item, typ=typ)
+                res_out[label] = value
         return res_out
     return filter_linear
 

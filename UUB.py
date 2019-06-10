@@ -65,27 +65,25 @@ return [(timer.name, functype, generator, aflags), ...]
         """Generator for ramp
 kwargs: count
 return afg_dict, item_dict"""
-        afg_dict = None
         item_dict = {'functype': 'R'}
         if 'count' in kwargs:
             for i in xrange(kwargs['count']):
                 item_dict['index'] = i
-                yield afg_dict, item_dict
+                yield None, item_dict
         else:
-            yield afg_dict, item_dict
+            yield None, item_dict
 
     def generN(**kwargs):
         """Generator for noise
 kwargs: count
 return afg_dict, item_dict"""
-        afg_dict = None
         item_dict = {'functype': 'N'}
         if 'count' in kwargs:
             for i in xrange(kwargs['count']):
                 item_dict['index'] = i
-                yield afg_dict, item_dict
+                yield None, item_dict
         else:
-            yield afg_dict, item_dict
+            yield None, item_dict
 
     def generP(**kwargs):
         """Generator for functype pulse
@@ -105,10 +103,9 @@ return afg_dict, item_dict"""
                 if 'count' in kwargs:
                     item_dict['index'] = 0
                     yield afg_dict, item_dict
-                    afg_dict = None
                     for i in xrange(1, kwargs['count']):
                         item_dict['index'] = i
-                        yield afg_dict, item_dict
+                        yield None, item_dict
                 else:
                     yield afg_dict, item_dict
 
@@ -136,10 +133,9 @@ return afg_dict, item_dict"""
                     if 'count' in kwargs:
                         item_dict['index'] = 0
                         yield afg_dict, item_dict
-                        afg_dict = None
                         for i in xrange(1, kwargs['count']):
                             item_dict['index'] = i
-                            yield afg_dict, item_dict
+                            yield None, item_dict
                     else:
                         yield afg_dict, item_dict
 
@@ -354,7 +350,7 @@ return dictionary: sc<uubnum>_<variable>: value
 
 class UUBdaq(threading.Thread):
     """Thread managing data acquisition from UUBs"""
-    TOUT_PREP = 0.2   # delay between afg setting and trigger in s
+    TOUT_PREP = 0.1   # delay between afg setting and trigger in s
     TOUT_RAMP = 0.05  # delay between setting ADC ramp and trigger in s
     TOUT_DAQ = 0.2    # timeout between trigger and UUBlisten cancel
 
@@ -535,8 +531,10 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                                      'UUB %d, port %d, id %08x',
                                      e.__str__(), *key)
                 else:
-                    logger.debug('orphan chunk for UUB %d, port %d, id %08x',
-                                 *key)
+                    cid, start, end = NetscopeData.chunkHead(data)
+                    logger.debug('orphan chunk for UUB %d, port %d,' +
+                                 ' id %08x [%04x:%04x]',
+                                 key[0], key[1], cid, start, end)
         logger.info("Leaving run()")
         self.sock.close()
 
@@ -591,29 +589,34 @@ class NetscopeData(object):
     def __init__(self, header, uubnum, details=None):
         """Constructor.
 header - data as in `struct shwr_header'"""
-        headerdict = dict(zip(self.HEADER,
-                              unpack('<%dL' % len(self.HEADER), header)))
+        headerdata = unpack('<%dL' % len(NetscopeData.HEADER), header)
+        headerdict = dict(zip(NetscopeData.HEADER, headerdata))
         self.__dict__.update(headerdict)
         self.id &= 0x7FFFFFFF
         self.uubnum = uubnum
         self.details = details if details is not None else {
             'timestampmicro': datetime.now()}
-        self.rawdata = bytearray(self.RAWDATASIZE)
+        self.rawdata = bytearray(NetscopeData.RAWDATASIZE)
         self.yall = None
-        self.cover = Coverage(self.RAWDATASIZE)
+        self.cover = Coverage(NetscopeData.RAWDATASIZE)
+
+    @staticmethod
+    def chunkHead(chunk):
+        """Return cid, start, end of the chunk"""
+        return unpack('<LHH', chunk[:NetscopeData.FRAGHEADLEN])
 
     def addChunk(self, chunk):
         """Add a chunk into data. Return True if data complete."""
         # fragment header
-        cid, start, end = unpack('<LHH', chunk[:self.FRAGHEADLEN])
-        if len(chunk) - self.FRAGHEADLEN != end - start:
+        cid, start, end = NetscopeData.chunkHead(chunk)
+        if len(chunk) - NetscopeData.FRAGHEADLEN != end - start:
             raise ValueError("Wrong start/end versus chunk length")
         if cid != self.id:
             raise ValueError("Wrong id %d (%d expected)" % (cid, self.id))
         if not self.cover.insert(start, end):
             raise ValueError("Incompatible chunk (%d, %d), already covered %s"
                              % (start, end, self.cover.__str__()))
-        self.rawdata[start:end] = bytearray(chunk[self.FRAGHEADLEN:])
+        self.rawdata[start:end] = bytearray(chunk[NetscopeData.FRAGHEADLEN:])
         return self.cover.isCovered()
 
     def header(self):
