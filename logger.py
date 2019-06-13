@@ -156,16 +156,15 @@ timeout - interval for collecting data
         last_ts = datetime(2016, 1, 1)  # minus infinity
         while not self.stop.is_set():
             if self.records:
-                tend = min(self.records.iterkeys())
+                qtend = min([rec['tend'] for rec in self.records.itervalues()])
             else:
-                tend = datetime.now()
-            tend += timedelta(seconds=self.timeout)
+                qtend = datetime.now() + timedelta(seconds=self.timeout)
             # logger.debug('tend = %s' %
             # datetime.strftime(tend, "%Y-%m-%d %H:%M:%S"))
             # read from queue until some record is timeouted
-            while datetime.now() < tend and not self.stop.is_set():
+            while datetime.now() < qtend and not self.stop.is_set():
                 try:
-                    timeout = (tend - datetime.now()).total_seconds()
+                    timeout = (qtend - datetime.now()).total_seconds()
                     # logger.debug('timeout = %.6f' % timeout)
                     newrec = self.q_resp.get(True, timeout)
                     try:
@@ -173,9 +172,29 @@ timeout - interval for collecting data
                     except AttributeError:
                         logger.debug('Wrong record: %s', repr(newrec))
                         continue
+                    if 'log_timeout' in newrec:
+                        tout = max(int(newrec.pop('log_timeout')),
+                                   self.timeout)
+                    else:
+                        tout = self.timeout
+                    recalc = tout > self.timeout
+                    tend = ts + timedelta(seconds=tout)
                     if ts in self.records:
+                        if tend > self.records[ts]['tend']:
+                            newrec['tend'] = tend
+                        else:
+                            recalc = False
                         self.records[ts].update(newrec)
                     elif ts > last_ts:  # add only ts after the last written
+                        tend_curr = max(   # latest tend of previous recs
+                            [rec['tend']
+                             for ts1, rec in self.records.iteritems()
+                             if ts1 < ts] + [ts])
+                        if tend <= tend_curr:
+                            newrec['tend'] = tend_curr
+                            recalc = False
+                        else:
+                            newrec['tend'] = tend
                         logger.debug(
                             'Added new record %s',
                             datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
@@ -183,18 +202,26 @@ timeout - interval for collecting data
                     else:
                         logger.info('Discarding an old record %s',
                                     datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
+                        continue
+                    # eventually increase tend for newer records
+                    if recalc:
+                        for ts1, rec in self.records.iteritems():
+                            if ts < ts1 and rec['tend'] < tend:
+                                rec['tend'] = tend
                 except Empty:
                     # logger.debug('q_resp.get() timeout')
                     pass
-            # process timeouted records
-            texp = datetime.now() - timedelta(seconds=self.timeout)
-            expts = [ts for ts in self.records.iterkeys() if ts < texp]
+            # process expired records
+            tnow = datetime.now()
+            expts = [ts for ts, rec in self.records.iteritems()
+                     if rec['tend'] <= tnow]
             for ts in sorted(expts):
                 logger.debug('write rec for ts = %s',
                              datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
                 if ts > last_ts:
                     last_ts = ts
                 rec = self.records.pop(ts)
+                rec.pop('tend')
                 rec['timestamp'] = ts
                 # apply filters to rec
                 recs = {}
