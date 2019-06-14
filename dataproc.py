@@ -503,6 +503,8 @@ or
     flin_u<uubnum>_c<uub channel>_f<freq>F  - linearity measure
 """
     keys = ('functype', 'uubnum', 'chan', 'flabel')
+    outtypes = {'P': ('gain', 'lin'),
+                'F': ('fgain', 'flin')}
 
     def filter_linear(res_in):
         data = {}
@@ -517,11 +519,9 @@ or
             if d['typ'] == 'ampli':
                 flabel = ''
                 key = ('P', uubnum, chan)
-                outtypes = ('gain', 'lin')
             else:
                 flabel = d.get('flabel', float2expo(d['freq']))
                 key = ('F', uubnum, chan, flabel)
-                outtypes = ('fgain', 'flin')
             gain = splitgain.gainUUB(splitmode, uubnum, chan, flabel)
             # voltage in mV
             volt = 1000*d['voltage'] * gain
@@ -542,7 +542,7 @@ or
             else:
                 coeff = 1.0
             item = dict(zip(keys, key))
-            for typ, value in zip(outtypes, (slope, coeff)):
+            for typ, value in zip(outtypes[key[0]], (slope, coeff)):
                 label = item2label(item, typ=typ)
                 res_out[label] = value
         return res_out

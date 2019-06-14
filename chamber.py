@@ -118,6 +118,7 @@ jsonobj - either json string or json file"""
         los = {}   # logouts {time: flags}, flags - None or list of UUBnums
         cms = {}   # telnet cmds {time: flags}, flags - cmdlist + uubnums
         fls = {}   # flir operations {time: flags}
+        lto = {}   # log_timeout: {time: log_timeout value}
         temp_prev = None
         humid_prev = None
         operc = 0
@@ -162,6 +163,10 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'log_timeout' in mp:
+                        log_timeout = int(self._macro(mp['log_timeout']))
+                        if mptime not in lto or log_timeout > lto[mptime]:
+                            lto[mptime] = log_timeout
                     mrs[mptime] = {key: self._macro(mp[key])
                                    for key in ('db', 'count')
                                    if key in mp}
@@ -173,6 +178,10 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'log_timeout' in mp:
+                        log_timeout = int(self._macro(mp['log_timeout']))
+                        if mptime not in lto or log_timeout > lto[mptime]:
+                            lto[mptime] = log_timeout
                     mns[mptime] = {key: self._macro(mp[key])
                                    for key in ('db', 'count')
                                    if key in mp}
@@ -184,6 +193,10 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'log_timeout' in mp:
+                        log_timeout = int(self._macro(mp['log_timeout']))
+                        if mptime not in lto or log_timeout > lto[mptime]:
+                            lto[mptime] = log_timeout
                     if 'flags' in mp:
                         flags = self._macro(mp["flags"])
                     else:
@@ -200,6 +213,10 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'log_timeout' in mp:
+                        log_timeout = int(self._macro(mp['log_timeout']))
+                        if mptime not in lto or log_timeout > lto[mptime]:
+                            lto[mptime] = log_timeout
                     if 'flags' in mp:
                         flags = self._macro(mp["flags"])
                     else:
@@ -217,6 +234,10 @@ jsonobj - either json string or json file"""
                     mptime = t + offset
                     if offset < 0:
                         mptime += dur
+                    if 'log_timeout' in mp:
+                        log_timeout = int(self._macro(mp['log_timeout']))
+                        if mptime not in lto or log_timeout > lto[mptime]:
+                            lto[mptime] = log_timeout
                     ivs[mptime] = flags
             # power and test
             if "power" in segment:
@@ -249,6 +270,10 @@ jsonobj - either json string or json file"""
                     ttime = t + offset
                     if offset < 0:
                         ttime += dur
+                    if 'log_timeout' in tp:
+                        log_timeout = int(self._macro(tp['log_timeout']))
+                        if ttime not in lto or log_timeout > lto[ttime]:
+                            lto[ttime] = log_timeout
                     if "login" in tp:
                         lis[ttime] = self._macro(tp["login"])
                     if "logout" in tp:
@@ -270,6 +295,10 @@ jsonobj - either json string or json file"""
                     ftime = t + offset
                     if offset < 0:
                         ftime += dur
+                    if 'log_timeout' in fp:
+                        log_timeout = int(self._macro(fp['log_timeout']))
+                        if ftime not in lto or log_timeout > lto[ftime]:
+                            lto[ftime] = log_timeout
                     flags = {key: self._macro(fp[key])
                              for key in ('imagename', 'attname', 'description',
                                          'snapshot', 'download', 'delete')
@@ -296,6 +325,7 @@ jsonobj - either json string or json file"""
         self.logouts = [(ttime, los[ttime]) for ttime in sorted(los)]
         self.cmds = [(ttime, cms[ttime]) for ttime in sorted(cms)]
         self.flirs = [(ftime, fls[ftime]) for ftime in sorted(fls)]
+        self.lto_touts = [(ltime, lto[ltime]) for ltime in sorted(lto)]
         self.timepoints = {ptime: pind for pind, ptime in enumerate(
             sorted(set(mrs.keys() + mns.keys() + mps.keys() + mfs.keys() +
                        ivs.keys() + pps.keys() + tps +
@@ -324,6 +354,7 @@ return polyline approximation at the time t"""
             self.timer.add_immediate('binder.prog', {'prog': self.prog,
                                                      'progno': self.progno})
         timestamp = None
+        ltime, lto = self.lto_touts.pop(0) if self.lto_touts else (None, None)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -345,6 +376,13 @@ return polyline approximation at the time t"""
                 if dur < 0:
                     dur = None
             res = {'timestamp': timestamp, 'rel_time': dur}
+            if ltime is not None and ltime <= dur:
+                if ltime == dur:
+                    res['log_timeout'] = lto
+                if self.lto_touts:
+                    ltime, lto = self.lto_touts.pop(0)
+                else:
+                    ltime, lto = (None, None)
             for name in ('meas.ramp', 'meas.noise', 'meas.pulse', 'meas.freq'):
                 if name in flags:
                     mname = name.split('.')[1]
