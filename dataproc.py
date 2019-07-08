@@ -579,6 +579,15 @@ def make_DPfilter_ramp(uubnums):
 Check that for all UUBs and channels, all ramps are correct
 log failed or missing labels.
 res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
+    def aggregate(d, uubnum):
+        "check if label present in <d> for all chans and replace them by one"
+        labels = [item2label(functype='R', uubnum=uubnum, chan=ch+1)
+                  for ch in range(10)]
+        if all([label in d for label in labels]):
+            for label in labels:
+                d.remove(label)
+            d.append(item2label(functype='R', uubnum=uubnum))
+
     def filter_ramp(res_in):
         data = {item2label(functype='R', uubnum=uubnum, chan=ch+1): None
                 for uubnum in uubnums
@@ -590,6 +599,10 @@ res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
             data[label] = value
         missing = [label for label, value in data.iteritems() if value is None]
         failed = [label for label, value in data.iteritems() if value is False]
+        # aggregate labels for UUB
+        for uubnum in uubnums:
+            aggregate(missing, uubnum)
+            aggregate(failed, uubnum)
         res_out = {key: res_in[key]
                    for key in ('timestamp', 'meas_ramp', 'meas_point',
                                'db_ramp')
