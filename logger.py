@@ -79,14 +79,16 @@ class LogHandlerRamp(object):
     prolog = """\
 # Ramp test results
 # date %s
+# tested UUBs: %s
 # columns: timestamp | meas_point | OK
-#   _or_   timestamp | meas_point | failed: <label list> |
+#   _or_   timestamp | meas_point | failed: <label list>
 #   _or_   timestamp | meas_point | missing: <label list>
 """
 
-    def __init__(self, filename, dt):
+    def __init__(self, filename, dt, uubnums):
         self.f = open(filename, 'a')
-        self.f.write(LogHandlerRamp.prolog % dt.strftime('%Y-%m-%d'))
+        uubs = ', '.join(['%04d' % uubnum for uubnum in uubnums])
+        self.f.write(LogHandlerRamp.prolog % (dt.strftime('%Y-%m-%d'), uubs))
         self.f.flush()
         self.skiprec = lambda d: 'meas_ramp' not in d
         self.formatter = MyFormatter('~')
@@ -162,55 +164,59 @@ timeout - interval for collecting data
             # logger.debug('tend = %s' %
             # datetime.strftime(tend, "%Y-%m-%d %H:%M:%S"))
             # read from queue until some record is timeouted
-            while datetime.now() < qtend and not self.stop.is_set():
+            while not self.stop.is_set():
+                timeout = (qtend - datetime.now()).total_seconds()
+                # logger.debug('timeout = %.6f' % timeout)
+                if timeout < 0.0:
+                    break
                 try:
-                    timeout = (qtend - datetime.now()).total_seconds()
-                    # logger.debug('timeout = %.6f' % timeout)
                     newrec = self.q_resp.get(True, timeout)
-                    try:
-                        ts = newrec.pop('timestamp')
-                    except AttributeError:
-                        logger.debug('Wrong record: %s', repr(newrec))
-                        continue
-                    if 'log_timeout' in newrec:
-                        tout = max(int(newrec.pop('log_timeout')),
-                                   self.timeout)
-                    else:
-                        tout = self.timeout
-                    recalc = tout > self.timeout
-                    tend = ts + timedelta(seconds=tout)
-                    if ts in self.records:
-                        if tend > self.records[ts]['tend']:
-                            newrec['tend'] = tend
-                        else:
-                            recalc = False
-                        self.records[ts].update(newrec)
-                    elif ts > last_ts:  # add only ts after the last written
-                        tend_curr = max(   # latest tend of previous recs
-                            [rec['tend']
-                             for ts1, rec in self.records.iteritems()
-                             if ts1 < ts] + [ts])
-                        if tend <= tend_curr:
-                            newrec['tend'] = tend_curr
-                            recalc = False
-                        else:
-                            newrec['tend'] = tend
-                        logger.debug(
-                            'Added new record %s',
-                            datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
-                        self.records[ts] = newrec
-                    else:
-                        logger.info('Discarding an old record %s',
-                                    datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
-                        continue
-                    # eventually increase tend for newer records
-                    if recalc:
-                        for ts1, rec in self.records.iteritems():
-                            if ts < ts1 and rec['tend'] < tend:
-                                rec['tend'] = tend
                 except Empty:
                     # logger.debug('q_resp.get() timeout')
-                    pass
+                    continue
+                try:
+                    ts = newrec.pop('timestamp')
+                except AttributeError:
+                    logger.debug('Wrong record: %s', repr(newrec))
+                    continue
+
+                if 'log_timeout' in newrec:
+                    tout = max(int(newrec.pop('log_timeout')),
+                               self.timeout)
+                else:
+                    tout = self.timeout
+                recalc = tout > self.timeout
+                tend = ts + timedelta(seconds=tout)
+                if ts in self.records:
+                    if tend > self.records[ts]['tend']:
+                        newrec['tend'] = tend
+                    else:
+                        recalc = False
+                    self.records[ts].update(newrec)
+                elif ts > last_ts:  # add only ts after the last written
+                    tend_curr = max(   # latest tend of previous recs
+                        [rec['tend']
+                         for ts1, rec in self.records.iteritems()
+                         if ts1 < ts] + [ts])
+                    if tend <= tend_curr:
+                        newrec['tend'] = tend_curr
+                        recalc = False
+                    else:
+                        newrec['tend'] = tend
+                    logger.debug(
+                        'Added new record %s',
+                        datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
+                    self.records[ts] = newrec
+                else:
+                    logger.info('Discarding an old record %s',
+                                datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
+                    continue
+                # eventually increase tend for newer records
+                if recalc:
+                    for ts1, rec in self.records.iteritems():
+                        if ts < ts1 and rec['tend'] < tend:
+                            rec['tend'] = tend
+
             # process expired records
             tnow = datetime.now()
             expts = [ts for ts, rec in self.records.iteritems()

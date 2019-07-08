@@ -11,7 +11,7 @@ from dataproc import label2item
 
 class DBconnector(object):
     """Connector to SDEU DB"""
-    LOGITEMS = ('noise', 'gain', 'freqgain', 'cutoff')
+    LOGITEMS = ('noise', 'noisestat', 'gain', 'freqgain', 'cutoff')
     PHASES = ('pretest', 'ess', 'burnin', 'final')
     EMPTY_MP = {key: None for key in (
         'timestamp', 'meas_point', 'rel_time', 'set_temp', 'remark')}
@@ -42,9 +42,13 @@ dbinfo - dict with DB info:
         self.measrecs = []
 
     def __del__(self):
+        self.close()
+
+    def close(self):
         if self.fp is not None:
             self._write_measrecords()
             self.fp.close()
+            self.fp = None
 
     def _write_measrecords(self):
         if self.measpoint['timestamp'] is None:
@@ -90,6 +94,12 @@ flables - list of frequencies to log for freqgain
         if logitem == 'noise':
             self.skiprec = lambda d: 'db_noise' not in d
             self.typs = ('pede', 'pedesig')
+            self.typemap = {'pede': 'pede', 'pedesig': 'noise'}
+        elif logitem == 'noisestat':
+            self.skiprec = lambda d: 'db_noise' not in d
+            self.typs = ('pedemean', 'pedestddev', 'pedesigmean')
+            self.typemap = {'pedemean': 'pede', 'pedesigmean': 'noise',
+                            'pedestddev': 'pedeerr'}
         elif logitem == 'gain':
             self.skiprec = lambda d: 'db_pulse' not in d
             self.typs = ('gain', )
@@ -100,7 +110,7 @@ flables - list of frequencies to log for freqgain
             self.flabels = flabels
             self.typs = ('fgain', )
             self.item2key = lambda item: (item['uubnum'], item['flabel'])
-        elif logitem == 'noise':
+        elif logitem in ('noise', 'noisestat'):
             self.item2key = lambda item: (item['uubnum'], item['typ'])
         else:
             self.item2key = lambda item: item['uubnum']
@@ -120,10 +130,10 @@ flables - list of frequencies to log for freqgain
         if self.logitem in ('gain', 'cutoff'):
             values = {uubnum: [None] * 11
                       for uubnum in self.uubnums}
-        elif self.logitem == 'noise':
+        elif self.logitem in ('noise', 'noisestat'):
             values = {(uubnum, typ): [None] * 11
                       for uubnum in self.uubnums
-                      for typ in ('pede', 'pedesig')}
+                      for typ in self.typs}
         elif self.logitem == 'freqgain':
             values = {(uubnum, flabel): [None] * 11
                       for uubnum in self.uubnums
@@ -132,13 +142,15 @@ flables - list of frequencies to log for freqgain
             item = label2item(label)
             if item.get('typ', None) not in self.typs:
                 continue
-            values[self.item2key(item)][item['chan']] = value
-        if self.logitem == 'noise':
+            key = self.item2key(item)
+            if key in values:
+                values[key][item['chan']] = value
+        if self.logitem in ('noise', 'noisestat'):
             for uubnum in self.uubnums:
-                for typ in ('pede', 'pedesig'):
+                for typ in self.typs:
                     if not all([value is None
                                 for value in values[(uubnum, typ)]]):
-                        rec = {'typ': typ,
+                        rec = {'typ': self.typemap[typ],
                                'mp': d['meas_point'],
                                'uubnum': uubnum,
                                'values': values[(uubnum, typ)][1:]}

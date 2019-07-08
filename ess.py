@@ -304,10 +304,11 @@ class ESS(object):
             if dpfilter_ramp is None:
                 dpfilter_ramp = make_DPfilter_ramp(self.uubnums)
             fn = self.datadir + self.basetime.strftime('ramp-%Y%m%d.log')
-            lh = LogHandlerRamp(fn, self.basetime)
+            lh = LogHandlerRamp(fn, self.basetime, self.uubnums)
             self.dl.add_handler(lh, (dpfilter_ramp, ))
 
         # database
+        self.db = None
         if 'db' in d['dataloggers']:
             self.db = DBconnector(self, d['dataloggers']['db'])
             flabels = d['dataloggers']['db'].get('flabels', None)
@@ -329,8 +330,17 @@ class ESS(object):
                     if dpfilter_linear is None:
                         dpfilter_linear = make_DPfilter_linear(
                             self.lowgains, self.highgains, self.splitgain)
-                    self.dl.add_handler(self.db.getLogHandler(item, flabels),
-                                        (dpfilter_linear, ))
+                    self.dl.add_handler(
+                        self.db.getLogHandler(item, flabels=flabels),
+                        (dpfilter_linear, ))
+                elif item == 'noisestat':
+                    if dpfilter_stat_pede is None:
+                        dpfilter_stat_pede = make_DPfilter_stat('pede')
+                    if dpfilter_stat_pedesig is None:
+                        dpfilter_stat_pedesig = make_DPfilter_stat('pedesig')
+                    self.dl.add_handler(self.db.getLogHandler(item),
+                                        (dpfilter_stat_pede,
+                                         dpfilter_stat_pedesig))
                 else:
                     self.dl.add_handler(self.db.getLogHandler(item))
 
@@ -350,6 +360,8 @@ class ESS(object):
         self.timer.stop.set()
         self.timer.evt.set()
         self.dl.stop.set()
+        if self.db is not None:
+            self.db.close()
         self.dp0.stop.set()
         self.ulisten.stop.set()
         self.uconv.stop.set()
