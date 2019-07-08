@@ -315,7 +315,7 @@ conn - HTTPConnection instance
 return dictionary: zynq<uubnum>_temp: temperature
 """
         re_zynqtemp = re.compile(
-            r'Zynq temperature: (?P<zt>[+-]?\d+(\.\d*)?) degrees')
+            r'{"Zynq": (?P<zt>[+-]?\d+(\.\d*)?)}')
         conn.request('GET', '/cgi-bin/getdata.cgi?action=xadc')
         # TO DO: check status
         resp = conn.getresponse().read()
@@ -438,6 +438,8 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     finished = self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
                     if not finished:
                         logger.debug('timeout')
+                        # debug UUBlisten.records before cleaning
+                        self.ulisten.logrecords = True
                     # stop daq at ulisten
                     self.ulisten.uubnums = set()
                     self.ulisten.clear = True
@@ -472,6 +474,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         # if False, remove UUBnum from uubnums after a header received
         self.permanent = True
         self.clear = False    # when True, discard all records
+        self.logrecords = False    # when True, log records before discarding
         self.records = {}
 
     def run(self):
@@ -481,13 +484,21 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         self.sock.settimeout(self.SLEEPTIME)
         logger.info("Listening on %s:%d", self.laddr, self.port)
         while not self.stop.is_set():
-            if self.clear:
-                self.records = {}
-                self.clear = False
             try:
                 data, addr = self.sock.recvfrom(self.PACKETSIZE)
             except socket.timeout:
                 continue
+            finally:
+                if self.clear:
+                    if self.logrecords:
+                        reclog = ', '.join([
+                            '(UUB %d, port %d, id %08x): ' % key +
+                            rec.__str__()
+                            for key, rec in self.records.iteritems()])
+                        logger.debug('Discarding records: { %s }', reclog)
+                        self.logrecords = False
+                    self.records = {}
+                    self.clear = False
             nsid = unpack('<L', data[:4])[0]
             uubnum = ip2uubnum(addr[0])
             # (UUBnum, port, id)
@@ -642,6 +653,11 @@ header - data as in `struct shwr_header'"""
                 yall[i, 2*j+1] = lg & 0xFFF
         self.yall = yall
         return yall
+
+    def __str__(self):
+        return ("NetscopeData(uubnum=%04d, cid=0x%08x, details=%s, " +
+                "coverage=%s)") % (self.uubnum, self.id, repr(self.details),
+                                  self.cover.__str__())
 
 
 class UUBconvData(threading.Thread):
