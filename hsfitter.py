@@ -5,14 +5,21 @@
 
 from math import pi
 import numpy as np
-import numba
 
+try:
+    import numba
 
-# squared norm of complex array
-@numba.vectorize([numba.float64(numba.complex128),
-                  numba.float32(numba.complex64)])
-def abs2(x):
-    return x.real**2 + x.imag**2
+    # squared norm of complex array
+    @numba.vectorize([numba.float64(numba.complex128),
+                      numba.float32(numba.complex64)])
+    def abs2(x):
+        return x.real**2 + x.imag**2
+except ImportError:
+    # use np.vectorize as backup solution
+    def _abs2(x):
+        return x.real**2 + x.imag**2
+    abs2 = np.vectorize(_abs2)
+    del _abs2
 
 
 class HalfSineFitter(object):
