@@ -122,22 +122,35 @@ class ESS(object):
             self.chamber = Chamber(port, self.timer, self.q_resp)
             self.chamber.start()
 
-        # AFG & RPi trigger
-        self.afg = None
-        self.trigger = None
-        if 'afg' in d:
-            kwargs = d.get("afg", {})
-            self.afg = AFG(**kwargs)
-            self.trigger = self.afg.trigger
-        if d.get('RPiTrigger', False):
-            self.trigger = RPiTrigger().trigger
-
         # TrigDelay
         if 'trigdelay' in d['ports']:
             predefined = d.get('trigdelay', None)
             self.td = TrigDelay(d['ports']['trigdelay'], predefined)
         else:
             self.td = None
+
+        # AFG
+        self.afg = None
+        if 'afg' in d:
+            kwargs = d.get("afg", {})
+            self.afg = AFG(**kwargs)
+
+        # Trigger
+        self.trigger = None
+        if 'trigger' in d:
+            trigger = d['trigger']
+            assert trigger in ('RPi', 'TrigDelay', 'AFG'), \
+                "Unknown trigger %s" % trigger
+            if trigger == 'RPi':
+                self.trigger = RPiTrigger().trigger
+            elif trigger == 'TrigDelay':
+                assert self.td is not None, \
+                    "TrigDelay as trigger required, but it does not exist"
+                self.trigger = self.td.trigger
+            elif trigger == 'AFG':
+                assert self.afg is not None, \
+                    "AFG as trigger required, but it does not exist"
+                self.trigger = self.td.trigger
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # PowerControl

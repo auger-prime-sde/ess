@@ -132,7 +132,7 @@ timesync - sync Arduino time
 class TrigDelay(object):
     """Interface to arduino managing trigger delay"""
     re_init = re.compile(r'.*TrigDelay (?P<version>\d+)', re.DOTALL)
-    re_setdelay = re.compile(r'.*OK', re.DOTALL)
+    re_ok = re.compile(r'.*OK', re.DOTALL)
     re_getdelay = re.compile(r'.*trigdelay .*: (?P<delay>\d+)', re.DOTALL)
 
     def __init__(self, port, predefined=None):
@@ -177,9 +177,16 @@ predefined - dict functype: delay with predefined values """
         ndelay = self.predefined.get(delay, delay)
         self.logger.info('setting delay %d * 3/16us', ndelay)
         self.ser.write('d %d\r' % ndelay)
-        readSerRE(self.ser, TrigDelay.re_setdelay,
+        readSerRE(self.ser, TrigDelay.re_ok,
                   timeout=1, logger=self.logger)
         self.logger.debug('delay set')
+
+    def trigger(self):
+        """Send a trigger pulse"""
+        self.ser.write('t\r')
+        readSerRE(self.ser, TrigDelay.re_ok,
+                  timeout=1, logger=self.logger)
+        self.logger.debug('trigger sent')
 
 
 class PowerControl(threading.Thread):
