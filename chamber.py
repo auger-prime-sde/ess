@@ -89,6 +89,49 @@ q_resp - queue to send response"""
 class ESSprogram(threading.Thread):
     """Build BinderProg and ticker from JSON description"""
 
+    class _points(object):
+        """Container for measurement poits et al."""
+        def __init__(self):
+            self.mrs = {}   # measurement ADC ramp: {time: flags}
+            self.mns = {}   # measurement noise: {time: flags}
+            self.mps = {}   # measurement pulses, {time: flags}
+            self.mfs = {}   # measurement freqs, {time: flags}
+            self.ivs = {}   # measurement power supply voltage/current: [time]
+            self.tps = []   # test points: [time]
+            self.pps = {}   # power operations: {time: kwargs}
+            # flags for lis/los/cms: None or list of UUBnums
+            self.lis = {}   # logins {time: flags}
+            self.los = {}   # logouts {time: flags}
+            self.cms = {}   # telnet cmds {time: flags}
+            self.fls = {}   # flir operations {time: flags}
+            self.lto = {}   # log_timeout: {time: log_timeout value}
+            self.t = 0      # time
+            self.time_temp = []
+            self.time_humid = []
+
+        def update(self, otherpoints):
+            """Update current points from otherpoints"""
+            # update time_temp and time_humid
+            for timelist in ('time_temp', 'time_humid'):
+                self.__dict__[timelist].extend(
+                    [(t + self.t, val)
+                     for t, val in otherpoints.__dict__[timelist]])
+            # { time: flags } dictionaries
+            for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
+                          'lis', 'los', 'cms', 'fls', 'lto'):
+                self.__dict__[dname].update(
+                    {t + self.t: val
+                     for t, val in otherpoints.__dict__[dname].iteritems()})
+            self.tps.extend([t + self.t for t in otherpoints.tps])
+
+        def keys(self):
+            """Return all time points"""
+            keys = self.tps
+            for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
+                          'lis', 'los', 'cms', 'fls', 'lto'):
+                keys.extend(self.__dict__[dname].keys())
+            return sorted(set(keys))
+
     def __init__(self, jsonobj, timer, q_resp, essprog_macros=None):
         """Constructor
 jsonobj - either json string or json file"""
@@ -105,54 +148,80 @@ jsonobj - either json string or json file"""
         self.progno = jso.get('progno', 0)
         self.load = jso.get('load', False)
         self.prog = BinderProg()
-        self.time_temp = []
-        self.time_humid = []
-        mrs = {}   # measurement ADC ramp: {time: flags}
-        mns = {}   # measurement noise: {time: flags}
-        mps = {}   # measurement pulses, {time: flags}
-        mfs = {}   # measurement freqs, {time: flags}
-        ivs = {}   # measurement power supply voltage/current: [time]
-        tps = []   # test points: [time]
-        pps = {}   # power operations: {time: kwargs}
-        lis = {}   # logins {time: flags}, flags - None or list of UUBnums
-        los = {}   # logouts {time: flags}, flags - None or list of UUBnums
-        cms = {}   # telnet cmds {time: flags}, flags - cmdlist + uubnums
-        fls = {}   # flir operations {time: flags}
-        lto = {}   # log_timeout: {time: log_timeout value}
         temp_prev = None
         humid_prev = None
+        temp_seg = None
+        humid_seg = None
         operc = 0
-        t = 0
+        gp = ESSprogram._points()  # global points
+        cp = None                  # points in cycle
+        numrepeat = None           # number to repeat
+        ap = gp                    # actual points
         for segment in jso['program']:
+            if 'num_repeat' in segment:  # start cycle
+                assert cp is None, "Nested cycle"
+                numrepeat = segment['num_repeat']
+                assert isinstance(numrepeat, int) and numrepeat > 1
+                if temp_prev is not None:
+                    temp_seg = len(self.prog.seg_temp)
+                if humid_prev is not None:
+                    humid_seg = len(self.prog.seg_humid)
+                cp = ESSprogram._points()
+                ap = cp
+                continue
+            elif segment == 'endcycle':
+                assert cp is not None, "End cycle while not in cycle"
+                if temp_seg is not None:
+                    self.prog.seg_temp[-1].numjump = numrepeat-1
+                    self.prog.seg_temp[-1].segjump = temp_seg
+                if humid_seg is not None:
+                    self.prog.seg_humid[-1].numjump = numrepeat-1
+                    self.prog.seg_humid[-1].segjump = humid_seg
+                for i in xrange(numrepeat):
+                    gp.update(cp)
+                    gp.t += cp.t
+                temp_seg, humid_seg, cp, numrepeat = None, None, None, None
+                ap = gp
+                continue
             dur = segment["duration"]
             # temperature & operc
             temp_end = segment.get("temperature", temp_prev)
+            operc = segment.get("operc", operc)
             if temp_prev is None and temp_end is not None:
                 temp_prev = temp_end
-                self.time_temp.append((0, temp_prev))
-                if t > 0:
-                    seg = BinderSegment(temp_prev, t)
+                gp.time_temp.append((0, temp_prev))
+                if gp.t > 0:
+                    seg = BinderSegment(temp_prev, gp.t, operc=operc)
                     self.prog.seg_temp.append(seg)
-                    self.time_temp.append((t, temp_prev))
+                    gp.time_temp.append((gp.t, temp_prev))
+                if cp is not None and cp.t > 0:
+                    temp_seg = len(self.prog.seg_temp)
+                    seg = BinderSegment(temp_prev, cp.t, operc=operc)
+                    self.prog.seg_temp.append(seg)
+                    cp.time_temp.append((cp.t, temp_prev))
             if temp_prev is not None and dur > 0:
-                operc = segment.get("operc", operc)
                 seg = BinderSegment(temp_prev, dur, operc=operc)
                 self.prog.seg_temp.append(seg)
-                self.time_temp.append((t + dur, temp_end))
+                ap.time_temp.append((ap.t + dur, temp_end))
             temp_prev = temp_end
             # humidity
             humid_end = segment.get("humidity", humid_prev)
             if humid_prev is None and humid_end is not None:
                 humid_prev = humid_end
-                self.time_humid.append((0, humid_prev))
-                if t > 0:
-                    seg = BinderSegment(humid_prev, t)
+                gp.time_humid.append((0, humid_prev))
+                if gp.t > 0:
+                    seg = BinderSegment(humid_prev, gp.t)
                     self.prog.seg_humid.append(seg)
-                    self.time_humid.append((t, humid_prev))
+                    gp.time_humid.append((gp.t, humid_prev))
+                if cp is not None and cp.t > 0:
+                    humid_seg = len(self.prog.seg_humid)
+                    seg = BinderSegment(humid_prev, cp.t)
+                    self.prog.seg_humid.append(seg)
+                    cp.time_humid.append((cp.t, humid_prev))
             if humid_prev is not None and dur > 0:
                 seg = BinderSegment(humid_prev, dur)
                 self.prog.seg_humid.append(seg)
-                self.time_humid.append((t + dur, humid_end))
+                ap.time_humid.append((ap.t + dur, humid_end))
             humid_prev = humid_end
             # meas points
             if "meas.ramp" in segment:
@@ -160,43 +229,46 @@ jsonobj - either json string or json file"""
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
-                    mptime = t + offset
+                    mptime = ap.t + offset
                     if offset < 0:
                         mptime += dur
                     if 'log_timeout' in mp:
                         log_timeout = int(self._macro(mp['log_timeout']))
-                        if mptime not in lto or log_timeout > lto[mptime]:
-                            lto[mptime] = log_timeout
-                    mrs[mptime] = {key: self._macro(mp[key])
-                                   for key in ('db', 'count')
-                                   if key in mp}
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
+                    ap.mrs[mptime] = {key: self._macro(mp[key])
+                                      for key in ('db', 'count')
+                                      if key in mp}
             if "meas.noise" in segment:
                 meas = self._macro(segment["meas.noise"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
-                    mptime = t + offset
+                    mptime = ap.t + offset
                     if offset < 0:
                         mptime += dur
                     if 'log_timeout' in mp:
                         log_timeout = int(self._macro(mp['log_timeout']))
-                        if mptime not in lto or log_timeout > lto[mptime]:
-                            lto[mptime] = log_timeout
-                    mns[mptime] = {key: self._macro(mp[key])
-                                   for key in ('db', 'count')
-                                   if key in mp}
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
+                    ap.mns[mptime] = {key: self._macro(mp[key])
+                                      for key in ('db', 'count')
+                                      if key in mp}
             if "meas.pulse" in segment:
                 meas = self._macro(segment["meas.pulse"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
-                    mptime = t + offset
+                    mptime = ap.t + offset
                     if offset < 0:
                         mptime += dur
                     if 'log_timeout' in mp:
                         log_timeout = int(self._macro(mp['log_timeout']))
-                        if mptime not in lto or log_timeout > lto[mptime]:
-                            lto[mptime] = log_timeout
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
                     if 'flags' in mp:
                         flags = self._macro(mp["flags"])
                     else:
@@ -204,19 +276,20 @@ jsonobj - either json string or json file"""
                                  for key in ('db', 'voltages', 'splitmodes',
                                              'count')
                                  if key in mp}
-                    mps[mptime] = flags
+                    ap.mps[mptime] = flags
             if "meas.freq" in segment:
                 meas = self._macro(segment["meas.freq"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
-                    mptime = t + offset
+                    mptime = ap.t + offset
                     if offset < 0:
                         mptime += dur
                     if 'log_timeout' in mp:
                         log_timeout = int(self._macro(mp['log_timeout']))
-                        if mptime not in lto or log_timeout > lto[mptime]:
-                            lto[mptime] = log_timeout
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
                     if 'flags' in mp:
                         flags = self._macro(mp["flags"])
                     else:
@@ -224,32 +297,33 @@ jsonobj - either json string or json file"""
                                  for key in ('db', 'voltages', 'splitmodes',
                                              'freqs', 'count')
                                  if key in mp}
-                    mfs[mptime] = flags
+                    ap.mfs[mptime] = flags
             if "meas.iv" in segment:
                 meas = self._macro(segment["meas.iv"])
                 for mp in meas:
                     mp = self._macro(mp)
                     offset = self._macro(mp["offset"])
                     flags = self._macro(mp["flags"])
-                    mptime = t + offset
+                    mptime = ap.t + offset
                     if offset < 0:
                         mptime += dur
                     if 'log_timeout' in mp:
                         log_timeout = int(self._macro(mp['log_timeout']))
-                        if mptime not in lto or log_timeout > lto[mptime]:
-                            lto[mptime] = log_timeout
-                    ivs[mptime] = flags
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
+                    ap.ivs[mptime] = flags
             # power and test
             if "power" in segment:
                 power = self._macro(segment["power"])
                 for pp in power:
                     pp = self._macro(pp)
                     offset = self._macro(pp["offset"])
-                    ptime = t + offset
+                    ptime = ap.t + offset
                     if offset < 0:
                         ptime += dur
                     if "test" in pp:
-                        tps.append(ptime)
+                        ap.tps.append(ptime)
                     # kwargs for PowerSupply.config()
                     # e.g. {'ch1': (12.0, None, True, False)}
                     kwargs = {}
@@ -260,24 +334,25 @@ jsonobj - either json string or json file"""
                         if not all([v is None for v in args]):
                             kwargs[chan] = args
                     if kwargs:
-                        pps[ptime] = kwargs
+                        ap.pps[ptime] = kwargs
             # telnet
             if "telnet" in segment:
                 telnet = self._macro(segment["telnet"])
                 for tp in telnet:
                     tp = self._macro(tp)
                     offset = self._macro(tp["offset"])
-                    ttime = t + offset
+                    ttime = ap.t + offset
                     if offset < 0:
                         ttime += dur
                     if 'log_timeout' in tp:
                         log_timeout = int(self._macro(tp['log_timeout']))
-                        if ttime not in lto or log_timeout > lto[ttime]:
-                            lto[ttime] = log_timeout
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
                     if "login" in tp:
-                        lis[ttime] = self._macro(tp["login"])
+                        ap.lis[ttime] = self._macro(tp["login"])
                     if "logout" in tp:
-                        los[ttime] = self._macro(tp["logout"])
+                        ap.los[ttime] = self._macro(tp["logout"])
                     if "cmds" in tp:
                         cmdlist = [str(self._macro(cmd))
                                    for cmd in self._macro(tp["cmds"])]
@@ -285,20 +360,22 @@ jsonobj - either json string or json file"""
                             uubnums = self._macro(tp["cmds.uubs"])
                         else:
                             uubnums = None
-                        cms[ttime] = {"cmdlist": cmdlist, "uubnums": uubnums}
+                        ap.cms[ttime] = {"cmdlist": cmdlist,
+                                         "uubnums": uubnums}
             # FLIR
             if 'flir' in segment:
                 flir = self._macro(segment["flir"])
                 for fp in flir:
                     fp = self._macro(fp)
                     offset = self._macro(fp["offset"])
-                    ftime = t + offset
+                    ftime = ap.t + offset
                     if offset < 0:
                         ftime += dur
                     if 'log_timeout' in fp:
                         log_timeout = int(self._macro(fp['log_timeout']))
-                        if ftime not in lto or log_timeout > lto[ftime]:
-                            lto[ftime] = log_timeout
+                        if mptime not in ap.lto or \
+                           log_timeout > ap.lto[mptime]:
+                            ap.lto[mptime] = log_timeout
                     flags = {key: self._macro(fp[key])
                              for key in ('imagename', 'attname', 'description',
                                          'snapshot', 'download', 'delete')
@@ -306,30 +383,35 @@ jsonobj - either json string or json file"""
                     if 'snapshot' in flags:
                         assert 'imagename' in flags, \
                             "Imagename mandatory for snapshot"
-                    fls[ftime] = flags
-            t += dur
-        self.progdur = t
+                    ap.fls[ftime] = flags
+            ap.t += dur
+        assert cp is None, "Unfinished cycle"
+        self.progdur = gp.t
+        self.time_temp = gp.time_temp
+        self.time_humid = gp.time_humid
         # append the last segments
         if temp_prev is not None:
             self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
         if humid_prev is not None:
             self.prog.seg_humid.append(BinderSegment(humid_prev, 1))
-        self.meas_ramps = [(mptime, mrs[mptime]) for mptime in sorted(mrs)]
-        self.meas_noises = [(mptime, mns[mptime]) for mptime in sorted(mns)]
-        self.meas_pulses = [(mptime, mps[mptime]) for mptime in sorted(mps)]
-        self.meas_freqs = [(mptime, mfs[mptime]) for mptime in sorted(mfs)]
-        self.meas_ivs = [(mptime, ivs[mptime]) for mptime in sorted(ivs)]
-        self.power_points = [(ptime, pps[ptime]) for ptime in sorted(pps)]
-        self.test_points = sorted(tps)
-        self.logins = [(ttime, lis[ttime]) for ttime in sorted(lis)]
-        self.logouts = [(ttime, los[ttime]) for ttime in sorted(los)]
-        self.cmds = [(ttime, cms[ttime]) for ttime in sorted(cms)]
-        self.flirs = [(ftime, fls[ftime]) for ftime in sorted(fls)]
-        self.lto_touts = [(ltime, lto[ltime]) for ltime in sorted(lto)]
-        self.timepoints = {ptime: pind for pind, ptime in enumerate(
-            sorted(set(mrs.keys() + mns.keys() + mps.keys() + mfs.keys() +
-                       ivs.keys() + pps.keys() + tps +
-                       lis.keys() + los.keys() + cms.keys() + fls.keys())))}
+        self.meas_ramps = [(mptime, gp.mrs[mptime])
+                           for mptime in sorted(gp.mrs)]
+        self.meas_noises = [(mptime, gp.mns[mptime])
+                            for mptime in sorted(gp.mns)]
+        self.meas_pulses = [(mptime, gp.mps[mptime])
+                            for mptime in sorted(gp.mps)]
+        self.meas_freqs = [(mptime, gp.mfs[mptime])
+                           for mptime in sorted(gp.mfs)]
+        self.meas_ivs = [(mptime, gp.ivs[mptime]) for mptime in sorted(gp.ivs)]
+        self.power_points = [(ptime, gp.pps[ptime])
+                             for ptime in sorted(gp.pps)]
+        self.test_points = sorted(gp.tps)
+        self.logins = [(ttime, gp.lis[ttime]) for ttime in sorted(gp.lis)]
+        self.logouts = [(ttime, gp.los[ttime]) for ttime in sorted(gp.los)]
+        self.cmds = [(ttime, gp.cms[ttime]) for ttime in sorted(gp.cms)]
+        self.flirs = [(ftime, gp.fls[ftime]) for ftime in sorted(gp.fls)]
+        self.lto_touts = [(ltime, gp.lto[ltime]) for ltime in sorted(gp.lto)]
+        self.timepoints = {ptime: pind for pind, ptime in enumerate(gp.keys())}
 
     def _macro(self, o):
         if isinstance(o, (str, unicode)):

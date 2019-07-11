@@ -38,7 +38,7 @@ class ModbusError(Exception):
 
 class Modbus:
     """Implementation of Modbus client subset"""
-    def __init__(self, port, baudrate=38400, timeout=1, slave_id=1):
+    def __init__(self, port, baudrate=9600, timeout=1, slave_id=1):
         """Constructor
 port      - device to connect (/dev/ optional), str
 baudrate  - baudrate to use, int
