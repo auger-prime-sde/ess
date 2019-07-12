@@ -8,7 +8,7 @@ import string
 import threading
 import pickle
 from datetime import datetime, timedelta
-from Queue import Empty
+from queue import Empty
 
 from dataproc import item2label, float2expo
 
@@ -158,7 +158,7 @@ timeout - interval for collecting data
         last_ts = datetime(2016, 1, 1)  # minus infinity
         while not self.stop.is_set():
             if self.records:
-                qtend = min([rec['tend'] for rec in self.records.itervalues()])
+                qtend = min([rec['tend'] for rec in self.records.values()])
             else:
                 qtend = datetime.now() + timedelta(seconds=self.timeout)
             # logger.debug('tend = %s' %
@@ -196,7 +196,7 @@ timeout - interval for collecting data
                 elif ts > last_ts:  # add only ts after the last written
                     tend_curr = max(   # latest tend of previous recs
                         [rec['tend']
-                         for ts1, rec in self.records.iteritems()
+                         for ts1, rec in self.records.items()
                          if ts1 < ts] + [ts])
                     if tend <= tend_curr:
                         newrec['tend'] = tend_curr
@@ -213,13 +213,13 @@ timeout - interval for collecting data
                     continue
                 # eventually increase tend for newer records
                 if recalc:
-                    for ts1, rec in self.records.iteritems():
+                    for ts1, rec in self.records.items():
                         if ts < ts1 and rec['tend'] < tend:
                             rec['tend'] = tend
 
             # process expired records
             tnow = datetime.now()
-            expts = [ts for ts, rec in self.records.iteritems()
+            expts = [ts for ts, rec in self.records.items()
                      if rec['tend'] <= tnow]
             for ts in sorted(expts):
                 logger.debug('write rec for ts = %s',
@@ -231,7 +231,7 @@ timeout - interval for collecting data
                 rec['timestamp'] = ts
                 # apply filters to rec
                 recs = {}
-                for key, filterlist in self.filters.iteritems():
+                for key, filterlist in self.filters.items():
                     if key is None:
                         recs[None] = rec
                         continue
@@ -381,7 +381,7 @@ uubnum - UUB to log"""
         formatstr = ' '.join(logdata) + '\n'
     else:
         loglines = []
-        for ind in xrange(count):
+        for ind in range(count):
             logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                        '{meas_point:3d}', "%03d" % ind]
             for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):

@@ -138,7 +138,7 @@ flables - list of frequencies to log for freqgain
             values = {(uubnum, flabel): [None] * 11
                       for uubnum in self.uubnums
                       for flabel in self.flabels}
-        for label, value in d.iteritems():
+        for label, value in d.items():
             item = label2item(label)
             if item.get('typ', None) not in self.typs:
                 continue

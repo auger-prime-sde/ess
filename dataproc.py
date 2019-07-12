@@ -9,7 +9,7 @@ import logging
 import string
 import json
 import itertools
-from Queue import Empty
+from queue import Empty
 from datetime import datetime
 import numpy as np
 
@@ -465,7 +465,7 @@ others: uubnum, chan, splitmode, voltage, flabel (optional), functype
 
     def filter_stat(res_in):
         data = {}
-        for label, value in res_in.iteritems():
+        for label, value in res_in.items():
             d = label2item(label)
             if d is None or 'typ' not in d or d['typ'] != typ:
                 continue
@@ -476,7 +476,7 @@ others: uubnum, chan, splitmode, voltage, flabel (optional), functype
                 data[key] = []
             data[key].append(value)
         res_out = res_in.copy()
-        for key, valuelist in data.iteritems():
+        for key, valuelist in data.items():
             y = np.array(valuelist)
             item = {k: val for k, val in zip(otherkeys, key)
                     if val is not None}
@@ -508,7 +508,7 @@ or
 
     def filter_linear(res_in):
         data = {}
-        for label, adcvalue in res_in.iteritems():
+        for label, adcvalue in res_in.items():
             d = label2item(label)
             if d is None or 'typ' not in d or \
                d['typ'] not in ('ampli', 'fampli'):
@@ -529,7 +529,7 @@ or
                 data[key] = []
             data[key].append((volt, adcvalue))
         res_out = res_in.copy()
-        for key, xy in data.iteritems():
+        for key, xy in data.items():
             # xy = [[v1, adc1], [v2, adc2] ....]
             xy = np.array(xy)
             # xx_xy = [v1, v2, ...] * xy
@@ -558,14 +558,14 @@ output items:
     cutoff_u<uubnum>_c<uub channel> - cut-off frequency [MHz]"""
     def filter_cutoff(res_in):
         data = {}
-        for label, value in res_in.iteritems():
+        for label, value in res_in.items():
             d = label2item(label)
             if d is None or 'typ' != 'fgain':
                 continue
             key = (d['uubnum'], d['chan'], d['flabel'])
             data[key] = value
         # process data TBD
-        nkeys = set([(key[0], key[1]) for key in data.iterkeys()])
+        nkeys = set([(key[0], key[1]) for key in data.keys()])
         res_out = {item2label(typ='cutoff', uubnum=key[0], chan=key[1]): 56.78
                    for key in nkeys}
         res_out['timestamp'] = res_in['timestamp']
@@ -592,13 +592,13 @@ res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
         data = {item2label(functype='R', uubnum=uubnum, chan=ch+1): None
                 for uubnum in uubnums
                 for ch in range(10)}
-        for label, value in res_in.iteritems():
+        for label, value in res_in.items():
             d = label2item(label)
             if d is None or 'functype' not in d or d['functype'] != 'R':
                 continue
             data[label] = value
-        missing = [label for label, value in data.iteritems() if value is None]
-        failed = [label for label, value in data.iteritems() if value is False]
+        missing = [label for label, value in data.items() if value is None]
+        failed = [label for label, value in data.items() if value is False]
         # aggregate labels for UUB
         for uubnum in uubnums:
             aggregate(missing, uubnum)

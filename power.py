@@ -14,8 +14,8 @@ POWER_OPER = ('voltage', 'currLim', 'on', 'off')
 class PowerSupply(threading.Thread):
     """Class for control of programable power supply
 Developed for Rohde & Schwarz MHP4040 and for TTi CPX400SP."""
-    re_cpx = re.compile(r'.*CPX400')
-    re_hmp = re.compile(r'.*HMP4040')
+    re_cpx = re.compile(rb'.*CPX400')
+    re_hmp = re.compile(rb'.*HMP4040')
 
     def __init__(self, port, timer=None, q_resp=None, **kwargs):
         """Constructor.
@@ -30,7 +30,7 @@ kwargs - parameters for output voltage/current limit configuration
         try:
             s = Serial(port, baudrate=9600, xonxoff=True,
                        bytesize=8, parity='N', stopbits=1, timeout=0.5)
-            s.write('*IDN?\n')
+            s.write(b'*IDN?\n')
             resp = s.read(100)
             logger.info('Connected, %s', resp)
         except SerialException:
@@ -101,8 +101,12 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
             else:
                 self.logger.debug('Set UUB ch = %d', uubch)
                 self.uubch = uubch
-        args = {i: dict(map(None, POWER_OPER, kwargs.get('ch%d' % i, ())))
-                for i in xrange(self.NCHAN+1)}
+        args = {}
+        for i in range(self.NCHAN+1):
+            args[i] = {k: None for k in POWER_OPER}
+            argtuple = kwargs.get('ch%d' % i, None)
+            if argtuple is not None:
+                args[i].update({dict(list(zip(POWER_OPER, argtuple)))})
         # copy ch0 to uubch where uubch's value is None
         if self.uubch is not None:
             for key in POWER_OPER:
@@ -112,10 +116,10 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
         args.pop(0, None)
 
         # switch off
-        chans = [i for i in args.keys() if args[i]['off']]
+        chans = [i for i in args if args[i]['off']]
         self.output(chans, 0)
         # set voltage/current limit for all channels
-        for i, d in args.iteritems():
+        for i, d in list(args.items()):
             if d['voltage'] is not None:
                 if d['currLim'] is not None:
                     self.setVoltCurrLim(i, d['voltage'], d['currLim'])
@@ -124,51 +128,51 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
             elif d['currLim'] is not None:
                 self.setCurrLim(i, d['currLim'])
         # switch on
-        chans = [i for i in args.keys() if args[i]['on']]
+        chans = [i for i in args if args[i]['on']]
         self.output(chans, 1)
 
     # HMP4040 methods
     def _output_hmp(self, chans, state):
         """Set channels in chans to state
 chans - list of channels to switch
-state - required state: 'ON' | 'OFF' | 0 | 1
+state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
 """
-        if state in (0, 1):
+        if state in (0, 1, False, True):
             state = 'ON' if state else 'OFF'
         for ch in chans:
             self.logger.debug('Switch ch%d %s', ch, state)
-            self.ser.write('INST OUT%d\n' % ch)
-            self.ser.write('OUTP:STATE %s\n' % state)
+            self.ser.write(b'INST OUT%d\n' % ch)
+            self.ser.write(b'OUTP:STATE %s\n' % state)
 
     def _setVoltage_hmp(self, ch, value):
         self.logger.debug('Set voltage ch%d: %fV', ch, value)
-        self.ser.write('INST OUT%d\n' % ch)
-        self.ser.write('VOLT %f\n' % value)
+        self.ser.write(b'INST OUT%d\n' % ch)
+        self.ser.write(b'VOLT %f\n' % value)
 
     def _setCurrLim_hmp(self, ch, value):
         self.logger.debug('Set current limit ch%d: %fA', ch, value)
-        self.ser.write('INST OUT%d\n' % ch)
-        self.ser.write('CURR %f\n' % value)
+        self.ser.write(b'INST OUT%d\n' % ch)
+        self.ser.write(b'CURR %f\n' % value)
 
     def _setVoltCurrLim_hmp(self, ch, voltage, currLim):
         self.logger.debug('Set voltage and current limit ch%d: %fV %fA',
                           ch, voltage, currLim)
-        self.ser.write('INST OUT%d\n' % ch)
-        self.ser.write('APPL %f, %f\n' % (voltage, currLim))
+        self.ser.write(b'INST OUT%d\n' % ch)
+        self.ser.write(b'APPL %f, %f\n' % (voltage, currLim))
 
     def _readVoltCurr_hmp(self, chans=None):
         rchans = (self.uubch, ) if chans is None else chans
         res = {}
         for ch in rchans:
-            self.ser.write('INST OUT%d\n' % ch)
-            self.ser.write('MEAS:VOLT?\n')
+            self.ser.write(b'INST OUT%d\n' % ch)
+            self.ser.write(b'MEAS:VOLT?\n')
             respv = self.ser.read(10)
-            self.ser.write('MEAS:CURR?\n')
+            self.ser.write(b'MEAS:CURR?\n')
             respi = self.ser.read(10)
             try:
-                m = re.match(r'(-?[0-9]+(\.[0-9]*))', respv)
+                m = re.match(rb'(-?[0-9]+(\.[0-9]*))', respv)
                 voltage = float(m.groups()[0])
-                m = re.match(r'(-?[0-9]+(\.[0-9]*))', respi)
+                m = re.match(rb'(-?[0-9]+(\.[0-9]*))', respi)
                 current = float(m.groups()[0])
             except AttributeError:
                 self.logger.error(
@@ -185,31 +189,31 @@ state - required state: 'ON' | 'OFF' | 0 | 1
         if 1 in chans:
             pstate = 'ON' if state else 'OFF'
             self.logger.debug('Switch ch1 %s', pstate)
-            self.ser.write('OP1 %d\n' % state)
+            self.ser.write(b'OP1 %d\n' % state)
 
     def _setVoltage_cpx(self, ch, value):
         self.logger.debug('Set voltage ch1: %fV', value)
-        self.ser.write('V1 %f\n' % value)
+        self.ser.write(b'V1 %f\n' % value)
 
     def _setCurrLim_cpx(self, ch, value):
         self.logger.debug('Set current limit ch: %fA', value)
-        self.ser.write('I1 %f\n' % value)
+        self.ser.write(b'I1 %f\n' % value)
 
     def _setVoltCurrLim_cpx(self, ch, voltage, currLim):
         self.logger.debug('Set voltage and current limit: %fV %fA',
                           voltage, currLim)
-        self.ser.write('V1 %f\n' % voltage)
-        self.ser.write('I1 %f\n' % currLim)
+        self.ser.write(b'V1 %f\n' % voltage)
+        self.ser.write(b'I1 %f\n' % currLim)
 
     def _readVoltCurr_cpx(self, ch=None):
-        self.ser.write('V1O?\n')
+        self.ser.write(b'V1O?\n')
         respv = self.ser.read(10)
-        self.ser.write('I1O?\n')
+        self.ser.write(b'I1O?\n')
         respi = self.ser.read(10)
         try:
-            m = re.match(r'(-?[0-9]+(\.[0-9]*))V', respv)
+            m = re.match(rb'(-?[0-9]+(\.[0-9]*))V', respv)
             voltage = float(m.groups()[0])
-            m = re.match(r'(-?[0-9]+(\.[0-9]*))A', respi)
+            m = re.match(rb'(-?[0-9]+(\.[0-9]*))A', respi)
             current = float(m.groups()[0])
         except AttributeError:
             self.logger.error(

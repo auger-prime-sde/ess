@@ -135,7 +135,7 @@ class SineFitter(object):
         self.vander = np.ones((N, NPOLY+1))
         if NPOLY >= 1:
             self.vander[:, 1] = (2*x + 1.0)/N - 1.0
-            for i in xrange(2, NPOLY):
+            for i in range(2, NPOLY):
                 self.vander[:, i] = self.vander[:, i-1] * self.vander[:, 1]
 #        self.x = x.reshape(N, 1)
         self.x = x
@@ -151,7 +151,7 @@ return matrix freqs[flabel]
             return self.freqs[flabel]
         omega = 2*pi/self.FREQ * freq/1.e6
         matX = np.zeros((self.N, 2*self.NHARM + self.NPOLY+1))
-        for n in xrange(self.NHARM):
+        for n in range(self.NHARM):
             matX[:, 2*n] = np.cos((n+1)*omega*self.x)
             matX[:, 2*n+1] = np.sin((n+1)*omega*self.x)
         matX[:, 2*self.NHARM:] = self.vander
@@ -175,7 +175,7 @@ return dict with keys: ampli, param, chi, yval
             res['chi'] = np.zeros(Ncol)
         if stage >= SineFitter.YFIT:
             res['yfit'] = np.zeros((self.N, Ncol))
-        for col in xrange(Ncol):
+        for col in range(Ncol):
             y = yall[:, col]
             if self.crop:
                 ind = (0 < y) & (y < SineFitter.YMAX)

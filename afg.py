@@ -72,7 +72,7 @@ for functype F:
         try:
             self.fd = os.open(device, os.O_RDWR)
             self.logger.debug('%s open', device)
-            os.write(self.fd, '*IDN?')
+            os.write(self.fd, b'*IDN?')
             resp = os.read(self.fd, 1000)
             self.logger.info('Connected, %s', resp)
         except OSError as e:
@@ -111,7 +111,7 @@ lvl - optional logging level
 """
         line.rstrip()
         self.logger.log(lvl, 'Sending %s', line)
-        os.write(self.fd, line)
+        os.write(self.fd, bytes(line, 'ascii'))
 
     def setParams(self, **d):
         """Set AFG parameters according to dictionary d.
@@ -132,7 +132,7 @@ Updates self.param and send them to AFG."""
                   d['offsets'][ch] != self.param['offsets'][ch]):
                 setChans.add(ch)
         self.param.update({key: d[key]
-                           for key in AFG.PARAM.keys() if key in d})
+                           for key in AFG.PARAM if key in d})
         for ch in setChans:
             self._setChannel(ch)
         if setFun == 'P' or setChans and self.param['functype'] == 'P':
@@ -205,7 +205,7 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
         scale = float(npoint) if scale is None else float(scale)
         self.logger.info('Writing user function of %d points', npoint)
         self.send('data:define ememory,%d' % npoint)
-        for i in xrange(npoint):
+        for i in range(npoint):
             value = int(YSCALE * func(i/scale) + 0.5)
             if value > YSCALE:
                 value = YSCALE
@@ -268,10 +268,10 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
     assert npoint > 0
     scale = float(npoint) if scale is None else float(scale)
     pscale = scale * nprev / npoint  # scale for preview
-    values = [int(YSCALE * func(i/scale) + 0.5) for i in xrange(npoint)]
+    values = [int(YSCALE * func(i/scale) + 0.5) for i in range(npoint)]
     values = [YSCALE if val > YSCALE else 0 if val < 0 else val
               for val in values]
-    preview = [int(0xFF * func(ii/pscale) + 0.5) for ii in xrange(nprev)]
+    preview = [int(0xFF * func(ii/pscale) + 0.5) for ii in range(nprev)]
     preview = [0xFF if val > 0xFF else 0 if val < 0 else val
                for val in preview]
 

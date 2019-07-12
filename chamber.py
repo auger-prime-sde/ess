@@ -121,7 +121,7 @@ class ESSprogram(threading.Thread):
                           'lis', 'los', 'cms', 'fls', 'lto'):
                 self.__dict__[dname].update(
                     {t + self.t: val
-                     for t, val in otherpoints.__dict__[dname].iteritems()})
+                     for t, val in otherpoints.__dict__[dname].items()})
             self.tps.extend([t + self.t for t in otherpoints.tps])
 
         def keys(self):
@@ -129,7 +129,7 @@ class ESSprogram(threading.Thread):
             keys = self.tps
             for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
                           'lis', 'los', 'cms', 'fls', 'lto'):
-                keys.extend(self.__dict__[dname].keys())
+                keys.extend(list(self.__dict__[dname].keys()))
             return sorted(set(keys))
 
     def __init__(self, jsonobj, timer, q_resp, essprog_macros=None):
@@ -177,7 +177,7 @@ jsonobj - either json string or json file"""
                 if humid_seg is not None:
                     self.prog.seg_humid[-1].numjump = numrepeat-1
                     self.prog.seg_humid[-1].segjump = humid_seg
-                for i in xrange(numrepeat):
+                for i in range(numrepeat):
                     gp.update(cp)
                     gp.t += cp.t
                 temp_seg, humid_seg, cp, numrepeat = None, None, None, None
@@ -414,7 +414,7 @@ jsonobj - either json string or json file"""
         self.timepoints = {ptime: pind for pind, ptime in enumerate(gp.keys())}
 
     def _macro(self, o):
-        if isinstance(o, (str, unicode)):
+        if isinstance(o, str):
             return self.macros.get(str(o), o)
         return o
 
@@ -424,7 +424,7 @@ return polyline approximation at the time t"""
         try:
             ind = [p[0] > t for p in timevalues].index(True)
             ((t0, val0), (t1, val1)) = timevalues[ind-1:ind+1]
-            x = float(t - t0) / (t1 - t0)
+            x = (t - t0) / (t1 - t0)
             val = x*val1 + (1-x)*val0
         except ValueError:    # not necessary now due to stoptime
             val = timevalues[-1][1]
@@ -487,7 +487,7 @@ and add them to timer"""
         self.stoptime = starttime + timedelta(seconds=self.progdur)
         self.starttime = starttime
         message = starttime.strftime('starting ESS program at %H:%M, duration')
-        message += ' %d:%02d' % (self.progdur / 60, self.progdur % 60)
+        message += ' %d:%02d' % (self.progdur // 60, self.progdur % 60)
         logging.getLogger('ESSprogram').info(message)
         offset = (self.starttime - self.timer.basetime).total_seconds()
         # start and stop binder program

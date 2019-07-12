@@ -115,7 +115,7 @@ offset - an offset to basetime (seconds)
                     continue
                 logger.info('Added ticker ' + name)
                 # at least one value must be produced
-                nextval, detail = gener.next()
+                nextval, detail = next(gener)
                 nextval += offset
                 self.tickers[name] = [nextval, detail, gener, offset]
             while self.tickers2del:
@@ -140,12 +140,12 @@ offset - an offset to basetime (seconds)
                 delta = min([t[0] for t in self.tickers.values()])
             newflags = {}
             tickers2del = []
-            for name, t in self.tickers.iteritems():
+            for name, t in self.tickers.items():
                 # logger.debug('ticker iteration: %s: %s', name, repr(t))
                 if t[0] == delta:
                     newflags[name] = t[1]
                     try:
-                        t[0:2] = t[2].next()  # generate next value
+                        t[0:2] = next(t[2])  # generate next value
                         t[0] += t[3]          # add offset to delta
                     except StopIteration:
                         # schedule exhausted ticker deletion

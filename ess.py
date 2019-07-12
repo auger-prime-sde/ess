@@ -11,8 +11,8 @@ import json
 import logging
 import threading
 from datetime import datetime, timedelta
-from Queue import Queue
-from prc import PRCServer
+from queue import Queue
+# from prc import PRCServer - not working on Python3
 
 # ESS stuff
 from timer import Timer, periodic_ticker, one_tick
@@ -186,7 +186,7 @@ class ESS(object):
         # UUBs - Zync temperature & SlowControl
         self.uubtsc = {uubnum: UUBtsc(uubnum, self.timer, self.q_resp)
                        for uubnum in self.uubnums}
-        for uub in self.uubtsc.itervalues():
+        for uub in self.uubtsc.values():
             uub.start()
 
         # data processing
@@ -219,7 +219,7 @@ class ESS(object):
             fn = d['tickers']['essprogram']
             if 'essprogram.macros' in d['tickers']:
                 dm = d['tickers']['essprogram.macros']
-                essprog_macros = {key: str(val) for key, val in dm.iteritems()}
+                essprog_macros = {key: str(val) for key, val in dm.items()}
             else:
                 essprog_macros = None
             with open(fn, 'r') as fp:
@@ -387,7 +387,7 @@ def Pretest(jsconf, uubnum):
              'MACADDR': uubnum2mac(uubnum)}
     with open(jsconf, 'r') as fp:
         js = fp.read()
-    for key, val in subst.iteritems():
+    for key, val in subst.items():
         js = js.replace('$'+key, str(val))
     return js
 
@@ -401,12 +401,13 @@ if __name__ == '__main__':
         raise
 
     logger = logging.getLogger('ESS')
-    if ess.prcport is not None:
-        logger.info('Starting PRC server at localhost:%d', ess.prcport)
-        server = PRCServer(ip='127.0.0.1', port=ess.prcport)
-        server.add_variable('ess', ess)
-        server.start()
-        print 'PRC server started at localhost:%d' % ess.prcport
+    #  - not working on Python3
+    # if ess.prcport is not None:
+    #     logger.info('Starting PRC server at localhost:%d', ess.prcport)
+    #     server = PRCServer(ip='127.0.0.1', port=ess.prcport)
+    #     server.add_variable('ess', ess)
+    #     server.start()
+    #     print('PRC server started at localhost:%d' % ess.prcport)
 
     logger.debug('Waiting for ess.evtstop.')
     ess.evtstop.wait()

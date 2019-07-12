@@ -63,7 +63,7 @@ lvl - optional logging level
 
     def setParams(self, **d):
         """Set MDO parameters according to dict <d>"""
-        for key, val in d.iteritems():
+        for key, val in d.items():
             if key in MDO.NUMPARAM:
                 self.send('%s %d' % (key, val))
             elif key in MDO.STRPARAM:
@@ -75,7 +75,7 @@ lvl - optional logging level
                   for item in resp.split(';')])
         assert d['ENCDG'] == 'BINARY'
         assert d['BN_FMT'] == 'RI'
-        return {key: val for key, val in d.iteritems()
+        return {key: val for key, val in d.items()
                 if key in ('BYT_OR', 'BIT_NR',
                            'XUNIT', 'XZERO', 'XINCR',
                            'YUNIT', 'YZERO', 'YMULT', 'YOFF')}
@@ -102,8 +102,8 @@ return tuple (numpy.array yvals, float xincr, float xzero, xunit, yunit)"""
                   MDO.NRTYPE[wfmd['BIT_NR']])
         yvals = np.array(unpack(fmtstr, data)) - float(wfmd['YOFF'])
         yvals = float(wfmd['YZERO']) + float(wfmd['YMULT'])*yvals
-        xincr, xzero = map(lambda k: float(wfmd[k]), ('XINCR', 'XZERO'))
-        xunit, yunit = map(lambda k: wfmd[k].strip('"'), ('XUNIT', 'YUNIT'))
+        xincr, xzero = [float(wfmd[k]) for k in ('XINCR', 'XZERO')]
+        xunit, yunit = [wfmd[k].strip('"') for k in ('XUNIT', 'YUNIT')]
         if dataslice is not None:
             start, stop, step = dataslice
             yvals = yvals[start:stop:step]

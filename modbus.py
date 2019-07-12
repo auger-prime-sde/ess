@@ -5,12 +5,12 @@
 #
 
 from struct import pack, unpack
-from binascii import hexlify
 import logging
 import serial
 import crcmod
+from functools import reduce
 
-VERSION = '20190707'
+VERSION = '20190712'
 
 # constants
 READ_HOLDING_REGISTERS = 0x03
@@ -40,7 +40,7 @@ class Modbus:
     """Implementation of Modbus client subset"""
     def __init__(self, port, baudrate=9600, timeout=1, slave_id=1):
         """Constructor
-port      - device to connect (/dev/ optional), str
+port      - device to connect, str
 baudrate  - baudrate to use, int
 timeout   - timeout for serial read (seconds, float)
 """
@@ -66,8 +66,8 @@ n       - expected size of response (without CRC)
 return data with CRC stripped
 """
         data += pack('<H', self.crc(data))
-        self.logger.debug(" => %s %s [%s]" % (
-            hexlify(data[:2]), hexlify(data[2:-2]), hexlify(data[-2:])))
+        self.logger.debug(" => %s %s [%s]",
+                          data[:2].hex(), data[2:-2].hex(), data[-2:].hex())
         nw = self.ser.write(data)
         if nw < len(data):
             self.logger.debug("written %d" % nw)
@@ -75,27 +75,28 @@ return data with CRC stripped
         # early detection of Modbus error
         resp = self.ser.read(5)
         if len(resp) < 5:
-            self.logger.error("Incomplete serial read: <%s>" % hexlify(resp))
+            self.logger.error("Incomplete serial read: <%s>" % resp.hex())
             raise ModbusError("Incomplete serial data read")
-        if ord(resp[1]) & 0x80 and len(resp) == 5:
+        if resp[1] & 0x80 and len(resp) == 5:
             self.logger.debug("<=  %02X %02X %02X [%04X]" %
                               unpack(">BBBH", resp))
             assert self.crc(resp) == 0, "Wrong CRC code"
-            if resp[0] != data[0] or ord(resp[1]) & 0x7F != ord(data[1]):
+            if resp[0] != data[0] or resp[1] & 0x7F != data[1]:
                 raise ModbusError("Malformed error response")
-            raise ModbusError("Modbus error code", ord(resp[2]))
+            raise ModbusError("Modbus error code", resp[2])
         if n > 3:   # read the rest of data if no error occurred
             resp += self.ser.read(n-3)
-            self.logger.debug("<=  %s %s [%s]" % (
-                hexlify(resp[:2]), hexlify(resp[2:-2]), hexlify(resp[-2:])))
+            self.logger.debug(
+                "<=  %s %s [%s]",
+                data[:2].hex(), data[2:-2].hex(), data[-2:].hex())
         if self.ser.in_waiting > 0:
             self.ser.read(self.ser.in_waiting)  # empty read buffer
             raise ModbusError("Surplus data in serial read")
-        if ord(resp[1]) & 0x80 and len(resp) == 5:
+        if resp[1] & 0x80 and len(resp) == 5:
             assert self.crc(resp) == 0, "Wrong CRC code"
-            if resp[0] != data[0] or ord(resp[1]) & 0x7F != ord(data[1]):
+            if resp[0] != data[0] or resp[1] & 0x7F != data[1]:
                 raise ModbusError("Malformed error response")
-            raise ModbusError("Modbus error code", ord(resp[2]))
+            raise ModbusError("Modbus error code", resp[2])
         if len(resp) < n+2 or self.ser.in_waiting > 0:
             raise ModbusError("Incomplete serial data read")
         assert self.crc(resp) == 0, "Wrong CRC code"
@@ -154,7 +155,7 @@ reg_values   - list of values to write (each 0 to 0xFFFF)
     def write_int(self, reg_addr, ival):
         """Convert int to 2 words and write them to <reg_addr>"""
         self.write_multiple_registers(reg_addr,
-                                      [ival / 0x10000, ival % 0x10000])
+                                      [ival // 0x10000, ival % 0x10000])
 
 
 def words2floats(*words):

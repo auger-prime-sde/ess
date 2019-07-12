@@ -5,7 +5,7 @@
  Implementation of UUB dispatcher & UUB meas
 """
 
-import httplib
+import http.client
 import logging
 import re
 import socket
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from time import sleep
 from struct import unpack
 from struct import error as struct_error
-from Queue import Empty
+from queue import Empty
 from telnetlib import Telnet
 import numpy as np
 
@@ -67,7 +67,7 @@ kwargs: count
 return afg_dict, item_dict"""
         item_dict = {'functype': 'R'}
         if 'count' in kwargs:
-            for i in xrange(kwargs['count']):
+            for i in range(kwargs['count']):
                 item_dict['index'] = i
                 yield None, item_dict
         else:
@@ -79,7 +79,7 @@ kwargs: count
 return afg_dict, item_dict"""
         item_dict = {'functype': 'N'}
         if 'count' in kwargs:
-            for i in xrange(kwargs['count']):
+            for i in range(kwargs['count']):
                 item_dict['index'] = i
                 yield None, item_dict
         else:
@@ -103,7 +103,7 @@ return afg_dict, item_dict"""
                 if 'count' in kwargs:
                     item_dict['index'] = 0
                     yield afg_dict, item_dict
-                    for i in xrange(1, kwargs['count']):
+                    for i in range(1, kwargs['count']):
                         item_dict['index'] = i
                         yield None, item_dict
                 else:
@@ -133,7 +133,7 @@ return afg_dict, item_dict"""
                     if 'count' in kwargs:
                         item_dict['index'] = 0
                         yield afg_dict, item_dict
-                        for i in xrange(1, kwargs['count']):
+                        for i in range(1, kwargs['count']):
                             item_dict['index'] = i
                             yield None, item_dict
                     else:
@@ -268,7 +268,7 @@ q_resp - queue to send response
                 if 'test_point' in flags:
                     res['test_point'] = flags['test_point']
             self.logger.debug('Connecting UUB')
-            conn = httplib.HTTPConnection(self.ip, HTTPPORT)
+            conn = http.client.HTTPConnection(self.ip, HTTPPORT)
             try:
                 # read Zynq temperature
                 if 'meas.thp' in flags:
@@ -276,7 +276,7 @@ q_resp - queue to send response
                 # read SlowControl data
                 if 'meas.sc' in flags:
                     res.update(self.readSlowControl(conn))
-            except (httplib.CannotSendRequest, socket.error,
+            except (http.client.CannotSendRequest, socket.error,
                     AttributeError) as e:
                 self.logger.error('HTTP request failed, %s', e.__str__())
             finally:
@@ -294,7 +294,7 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
         if timeout is not None and not isLive(self, timeout):
             return None
         self.logger.debug('Reading UUB serial number')
-        conn = httplib.HTTPConnection(self.ip, HTTPPORT)
+        conn = http.client.HTTPConnection(self.ip, HTTPPORT)
         try:
             # self.logger.debug('sending conn.request')
             conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
@@ -303,7 +303,7 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
             # self.logger.debug('re_sernum')
             res = re_sernum.match(resp).groupdict()['sernum']
             # self.logger.debug('breaking')
-        except (httplib.CannotSendRequest, socket.error, AttributeError):
+        except (http.client.CannotSendRequest, socket.error, AttributeError):
             conn.close()
             return None
         conn.close()
@@ -339,7 +339,7 @@ return dictionary: sc<uubnum>_<variable>: value
         if m is not None:
             # prefix keys
             prefix = 'sc%04d_' % self.uubnum
-            res = {prefix+k: float(v) for k, v in m.groupdict().iteritems()}
+            res = {prefix+k: float(v) for k, v in m.groupdict().items()}
             # transform 0.1K -> deg.C
             res[prefix+'temp'] = 0.1 * res[prefix+'temp'] - 273.15
         else:
@@ -416,7 +416,7 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                 if self.trigdelay is not None:
                     self.trigdelay.delay = self.functypes[tname]
                 if tname == 'meas.ramp':
-                    for adcr in self.adcramp.itervalues():
+                    for adcr in self.adcramp.values():
                         adcr.switchOn()
                     sleep(UUBdaq.TOUT_RAMP)
                 elif tname in ('meas.pulse', 'meas.freq'):
@@ -445,7 +445,7 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     self.ulisten.clear = True
                     logger.debug('DAQ completed')
                 if tname == 'meas.ramp':
-                    for adcr in self.adcramp.itervalues():
+                    for adcr in self.adcramp.values():
                         adcr.switchOff()
                     sleep(UUBdaq.TOUT_RAMP)
                 elif tname in ('meas.pulse', 'meas.freq'):
@@ -494,7 +494,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                         reclog = ', '.join([
                             '(UUB %d, port %d, id %08x): ' % key +
                             rec.__str__()
-                            for key, rec in self.records.iteritems()])
+                            for key, rec in self.records.items()])
                         logger.debug('Discarding records: { %s }', reclog)
                         self.logrecords = False
                     self.records = {}
@@ -563,7 +563,7 @@ Return False if overlapping or outside, True otherwise."""
         if not 0 <= start < end <= self.size:
             return False
         curLen = len(self.starts)
-        pos = len(filter(lambda i: start >= i, self.ends))
+        pos = len([i for i in self.ends if start >= i])
         if pos < curLen and end > self.starts[pos]:
             return False
         # ok, insert the new chunk
@@ -644,9 +644,9 @@ header - data as in `struct shwr_header'"""
             return self.yall
         yall = np.zeros([self.NPOINT, 10], dtype=float)
         start = self.shwr_buf_start
-        for i in xrange(self.NPOINT):
+        for i in range(self.NPOINT):
             index = (i + start) % self.NPOINT
-            for j in xrange(5):
+            for j in range(5):
                 off = (j*self.NPOINT+index)*4
                 hg, lg = unpack("<HH", self.rawdata[off:off+4])
                 yall[i, 2*j] = hg & 0xFFF

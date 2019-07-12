@@ -45,17 +45,17 @@ return response from serial or raise SerialReadTimeout exception"""
 
 class BME(threading.Thread):
     """Thread managing arduino reading BME280"""
-    re_bmeinit = re.compile(r'.*BME1 detected[\r\n]*BME2 detected[\r\n]*',
+    re_bmeinit = re.compile(rb'.*BME1 detected[\r\n]*BME2 detected[\r\n]*',
                             re.DOTALL)
-    re_bmetimeset = re.compile(r'.*set time OK[\r\n]*', re.DOTALL)
-    re_bmemeas = re.compile(r'.*(?P<dt>20\d{2}-\d{2}-\d{2}T' +
-                            r'\d{2}:\d{2}:\d{2})' +
-                            r' +(?P<temp1>-?\d+(\.\d*)?).*' +
-                            r' +(?P<humid1>\d+(\.\d*)?).*' +
-                            r' +(?P<press1>\d+(\.\d*)?).*' +
-                            r' +(?P<temp2>-?\d+(\.\d*)?).*' +
-                            r' +(?P<humid2>\d+(\.\d*)?).*' +
-                            r' +(?P<press2>\d+(\.\d*)?)[\r\n]*',
+    re_bmetimeset = re.compile(rb'.*set time OK[\r\n]*', re.DOTALL)
+    re_bmemeas = re.compile(rb'.*(?P<dt>20\d{2}-\d{2}-\d{2}T' +
+                            rb'\d{2}:\d{2}:\d{2})' +
+                            rb' +(?P<temp1>-?\d+(\.\d*)?).*' +
+                            rb' +(?P<humid1>\d+(\.\d*)?).*' +
+                            rb' +(?P<press1>\d+(\.\d*)?).*' +
+                            rb' +(?P<temp2>-?\d+(\.\d*)?).*' +
+                            rb' +(?P<humid2>\d+(\.\d*)?).*' +
+                            rb' +(?P<press2>\d+(\.\d*)?)[\r\n]*',
                             re.DOTALL)
 
     def __init__(self, port, timer, q_resp, timesync=False):
@@ -80,7 +80,7 @@ timesync - sync Arduino time
                 logger.info('BME time sync')
                 ts = (datetime.now() + timedelta(seconds=1)).strftime(
                     "t %Y-%m-%dT%H:%M:%S\r")
-                s.write(ts)
+                s.write(bytes(ts, 'ascii'))
                 readSerRE(s, BME.re_bmetimeset, timeout=3, logger=logger)
                 logger.info('synced to ' + ts)
         except Exception:
@@ -114,7 +114,7 @@ timesync - sync Arduino time
                 logger.debug('BME event timestamp ' +
                              datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
                 logger.debug('BME read')
-                self.ser.write('m')
+                self.ser.write(b'm')
                 resp = readSerRE(self.ser, BME.re_bmemeas, logger=logger)
                 logger.debug('BME read finished')
                 d = BME.re_bmemeas.match(resp).groupdict()
@@ -124,16 +124,16 @@ timesync - sync Arduino time
                               timestamp).total_seconds())
                 res = {'timestamp': timestamp}
                 # prefix keys from re_bme with 'bme.'
-                for k, v in d.iteritems():
+                for k, v in d.items():
                     res['bme_'+k] = float(v)
                 self.q_resp.put(res)
 
 
 class TrigDelay(object):
     """Interface to arduino managing trigger delay"""
-    re_init = re.compile(r'.*TrigDelay (?P<version>\d+)', re.DOTALL)
-    re_ok = re.compile(r'.*OK', re.DOTALL)
-    re_getdelay = re.compile(r'.*trigdelay .*: (?P<delay>\d+)', re.DOTALL)
+    re_init = re.compile(rb'.*TrigDelay (?P<version>\d+)', re.DOTALL)
+    re_ok = re.compile(rb'.*OK', re.DOTALL)
+    re_getdelay = re.compile(rb'.*trigdelay .*: (?P<delay>\d+)', re.DOTALL)
 
     def __init__(self, port, predefined=None):
         """Constructor.
@@ -145,7 +145,7 @@ predefined - dict functype: delay with predefined values """
             s = Serial(port, baudrate=115200)
             self.logger.info('Opening serial %s', repr(s))
             sleep(0.5)  # ad hoc constant to avoid timeout
-            # s.write('?\r')
+            # s.write(b'?\r')
             resp = readSerRE(s, TrigDelay.re_init, timeout=1,
                              logger=self.logger)
             self.version = TrigDelay.re_init.match(resp).groupdict()['version']
@@ -165,7 +165,7 @@ predefined - dict functype: delay with predefined values """
     def delay(self):
         """Get delay from Arduino"""
         self.logger.info('getting delay')
-        self.ser.write('q\r')
+        self.ser.write(b'q\r')
         resp = readSerRE(self.ser, TrigDelay.re_getdelay,
                          timeout=1, logger=self.logger)
         m = TrigDelay.re_getdelay.match(resp)
@@ -176,14 +176,14 @@ predefined - dict functype: delay with predefined values """
         """Set delay in <250ns> units"""
         ndelay = self.predefined.get(delay, delay)
         self.logger.info('setting delay %d * 3/16us', ndelay)
-        self.ser.write('d %d\r' % ndelay)
+        self.ser.write(b'd %d\r' % ndelay)
         readSerRE(self.ser, TrigDelay.re_ok,
                   timeout=1, logger=self.logger)
         self.logger.debug('delay set')
 
     def trigger(self):
         """Send a trigger pulse"""
-        self.ser.write('t\r')
+        self.ser.write(b't\r')
         readSerRE(self.ser, TrigDelay.re_ok,
                   timeout=1, logger=self.logger)
         self.logger.debug('trigger sent')
@@ -192,13 +192,13 @@ predefined - dict functype: delay with predefined values """
 class PowerControl(threading.Thread):
     """Class managing power control module and splitter mode"""
     SPLITMODE_DEFAULT = 1
-    re_init = re.compile(r'.*PowerControl (?P<version>[-0-9]+)\r\n', re.DOTALL)
-    re_set = re.compile(r'.*OK', re.DOTALL)
+    re_init = re.compile(rb'.*PowerControl (?P<version>[-0-9]+)\r\n', re.DOTALL)
+    re_set = re.compile(rb'.*OK', re.DOTALL)
     # ten floats separated by whitespaces + OK
-    re_readcurr = re.compile(r'.*?' + (r'(-?\d+\.?\d*)\s+' * 10) +
-                             'OK', re.DOTALL)
+    re_readcurr = re.compile(rb'.*?' + (rb'(-?\d+\.?\d*)\s+' * 10) +
+                             rb'OK', re.DOTALL)
     # ten 0/1 symbols + OK
-    re_readrelay = re.compile(r'.*?([01]{10})\s*OK', re.DOTALL)
+    re_readrelay = re.compile(rb'.*?([01]{10})\s*OK', re.DOTALL)
     NCHANS = 10   # number of channel
 
     def __init__(self, port, timer, q_resp, uubnums, splitmode=None):
@@ -213,7 +213,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
             s = Serial(port, baudrate=115200)
             self.logger.info('Opening serial %s', repr(s))
             sleep(0.5)  # ad hoc constant to avoid timeout
-            # s.write('?\r')
+            # s.write(b'?\r')
             resp = readSerRE(s, PowerControl.re_init, timeout=1,
                              logger=self.logger)
             self.version = PowerControl.re_init.match(
@@ -240,7 +240,7 @@ return current setting without parameters"""
             return self.splitmode
         assert mode in (0, 1, 3)  # allowed values
         self.logger.info('setting splitter mode %d', mode)
-        self.ser.write('m %d\r' % mode)
+        self.ser.write(b'm %d\r' % mode)
         readSerRE(self.ser, PowerControl.re_set, timeout=1, logger=self.logger)
         self.logger.debug('splitter mode set')
         self.splitmode = mode
@@ -254,26 +254,26 @@ uubs - list of uubnums to switch or None to switch all"""
         else:
             chans = (1 << self.NCHANS) - 1  # all chans
         cmd = 'n' if state else 'f'
-        self.ser.write('%c %o\r' % (cmd, chans))
+        self.ser.write(bytes('%c %o\r' % (cmd, chans), 'ascii'))
         readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
 
     def relays(self):
         """Read status of relays
 return tuple of two list: (uubsOn, uubsOff)"""
-        self.ser.write('d\r')
+        self.ser.write(b'd\r')
         resp = readSerRE(self.ser, PowerControl.re_readrelay,
                          logger=self.logger)
         states = PowerControl.re_readrelay.match(resp).groups()[0]
-        uubsOn = [uubnum for uubnum, port in self.uubnums.iteritems()
-                  if states[port] == '1']
-        uubsOff = [uubnum for uubnum, port in self.uubnums.iteritems()
-                   if states[port] == '0']
+        uubsOn = [uubnum for uubnum, port in self.uubnums.items()
+                  if states[port] == ord('1')]
+        uubsOff = [uubnum for uubnum, port in self.uubnums.items()
+                   if states[port] == ord('0')]
         return uubsOn, uubsOff
 
     def _readCurrents(self):
         """Read currents [mA]. Return as tuple of ten floats"""
         self.logger.info('reading currents')
-        self.ser.write('r\r')
+        self.ser.write(b'r\r')
         resp = readSerRE(self.ser, PowerControl.re_readcurr,
                          timeout=8, logger=self.logger)
         return [float(s)
@@ -290,8 +290,8 @@ return tuple of two list: (uubsOn, uubsOff)"""
             flags = self.timer.flags
             if 'meas.iv' in flags:
                 currents = self._readCurrents()
-                res = {label2item(typ='itot', uubnum=uubnum): currents[port]
-                       for uubnum, port in self.uubnums.iteritems()}
+                res = {item2label(typ='itot', uubnum=uubnum): currents[port]
+                       for uubnum, port in self.uubnums.items()}
                 res['timestamp'] = timestamp
                 self.q_resp.put(res)
 
