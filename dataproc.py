@@ -4,12 +4,10 @@
 """
 
 import re
-import threading
+import multiprocessing
 import logging
 import string
 import json
-import itertools
-from queue import Empty
 from datetime import datetime
 import numpy as np
 
@@ -131,36 +129,59 @@ splitch - i.e. C8"""
         return 0.5 * self.pregains[0] * gain * correction
 
 
-class DataProcessor(threading.Thread):
-    """Generic data processor"""
-    id_generator = itertools.count()
-    stop = threading.Event()
-    timeout = 1.0
-    workhorses = []
-
-    def __init__(self, q_dp):
-        super(DataProcessor, self).__init__()
-        self.myid = next(self.id_generator)
-        self.q_dp = q_dp
-        logger = logging.getLogger('DP%d' % self.myid)
-        logger.debug('init finished')
-
-    def run(self):
-        logger = logging.getLogger('DP%d' % self.myid)
-        while not self.stop.is_set():
+def DataProcessor(dp_ctx):
+    """Data processor, a function to run in a separate process
+dp_ctx - context with configuration (dict)
+"""
+    LOG_CONFIG = {
+        'version': 1,
+        'disable_existing_loggers': True,
+        'handlers': {
+            'queue': {
+                'class': 'logging.handlers.QueueHandler',
+                'queue': dp_ctx['q_log'],
+            },
+        },
+        'root': {
+            'level': 'DEBUG',
+            'handlers': ['queue']
+        },
+    }
+    logging.config.dictConfig(LOG_CONFIG)
+    logger = logging.getLogger(multiprocessing.current_process().name)
+    workhorses = [DP_store(dp_ctx['datadir']),
+                  DP_ramp(dp_ctx['q_resp']),
+                  DP_pede(dp_ctx['q_resp'])]
+    if 'hswidth' in dp_ctx:
+        workhorses.append(DP_hsampli(
+            dp_ctx['q_resp'], dp_ctx['hswidth'],
+            dp_ctx['lowgains'], dp_ctx['chans']))
+        workhorses.append(DP_freq(
+            dp_ctx['q_resp'], dp_ctx['lowgains'], dp_ctx['chans']))
+    q_ndata = dp_ctx['q_ndata']
+    logger.debug('init done')
+    while True:
+        try:
+            nd = q_ndata.get()
+        except SystemExit:
+            break
+        if nd is None:  # sentinel
+            break
+        logger.debug('converting UUB %04d, id %08x start',
+                     nd.uubnum, nd.id)
+        item = nd.details.copy() if nd.details is not None else {}
+        item['uubnum'] = nd.uubnum
+        item['yall'] = nd.convertData()
+        logger.debug('conversion UUB %04d, id %08x done, processing %s',
+                     nd.uubnum, nd.id, item2label(item))
+        for wh in workhorses:
             try:
-                item = self.q_dp.get(True, self.timeout)
-            except Empty:
-                continue
-            logger.debug('processing %s', item2label(item))
-            for wh in self.workhorses:
-                try:
-                    wh.calculate(item)
-                except Exception as e:
-                    logger.error('Workhorse %s with item = %s failed',
-                                 repr(wh), repr(item))
-                    logger.exception(e)
-        logger.info('run finished')
+                wh.calculate(item)
+            except Exception as e:
+                logger.error('Workhorse %s with item = %s failed',
+                             repr(wh), repr(item))
+                logger.exception(e)
+    logger.debug('finished')
 
 
 LABEL_DOC = """ Label to item (and back) conversion

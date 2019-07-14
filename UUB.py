@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from time import sleep
 from struct import unpack
 from struct import error as struct_error
-from queue import Empty
 from telnetlib import Telnet
 import numpy as np
 
@@ -532,7 +531,9 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                     try:
                         if self.records[key].addChunk(data):
                             # send to q_ndata
-                            self.q_ndata.put(self.records.pop(key))
+                            nd = self.records.pop(key)
+                            nd.cover = None
+                            self.q_ndata.put(nd)
                             logger.info('done record UUB %d, port %d, id %08x',
                                         *key)
                             if not self.uubnums and not self.records:
@@ -657,37 +658,7 @@ header - data as in `struct shwr_header'"""
     def __str__(self):
         return ("NetscopeData(uubnum=%04d, cid=0x%08x, details=%s, " +
                 "coverage=%s)") % (self.uubnum, self.id, repr(self.details),
-                                  self.cover.__str__())
-
-
-class UUBconvData(threading.Thread):
-    """Thread to convert UUB rawdata to numpy"""
-    stop = threading.Event()
-    timeout = 1.0
-
-    def __init__(self, q_ndata, q_dp):
-        """Constructor.
-q_ndata - a queue to listen for NetscopeData
-q_dp - a queue to send numpy data
-"""
-        super(UUBconvData, self).__init__()
-        self.q_ndata, self.q_dp = q_ndata, q_dp
-
-    def run(self):
-        logger = logging.getLogger('UUBconvData')
-        while not self.stop.is_set():
-            try:
-                nd = self.q_ndata.get(True, self.timeout)
-            except Empty:
-                continue
-            logger.debug('processing UUB %04d, id %08x start',
-                         nd.uubnum, nd.id)
-            flags = nd.details.copy() if nd.details is not None else {}
-            flags['uubnum'] = nd.uubnum
-            flags['yall'] = nd.convertData()
-            self.q_dp.put(flags)
-            logger.debug('processing UUB %04d, id %08x done', nd.uubnum, nd.id)
-        logger.info("Leaving run()")
+                                   self.cover.__str__())
 
 
 class UUBtelnet(threading.Thread):

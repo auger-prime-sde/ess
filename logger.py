@@ -253,6 +253,32 @@ timeout - interval for collecting data
         super(DataLogger, self).join(timeout)
 
 
+class QLogHandler(object):
+    """A simple dispatcher of log records"""
+    def handle(self, record):
+        logger = logging.getLogger(record.name)
+        logger.handle(record)
+
+
+class QueDispatch(threading.Thread):
+    """A simple dispatcher between queues with None as a sentinel"""
+    def __init__(self, q_in, q_out, zLog=False, logname='QueDispatch'):
+        self.q_in, self.q_out = q_in, q_out
+        self.zLog = zLog
+        self.logger = logging.getLogger(logname)
+
+    def run(self):
+        self.logger.info('Starting QueDispatch')
+        while True:
+            item = self.q_in.get()
+            if item is None:
+                break
+            if self.zLog:
+                self.logger.debug(repr(item))
+            self.q_out.put(item)
+        self.logger.info('QueDispatch Finished')
+
+
 class QueView(threading.Thread):
     """Queue viewer
 Consume items from queue and display them"""

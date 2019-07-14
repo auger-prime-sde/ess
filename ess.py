@@ -10,24 +10,24 @@ import sys
 import json
 import logging
 import threading
+import multiprocessing
 from datetime import datetime, timedelta
-from queue import Queue
+import queue
 # from prc import PRCServer - not working on Python3
 
 # ESS stuff
-from timer import Timer, periodic_ticker, one_tick
-from logger import LogHandlerFile, LogHandlerRamp, LogHandlerPickle, DataLogger
+from timer import Timer, periodic_ticker
+from logger import LogHandlerRamp, LogHandlerPickle, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol
 from logger import makeDLpedestals, makeDLpedestalstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain, makeDLcutoff
-from logger import QuePipeView
+from logger import QueDispatch
 from BME import BME, TrigDelay, PowerControl
-from UUB import UUBdaq, UUBlisten, UUBconvData, UUBtelnet, UUBtsc
+from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
 from UUB import uubnum2mac
 from chamber import Chamber, ESSprogram
-from dataproc import DataProcessor, item2label, SplitterGain
-from dataproc import DP_store, DP_freq, DP_pede, DP_hsampli, DP_ramp
+from dataproc import DataProcessor, SplitterGain
 from dataproc import make_DPfilter_linear, make_DPfilter_ramp
 from dataproc import make_DPfilter_cutoff, make_DPfilter_stat
 from afg import AFG, RPiTrigger
@@ -35,7 +35,7 @@ from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
 
-VERSION = '20190606'
+VERSION = '20190713'
 
 
 class ESS(object):
@@ -85,10 +85,11 @@ class ESS(object):
         self.timer.start()
 
         # queues
-        self.q_resp = Queue()
-        self.q_ndata = Queue()
-        self.q_dp = Queue()
-        self.q_att = Queue()
+        self.q_ndata = multiprocessing.Queue()
+        self.q_dpres = multiprocessing.Queue()
+        self.q_log = multiprocessing.Queue()
+        self.q_resp = queue.Queue()
+        self.q_att = queue.Queue()
 
         # UUB channels
         self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
@@ -171,8 +172,8 @@ class ESS(object):
         # UUBs - UUBdaq and UUBlisten
         self.ulisten = UUBlisten(self.q_ndata)
         self.ulisten.start()
-        self.uconv = UUBconvData(self.q_ndata, self.q_dp)
-        self.uconv.start()
+        # self.uconv = UUBconvData(self.q_ndata, self.q_dp)
+        # self.uconv.start()
         self.udaq = UUBdaq(self.timer, self.ulisten, self.q_resp,
                            self.afg, self.splitmode, self.td,
                            self.trigger)
@@ -190,17 +191,21 @@ class ESS(object):
             uub.start()
 
         # data processing
-        self.dp0 = DataProcessor(self.q_dp)
-        self.dp0.workhorses.append(DP_ramp(self.q_resp))
-        self.dp0.workhorses.append(DP_pede(self.q_resp))
+        dp_ctx = {'q_ndata': self.q_ndata,
+                  'q_resp': self.q_dpres,
+                  'q_log': self.q_log,
+                  'datadir': self.datadir,
+                  'lowgains': self.lowgains, 'chans': self.chans}
         if self.afg is not None:
-            self.dp0.workhorses.append(DP_hsampli(
-                self.q_resp, self.afg.param['hswidth'],
-                self.lowgains, self.chans))
-            self.dp0.workhorses.append(DP_freq(
-                self.q_resp, self.lowgains, self.chans))
-        self.dp0.workhorses.append(DP_store(self.datadir))
-        self.dp0.start()
+            dp_ctx['hswidth'] = self.afg.param['hswidth']
+        self.n_dp = d.get('n_dataprocess', 1)
+        self.dataprocs = [multiprocessing.Process(
+            target=DataProcessor, name='DP%i' % i, args=(dp_ctx, ))
+                          for i in range(self.n_dp)]
+        for dp in self.dataprocs:
+            dp.start()
+        self.qdispatch = QueDispatch(self.q_dpres, self.q_resp)
+        self.qdispatch.start()
 
         # tickers
         if 'meas.thp' in d['tickers']:
@@ -231,14 +236,7 @@ class ESS(object):
                 self.starttime = self.essprog.starttime
 
         #  ===== DataLogger & handlers =====
-        DEBUG_Q_RESP = True
-        if DEBUG_Q_RESP:
-            q_resp_out = Queue()
-            qpv = QuePipeView(self.timer, self.q_resp, q_resp_out)
-            qpv.start()
-        else:
-            q_resp_out = self.q_resp
-        self.dl = DataLogger(q_resp_out)
+        self.dl = DataLogger(self.q_resp)
         dpfilter_linear = None
         dpfilter_cutoff = None
         dpfilter_ramp = None
@@ -375,9 +373,16 @@ class ESS(object):
         self.dl.stop.set()
         if self.db is not None:
             self.db.close()
-        self.dp0.stop.set()
+            self.db = None
         self.ulisten.stop.set()
-        self.uconv.stop.set()
+        for i in range(self.n_dp):
+            self.q_ndata.put(None)
+        self.n_dp = 0
+        for dp in self.dataprocs.pop():
+            dp.join()
+        if self.q_dpres is not None:
+            self.q_dpres.put(None)
+            self.q_dpres = None
 
 
 def Pretest(jsconf, uubnum):
@@ -401,14 +406,7 @@ if __name__ == '__main__':
         raise
 
     logger = logging.getLogger('ESS')
-    #  - not working on Python3
-    # if ess.prcport is not None:
-    #     logger.info('Starting PRC server at localhost:%d', ess.prcport)
-    #     server = PRCServer(ip='127.0.0.1', port=ess.prcport)
-    #     server.add_variable('ess', ess)
-    #     server.start()
-    #     print('PRC server started at localhost:%d' % ess.prcport)
-
+    # start RPyC TBD
     logger.debug('Waiting for ess.evtstop.')
     ess.evtstop.wait()
     logger.info('Stopping everything.')
