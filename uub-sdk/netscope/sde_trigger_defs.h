@@ -12,6 +12,12 @@
 // 17-Sep-16 DFN Move time tagging definitions to time_tagging_defs.vh
 // 08-Nov-16 DFN Increase max SSD delay in single bin triggers.
 // 15-Nov-16 DFN Add documentation on what each ADC channel is used for
+// 09-Mar-17 DFN Add option to AND SSD trigger with WCD trigger in 
+//               addition to default OR mode
+// 24-May-18 DFN Add definitions for compatibility tot trigger; change SAG
+//               calculations to be nominal RC sag for the V2 circuit,
+//               neglecting any sag from PMT base coupling.
+// 21-Jun-18 DFN Add definitions for compatibility totd trigger.
 //
 // ADC channel usage:
 //  0 Low gain WCD PMT1
@@ -30,14 +36,20 @@
 
 // Debug definitions -- may have a problem with defines nested very deeply
 // so don't nest the DEBUG defines.
-#define ANY_DEBUG 1  // Enable if any of the following is set.
-// #define HIGAIN_INTEGRAL_DEBUG 1
-#define LOGAIN_INTEGRAL_DEBUG 1
+// #define ANY_DEBUG 1  // Enable if any of the following is set.
+// #define HIGAIN_INTEGRAL_DEBUG 1  // Only enable one of LO/HI GAIN_DEBUG
+// #define LOGAIN_INTEGRAL_DEBUG 1
+// #define MXDGAIN_INTEGRAL_DEBUG 1
+// #define COMPAT_TOTD_DECONV_DEBUG 1
+// #define COMPAT_TOTD_INTGRL_DEBUG 1
+// #define COMPAT_TOTD_TRIG_DEBUG 1
+// #define COMPAT_TOTD_DEBUG 1
 // End of debug enable definitions
 
  #define ADC_WIDTH 12 // Number of bits per ADC
  #define NUM_ADCS 10  // Number of ADCs
- #define ADC_FILT_DELAY 22 // ADC filter delay
+// #define ADC_FILT_DELAY 22 // ADC filter delay
+ #define ADC_FILT_DELAY 27 // ADC filter delay
  #define WIDTH_BITS 9 // Number of bits in ToT occupancy register
 
  #define SHWR_MEM_WIDTH 32      // Width of each shower memory block
@@ -48,7 +60,7 @@
                                 // addressing is in bytes - 4 to a word)
  #define SHWR_MEM_DEPTH (1<<SHWR_MEM_BUF_SHIFT)
  #define SHWR_MEM_WORDS (SHWR_MEM_DEPTH/4)
- #define SHWR_BUF_NUM_WIDTH 2   // Width of buffer number register (for )
+ #define SHWR_BUF_NUM_WIDTH 2   // Width of buffer number register (for ttag)
  #define SHWR_MEM_NBUF (1<<SHWR_BUF_NUM_WIDTH) // Num. shower memory buffers
  #define SHWR_EVT_CTR_WIDTH 4   // Width of shower event counter (for ttag)
                                 // Delay from trigger to end of buffer
@@ -67,10 +79,6 @@
  #define MUON_MEM_NBUF (1<<MUON_BUF_NUM_WIDTH) // Num. muon memory buffers
  #define MUON_EVT_CTR_WIDTH 4   // Width of muon event counter (for ttag)
  
- #define SHWR_TRIGGER_INTR_BIT 0 // Shower trigger bit in interrupt regs.  
- #define MUON_TRIGGER_INTR_BIT 1 // Muon trigger bit in interrupt regs.  
-
-
 // Define "Addresses" of trigger registers
 // The first 128 registers are used in compatibility mode and are assigned, 
 // as much as possible, to be the same as the pre-upgrade trigger registers.
@@ -122,6 +130,13 @@
 #define COMPATIBILITY_TOT_TRIG_THR2_ADDR 58
 #define COMPATIBILITY_TOT_TRIG_ENAB_ADDR 60
 #define COMPATIBILITY_TOT_TRIG_OCC_ADDR 62
+ #define COMPATIBILITY_TOT_TRIG_ENAB_SHIFT 3
+ #define COMPATIBILITY_TOT_TRIG_ENAB_WIDTH 3
+ #define COMPATIBILITY_TOT_TRIG_INCL_PMT0 (1<<COMPATIBILITY_TOT_TRIG_ENAB_SHIFT)
+ #define COMPATIBILITY_TOT_TRIG_INCL_PMT1 (2<<COMPATIBILITY_TOT_TRIG_ENAB_SHIFT)
+ #define COMPATIBILITY_TOT_TRIG_INCL_PMT2 (4<<COMPATIBILITY_TOT_TRIG_ENAB_SHIFT)
+ #define COMPATIBILITY_TOT_TRIG_COINC_LVL_SHIFT 6
+ #define COMPATIBILITY_TOT_TRIG_COINC_LVL_WIDTH 2
 
 #define COMPATIBILITY_TOTD_TRIG_THR0_ADDR 64
 #define COMPATIBILITY_TOTD_TRIG_THR1_ADDR 65
@@ -133,24 +148,39 @@
 #define COMPATIBILITY_TOTD_TRIG_OCC_ADDR 72
 #define COMPATIBILITY_TOTD_TRIG_FD_ADDR 73
 #define COMPATIBILITY_TOTD_TRIG_FN_ADDR 74
+#define COMPATIBILITY_TOTD_TRIG_INT_ADDR 75
+ #define COMPATIBILITY_TOTD_TRIG_ENAB_SHIFT 3
+ #define COMPATIBILITY_TOTD_TRIG_ENAB_WIDTH 3
+ #define COMPATIBILITY_TOTD_TRIG_INCL_PMT0 (1<<COMPATIBILITY_TOTD_TRIG_ENAB_SHIFT)
+ #define COMPATIBILITY_TOTD_TRIG_INCL_PMT1 (2<<COMPATIBILITY_TOTD_TRIG_ENAB_SHIFT)
+ #define COMPATIBILITY_TOTD_TRIG_INCL_PMT2 (4<<COMPATIBILITY_TOTD_TRIG_ENAB_SHIFT)
+ #define COMPATIBILITY_TOTD_TRIG_COINC_LVL_SHIFT 6
+ #define COMPATIBILITY_TOTD_TRIG_COINC_LVL_WIDTH 2
+ #define COMPATIBILITY_TOTD_FN_BITS 6
+ #define COMPATIBILITY_TOTD_FN_FRAC_BITS 4
+ #define COMPATIBILITY_TOTD_FD_BITS 6
+ #define COMPATIBILITY_DECAY_BITS 11
+ #define COMPATIBILITY_FRAC_BITS 11
+ #define COMPATIBILITY_INTEGRAL_BITS 24
+ #define COMPATIBILITY_BASELINE_DELAY 248
 
-#define COMPATIBILITY_SCALAR_A_THR0_ADDR 80
-#define COMPATIBILITY_SCALAR_A_THR1_ADDR 81
-#define COMPATIBILITY_SCALAR_A_THR2_ADDR 82
-#define COMPATIBILITY_SCALAR_A_ENAB_ADDR 84
-#define COMPATIBILITY_SCALAR_A_COUNT_ADDR 87
+#define COMPATIBILITY_SCALER_A_THR0_ADDR 80
+#define COMPATIBILITY_SCALER_A_THR1_ADDR 81
+#define COMPATIBILITY_SCALER_A_THR2_ADDR 82
+#define COMPATIBILITY_SCALER_A_ENAB_ADDR 84
+#define COMPATIBILITY_SCALER_A_COUNT_ADDR 87
 
-#define COMPATIBILITY_SCALAR_B_THR0_ADDR 88
-#define COMPATIBILITY_SCALAR_B_THR1_ADDR 89
-#define COMPATIBILITY_SCALAR_B_THR2_ADDR 90
-#define COMPATIBILITY_SCALAR_B_ENAB_ADDR 92
-#define COMPATIBILITY_SCALAR_B_COUNT_ADDR 95
+#define COMPATIBILITY_SCALER_B_THR0_ADDR 88
+#define COMPATIBILITY_SCALER_B_THR1_ADDR 89
+#define COMPATIBILITY_SCALER_B_THR2_ADDR 90
+#define COMPATIBILITY_SCALER_B_ENAB_ADDR 92
+#define COMPATIBILITY_SCALER_B_COUNT_ADDR 95
 
-#define COMPATIBILITY_SCALAR_C_THR0_ADDR 96
-#define COMPATIBILITY_SCALAR_C_THR1_ADDR 97
-#define COMPATIBILITY_SCALAR_C_THR2_ADDR 98
-#define COMPATIBILITY_SCALAR_C_ENAB_ADDR 100
-#define COMPATIBILITY_SCALAR_C_COUNT_ADDR 103
+#define COMPATIBILITY_SCALER_C_THR0_ADDR 96
+#define COMPATIBILITY_SCALER_C_THR1_ADDR 97
+#define COMPATIBILITY_SCALER_C_THR2_ADDR 98
+#define COMPATIBILITY_SCALER_C_ENAB_ADDR 100
+#define COMPATIBILITY_SCALER_C_COUNT_ADDR 103
 
 // Normal mode registers.  Note that the global trigger control and the
 // buffer handling are done using the normal mode registers as the readout
@@ -212,6 +242,9 @@
  #define SHWR_BUF_NFULL_MASK ((1<<(SHWR_BUF_NUM_WIDTH+1))-1)
  #define SHWR_BUF_NFULL_SHIFT (SHWR_INTR_PEND_SHIFT+1)
  #define SHWR_BUF_NOTUSED_SHIFT (SHWR_BUF_NFULL_SHIFT+SHWR_BUF_NUM_WIDTH+1)
+ #define SHWR_EVT_ID_WIDTH 16
+ #define SHWR_EVT_ID_SHIFT 16
+ #define SHWR_EVT_ID_MASK  ((1<<(SHWR_EVT_ID_WIDTH))-1)
  #define SHWR_BUF_START_ADDR 132
 
 #define MUON_TRIG1_THR0_ADDR 140
@@ -226,17 +259,17 @@
 #define MUON_TRIG2_SSD_ADDR 148
 #define MUON_TRIG2_ENAB_ADDR 149
 
-#define MUON_TRIG3_THR0_ADDR 150
-#define MUON_TRIG3_THR1_ADDR 151
-#define MUON_TRIG3_THR2_ADDR 152
-#define MUON_TRIG3_SSD_ADDR 153
-#define MUON_TRIG3_ENAB_ADDR 154
+// #define MUON_TRIG3_THR0_ADDR 150
+// #define MUON_TRIG3_THR1_ADDR 151
+// #define MUON_TRIG3_THR2_ADDR 152
+// #define MUON_TRIG3_SSD_ADDR 153
+// #define MUON_TRIG3_ENAB_ADDR 154
 
-#define MUON_TRIG4_THR0_ADDR 155
-#define MUON_TRIG4_THR1_ADDR 156
-#define MUON_TRIG4_THR2_ADDR 157
-#define MUON_TRIG4_SSD_ADDR 158
-#define MUON_TRIG4_ENAB_ADDR 159
+// #define MUON_TRIG4_THR0_ADDR 155
+// #define MUON_TRIG4_THR1_ADDR 156
+// #define MUON_TRIG4_THR2_ADDR 157
+// #define MUON_TRIG4_SSD_ADDR 158
+// #define MUON_TRIG4_ENAB_ADDR 159
 
  #define MUON_TRIG_ENAB_SHIFT 0
  #define MUON_TRIG_ENAB_WIDTH 4
@@ -254,11 +287,13 @@
  #define MUON_TRIG_COINC_OVLP_WIDTH 3
  #define MUON_TRIG_COINC_OVLP_MASK ((1<<MUON_TRIG_COINC_OVLP_WIDTH)-1)
  #define MUON_TRIG_COINC_OVLP_MAX ((1<<MUON_TRIG_COINC_OVLP_WIDTH)-1)
- #define MUON_TRIG_COINC_OVLP_SHIFT (MUON_TRIG_SSD_DELAY_SHIFT+MUON_TRIG_COINC_OVLP_WIDTH)    
+ #define MUON_TRIG_COINC_OVLP_SHIFT (MUON_TRIG_SSD_DELAY_SHIFT+MUON_TRIG_DELAY_WIDTH)    
  #define MUON_TRIG_CONSEC_BINS_WIDTH 3
  #define MUON_TRIG_CONSEC_BINS_MASK ((1<<MUON_TRIG_CONSEC_BINS_WIDTH)-1)
  #define MUON_TRIG_CONSEC_BINS_MAX ((1<<MUON_TRIG_CONSEC_BINS_WIDTH)-1)
- #define MUON_TRIG_CONSEC_BINS_SHIFT (MUON_TRIG_COINC_OVLP_SHIFT+MUON_TRIG_DELAY_WIDTH)
+ #define MUON_TRIG_CONSEC_BINS_SHIFT (MUON_TRIG_COINC_OVLP_SHIFT+MUON_TRIG_COINC_OVLP_WIDTH)
+ #define MUON_TRIG_SSD_AND_SHIFT (MUON_TRIG_CONSEC_BINS_SHIFT+MUON_TRIG_CONSEC_BINS_WIDTH)
+
  #define MUON_TRIG_DELAY_EXTRA 10
  #define MUON_TRIG_PIPELINE_DLY (MUON_TRIG_DELAY_MAX+MUON_TRIG_COINC_OVLP_MAX+MUON_TRIG_CONSEC_BINS_MAX+`MUON_TRIG_DELAY_EXTRA)
  #define MUON_EXT_TRIG_DELAY 20
@@ -269,14 +304,14 @@
 #define MUON_BUF_TRIG_MASK_ADDR 162
   #define MUON_BUF_TRIG_SB1_SHIFT 0
   #define MUON_BUF_TRIG_SB2_SHIFT 1
-  #define MUON_BUF_TRIG_SB3_SHIFT 2
-  #define MUON_BUF_TRIG_SB4_SHIFT 3
+  // #define MUON_BUF_TRIG_SB3_SHIFT 2
+  // #define MUON_BUF_TRIG_SB4_SHIFT 3
   #define MUON_BUF_TRIG_EXT_SHIFT 4
   #define MUON_BUF_SIPM_CAL_SHIFT 5
   #define MUON_BUF_TRIG_SB1 (1 << MUON_BUF_TRIG_SB1_SHIFT)
   #define MUON_BUF_TRIG_SB2 (1 << MUON_BUF_TRIG_SB2_SHIFT)
-  #define MUON_BUF_TRIG_SB3 (1 << MUON_BUF_TRIG_SB3_SHIFT)
-  #define MUON_BUF_TRIG_SB4 (1 << MUON_BUF_TRIG_SB4_SHIFT)
+  // #define MUON_BUF_TRIG_SB3 (1 << MUON_BUF_TRIG_SB3_SHIFT)
+  // #define MUON_BUF_TRIG_SB4 (1 << MUON_BUF_TRIG_SB4_SHIFT)
   #define MUON_BUF_TRIG_EXT (1 << MUON_BUF_TRIG_EXT_SHIFT)
   #define MUON_BUF_SIPM_CAL (1 << MUON_BUF_SIPM_CAL_SHIFT)
   #define MUON_NUM_TRIGS 5  // Don't include SIPM_CAL
@@ -291,7 +326,7 @@
  #define MUON_BUF_FULL_SHIFT (MUON_BUF_WNUM_SHIFT+MUON_BUF_NUM_WIDTH)
  #define MUON_INTR_PEND_MASK 1
  #define MUON_INTR_PEND_SHIFT (MUON_BUF_FULL_SHIFT+MUON_MEM_NBUF)
- #define MUON_BUF_NFULL_MASK (1<<(MUON_BUF_NUM_WIDTH+1))
+ #define MUON_BUF_NFULL_MASK ((1<<(MUON_BUF_NUM_WIDTH+1))-1)
  #define MUON_BUF_NFULL_SHIFT (MUON_INTR_PEND_SHIFT+1)
  #define MUON_BUF_NOTUSED_SHIFT (MUON_BUF_NFULL_SHIFT+MUON_BUF_NUM_WIDTH+1)
 #define MUON_BUF_WORD_COUNT_ADDR 165
@@ -323,11 +358,12 @@
  #define SB_TRIG_COINC_OVLP_WIDTH 3
  #define SB_TRIG_COINC_OVLP_MASK ((1<<SB_TRIG_COINC_OVLP_WIDTH)-1)
  #define SB_TRIG_COINC_OVLP_MAX ((1<<SB_TRIG_COINC_OVLP_WIDTH)-1)
- #define SB_TRIG_COINC_OVLP_SHIFT (SB_TRIG_SSD_DELAY_SHIFT+SB_TRIG_COINC_OVLP_WIDTH)    
+ #define SB_TRIG_COINC_OVLP_SHIFT (SB_TRIG_SSD_DELAY_SHIFT+SB_TRIG_DELAY_WIDTH)    
  #define SB_TRIG_CONSEC_BINS_WIDTH 3
  #define SB_TRIG_CONSEC_BINS_MASK ((1<<SB_TRIG_CONSEC_BINS_WIDTH)-1)
  #define SB_TRIG_CONSEC_BINS_MAX ((1<<SB_TRIG_CONSEC_BINS_WIDTH)-1)
- #define SB_TRIG_CONSEC_BINS_SHIFT (SB_TRIG_COINC_OVLP_SHIFT+SB_TRIG_DELAY_WIDTH)
+ #define SB_TRIG_CONSEC_BINS_SHIFT (SB_TRIG_COINC_OVLP_SHIFT+SB_TRIG_COINC_OVLP_WIDTH)
+ #define SB_TRIG_SSD_AND_SHIFT (SB_TRIG_CONSEC_BINS_SHIFT+SB_TRIG_CONSEC_BINS_WIDTH)
 
 // Registers containing the peak and integral of each ADC trace for the current
 // shower buffer.
@@ -350,7 +386,7 @@
  #define SHWR_SATURATED_SHIFT 31
  #define SHWR_SATURATED (1<<SHWR_SATURATED_SHIFT)
  #define SHWR_SATURATED_LEVEL ((1<<ADC_WIDTH)-1)
- #define SHWR_AREA_BINS 40
+ #define SHWR_AREA_BINS 100
  #define SHWR_AREA_ADC_DLY 20  // Delay to compensate for trigger formation dly
 #define SHWR_BASELINE0_ADDR 190
 #define SHWR_BASELINE1_ADDR 191
@@ -359,11 +395,14 @@
 #define SHWR_BASELINE4_ADDR 194
  #define SHWR_BASELINE_EXTRA_BITS 4
  #define BASELINE_EXTRA_BITS 4
- #define BASELINE_FRAC_WIDTH (SHWR_AREA_FRAC_WIDTH)
-// #define BASELINE_SAG_SHIFT1 10 // Frac. multipliers to account for RC decay
-// #define BASELINE_SAG_SHIFT2 12 // Set for 100 nF front-end block cap.
- #define BASELINE_SAG_SHIFT1 12 // Frac. multipliers to account for RC decay
- #define BASELINE_SAG_SHIFT2 14 // Set for 470 nF front-end block cap.
+ #define BASELINE_FRAC_INCR 8    // ~Step size when following baseline
+ #define BASELINE_FRAC_WIDTH 20  // Extra bits when computing baseline sag
+ #define BASELINEL_SAG_SHIFT1 15 // Frac. multipliers to account for RC decay
+ #define BASELINEL_SAG_SHIFT2 20 // Set for 1000 nF front-end block cap.
+ #define BASELINEL_SAG_SHIFT3 21 // Low gain channels - 274 Ohm input
+ #define BASELINEH_SAG_SHIFT1 14 // High gain channels - 100 Ohm input
+ #define BASELINEH_SAG_SHIFT2 16 
+ #define BASELINEH_SAG_SHIFT3 17 
 
 // Addresses to sample instantaneous filtered PMT values for setup, test, etc.
 #define FILT_PMT0_TEST_ADDR 247

@@ -6,11 +6,12 @@
 // 07-Jun-2016 DFN Added work around for missing entries in xparameters.h.
 //                 Note that xparameters.h must be included before this
 //                 header file in application programs.
-
+// 29-Apr-2018 DFN Modify for separate shower & muon interrupts
 
 /****************** Include Files ********************/
 #include "xil_types.h"
 #include "xstatus.h"
+#include "xparameters.h"
 
 #define SDE_TRIGGER_GLOBAL_INTR_EN_OFFSET 0
 #define SDE_TRIGGER_INTR_EN_OFFSET 4
@@ -18,6 +19,21 @@
 #define SDE_TRIGGER_INTR_ACK_OFFSET 12
 #define SDE_TRIGGER_INTR_PENDING_OFFSET 16
 
+#ifndef INTR_GLOBAL_EN_ADDR
+ #define INTR_GLOBAL_EN_ADDR 0
+#endif
+#ifndef INTR_EN_ADDR
+ #define INTR_EN_ADDR 1
+#endif
+#ifndef INTR_STATUS_ADDR
+ #define INTR_STATUS_ADDR 2
+#endif
+#ifndef INTR_ACK_ADDR
+ #define INTR_ACK_ADDR 3
+#endif
+#ifndef INTR_PENDING_ADDR
+ #define INTR_PENDING_ADDR 4
+#endif
 
 /**************************** Type Definitions *****************************/
 /**
@@ -37,9 +53,8 @@
  * 	void SDE_TRIGGER_mWriteReg(u32 BaseAddress, unsigned RegOffset, u32 Data)
  *
  */
-#define SDE_TRIGGER_mWriteReg(BaseAddress, RegOffset, Data) \
+  #define SDE_TRIGGER_mWriteReg(BaseAddress, RegOffset, Data) \
   	Xil_Out32((BaseAddress) + (RegOffset), (u32)(Data))
-
 /**
  *
  * Read a value from a SDE_TRIGGER register. A 32 bit read is performed.
@@ -57,7 +72,7 @@
  * 	u32 SDE_TRIGGER_mReadReg(u32 BaseAddress, unsigned RegOffset)
  *
  */
-#define SDE_TRIGGER_mReadReg(BaseAddress, RegOffset) \
+  #define SDE_TRIGGER_mReadReg(BaseAddress, RegOffset) \
     Xil_In32((BaseAddress) + (RegOffset))
 
 /************************** Function Prototypes ****************************/
@@ -91,14 +106,22 @@ void SDE_TRIGGER_ACK(void * baseaddr_p, u32 data);
 // Do to a bug in Vivado 15.2, some IP addresses are not transferred to 
 // xparameters.h.  We try to work around that below. 
 
-#ifdef XPAR_CPU_ID  // Proxy for xparameters.h already included
+//#ifdef XPAR_CPU_ID  // Proxy for xparameters.h already included
 
 #ifndef XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S_AXI_INTR_BASEADDR
-  #define XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S_AXI_INTR_BASEADDR 0x43c20000
+  #define XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S_AXI_INTR_BASEADDR 0x43c10000
 #endif
 
-#ifndef SDE_TRIGGER_INTR_BASE
- #define SDE_TRIGGER_INTR_BASE XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S_AXI_INTR_BASEADDR
+#ifndef XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S1_AXI_INTR_BASEADDR
+  #define XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S1_AXI_INTR_BASEADDR 0x43c50000
+#endif
+
+#ifndef SDE_SHWR_TRIGGER_INTR_BASE
+ #define SDE_SHWR_TRIGGER_INTR_BASE XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S_AXI_INTR_BASEADDR
+#endif
+
+#ifndef SDE_MUON_TRIGGER_INTR_BASE
+ #define SDE_MUON_TRIGGER_INTR_BASE XPAR_TRIGGER_MEMORY_BLOCK_SDE_TRIGGER_0_S1_AXI_INTR_BASEADDR
 #endif
 
 #ifndef SDE_TRIGGER_BASE
@@ -134,6 +157,6 @@ void SDE_TRIGGER_ACK(void * baseaddr_p, u32 data);
 #endif
 
 
-#endif // XPAR_CPU_ID
+//#endif // XPAR_CPU_ID
 
 #endif // SDE_TRIGGER_H

@@ -2,12 +2,12 @@
    Petr Tobiska
    based on scope.c by R. Assiro
 
-   version 2019-01-24
+   version 2019-07-14
 */
 
 #define TRIG_EXT
 //#define TRIG_SB
-//define TRIG_SB_MULTI
+//#define TRIG_SB_MULTI
 //#define TRIG_COMPAT_SB
 
 #include <stdio.h>
@@ -26,9 +26,12 @@
 #include <ctype.h>
 #include <termios.h>
 
-#include "xparameters.h"
 #include "sde_trigger_defs.h"
 #include "time_tagging.h"
+#include "test_control_defs.h"
+#ifndef TEST_CONTROL_BASE
+  #define TEST_CONTROL_BASE XPAR_TEST_CONTROL_BLOCK_TEST_CONTROL_0_S00_AXI_BASEADDR
+#endif
 
 #define SIG_WAKEUP SIGRTMIN+14
 
@@ -57,7 +60,7 @@ struct read_evt_global {
 
   uint32_t volatile *regs;
   uint32_t volatile *tt_regs;
-  /*  uint32_t volatile *tstctl_regs; */
+  uint32_t volatile *tstctl_regs;
   int regs_size;
 
   sigset_t sigset; /*used to wake the process periodically */
@@ -230,14 +233,12 @@ void read_evt_init() {
     exit(1); }
   gl.tt_regs = (uint32_t *)pt;
 
-  /*
   pt = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
 	    TEST_CONTROL_BASE);
   if(pt == MAP_FAILED) {
     fprintf(stderr, "Error mapping tstctl_regs\n");
     exit(1); }
   gl.tstctl_regs = (uint32_t *)pt;
- */
 
   size = roundup(SHWR_MEM_DEPTH * SHWR_MEM_NBUF, PAGESIZE);
   gl.shwr_mem_size = size;
@@ -298,8 +299,8 @@ void read_evt_end() {
   if(gl.tt_regs != NULL)
     munmap((void *)gl.tt_regs, gl.regs_size);
 
-  /*  if(gl.tstctl_regs != NULL)
-      munmap((void *)gl.tstctl_regs, gl.regs_size); */
+  if(gl.tstctl_regs != NULL)
+      munmap((void *)gl.tstctl_regs, gl.regs_size);
 
   for( i=0; i < SHWR_RAW_NCH_MAX; i++ ) {
     if(gl.shwr_pt[i] != NULL)
@@ -326,10 +327,10 @@ int read_evt_read(struct shwr_header* sh, uint8_t *buf) {
   */
   aux = SHWR_BUF_NFULL_MASK << SHWR_BUF_NFULL_SHIFT;
   sig = SIG_WAKEUP;
-  while( ((*st) & aux)==0 && sig==SIG_WAKEUP)
-    sig=sigwaitinfo(&gl.sigset, NULL);
+  while( ((*st) & aux) == 0 && sig == SIG_WAKEUP)
+    sig = sigwaitinfo(&gl.sigset, NULL);
 
-  if(sig==SIG_WAKEUP){
+  if(sig == SIG_WAKEUP){
     rd = (((*st) >> SHWR_BUF_RNUM_SHIFT) & SHWR_BUF_RNUM_MASK);
     offset = rd * SHWR_NSAMPLES;
     for(i = 0; i < SHWR_RAW_NCH_MAX; i++){
@@ -391,13 +392,16 @@ int main(int argc, char ** argv) {
   gl.regs[COMPATIBILITY_SB_TRIG_THR2_ADDR] = 1000;
   gl.regs[COMPATIBILITY_SB_TRIG_ENAB_ADDR] = 0x78;
 #endif
-  
+  // set fake GPS
+  gl.tstctl_regs[USE_FAKE_ADDR] |= 1 << USE_FAKE_PPS_BIT;
+
   while(controlrecv(controlsock) <= 0) {
     read_evt_read(&sh, databuf);
     senddata(datasock, &sa);
-    fprintf(stderr, "sent id %08x, rd %d, %d, %d %07d\n",
+    fprintf(stderr, "sent id %08x, rd %d, time %9d.%09d [s.tics], evt %1x\n",
 	    sh.id, sh.rd, sh.ttag_shwr_seconds,
-	    sh.ttag_shwr_nanosec >> 28, sh.ttag_shwr_nanosec&0x7FFFFFF);
+	    sh.ttag_shwr_nanosec & TTAG_NANOSEC_MASK,
+	    sh.ttag_shwr_nanosec >> TTAG_EVTCTR_SHIFT);
   }
 
   read_evt_end();
