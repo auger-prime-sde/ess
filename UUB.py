@@ -298,7 +298,7 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
             # self.logger.debug('sending conn.request')
             conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
             # self.logger.debug('conn.getresponse')
-            resp = conn.getresponse().read()
+            resp = conn.getresponse().read().decode('ascii')
             # self.logger.debug('re_sernum')
             res = re_sernum.match(resp).groupdict()['sernum']
             # self.logger.debug('breaking')
@@ -317,7 +317,7 @@ return dictionary: zynq<uubnum>_temp: temperature
             r'{"Zynq": (?P<zt>[+-]?\d+(\.\d*)?)}')
         conn.request('GET', '/cgi-bin/getdata.cgi?action=xadc')
         # TO DO: check status
-        resp = conn.getresponse().read()
+        resp = conn.getresponse().read().decode('ascii')
         self.logger.debug('xadc GET: "%s"', repr(resp))
         m = re_zynqtemp.match(resp)
         if m is not None:
@@ -332,7 +332,7 @@ return dictionary: sc<uubnum>_<variable>: value
 """
         conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-a')
         # TO DO: check status
-        resp = conn.getresponse().read()
+        resp = conn.getresponse().read().decode('ascii')
         self.logger.debug('slowc GET: "%s"', repr(resp))
         m = self.re_scdata.match(resp)
         if m is not None:
@@ -832,12 +832,13 @@ class ADCramp(object):
 
     def _send_recv(self, cmd):
         """Send command, receive response and check it.
+cmd - str to send
 If OK, return True, else return False"""
         assert len(cmd) <= 11
         self.logger.debug('emptying recv buf')
         self._empty_socket()
         self.logger.debug('sending %s', repr(cmd))
-        self.sock.sendto(cmd, self.addr)
+        self.sock.sendto(bytes(cmd, 'ascii'), self.addr)
         self.logger.debug('sent')
         try:
             resp, addr = self.sock.recvfrom(1)
@@ -845,9 +846,9 @@ If OK, return True, else return False"""
             self.logger.info('timeout')
             return False
         expresp = 0x20 + len(cmd)
-        if ord(resp) != expresp:
+        if resp[0] != expresp:
             self.logger.info('Unexpected response %02X (%02X expected)',
-                             ord(resp), expresp)
+                             resp[0], expresp)
             return False
         self.logger.debug('done OK')
         return True

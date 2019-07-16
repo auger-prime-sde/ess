@@ -172,8 +172,9 @@ dp_ctx - context with configuration (dict)
         item = nd.details.copy() if nd.details is not None else {}
         item['uubnum'] = nd.uubnum
         item['yall'] = nd.convertData()
+        label = item2label(item)
         logger.debug('conversion UUB %04d, id %08x done, processing %s',
-                     nd.uubnum, nd.id, item2label(item))
+                     nd.uubnum, nd.id, label)
         for wh in workhorses:
             try:
                 wh.calculate(item)
@@ -181,6 +182,7 @@ dp_ctx - context with configuration (dict)
                 logger.error('Workhorse %s with item = %s failed',
                              repr(wh), repr(item))
                 logger.exception(e)
+        logger.debug('Item %s done', label)
     logger.debug('finished')
 
 
@@ -328,12 +330,13 @@ class DP_pede(object):
 q_resp - a logger queue
 """
         self.q_resp = q_resp
+        logname = multiprocessing.current_process().name + '.pede'
+        self.logger = logging.getLogger(logname)
 
     def calculate(self, item):
-        if item['functype'] != 'N':
+        if item.get('functype', None) != 'N':
             return
-        logging.getLogger('DP_pede').debug(
-            'Processing %s', item2label(item))
+        self.logger.debug('Processing %s', item2label(item))
         array = item['yall'][self.BINSTART:self.BINEND, :]
         mean = array.mean(axis=0)
         stddev = array.std(axis=0)
@@ -359,6 +362,8 @@ lowgains - UUB channels to process if splitmode == 1
 chans - all UUB channels to process (all channels with signal)
 kwargs: splitmode, voltage (fixed paramters)"""
         self.q_resp = q_resp
+        logname = multiprocessing.current_process().name + '.hsampli'
+        self.logger = logging.getLogger(logname)
         self.sf = SineFitter()
         self.lowgains, self.chans = lowgains, chans
         self.keys = {key: kwargs[key]
@@ -369,10 +374,9 @@ kwargs: splitmode, voltage (fixed paramters)"""
         self.lowgains, self.chans = lowgains, chans
 
     def calculate(self, item):
-        if item['functype'] != 'P':
+        if item.get('functype', None) != 'P':
             return
-        logging.getLogger('DP_hsampli').debug(
-            'Processing %s', item2label(item))
+        self.logger.debug('Processing %s', item2label(item))
         item = item.copy()
         item.update(self.keys)
         chans = self.lowgains if item['splitmode'] == 1 else self.chans
@@ -396,7 +400,8 @@ class DP_store(object):
     def __init__(self, datadir):
         """Constructor."""
         self.datadir = datadir
-        self.logger = logging.getLogger('DP_store')
+        logname = multiprocessing.current_process().name + '.store'
+        self.logger = logging.getLogger(logname)
 
     def calculate(self, item):
         label = item2label(item)
@@ -417,6 +422,8 @@ chans - UUB channels to process when splitmode = 0
         (all channels with signal)
 kwargs: freq, splitmode, voltage (fixed paramters)"""
         self.q_resp = q_resp
+        logname = multiprocessing.current_process().name + '.freq'
+        self.logger = logging.getLogger(logname)
         self.sf = SineFitter()
         self.lowgains, self.chans = lowgains, chans
         self.keys = {key: kwargs[key]
@@ -424,10 +431,9 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
                      if key in kwargs}
 
     def calculate(self, item):
-        if item['functype'] != 'F':
+        if item.get('functype', None) != 'F':
             return
-        logging.getLogger('DP_freq').debug(
-            'Processing %s', item2label(item))
+        self.logger.debug('Processing %s', item2label(item))
         item = item.copy()
         item.update(self.keys)
         chans = self.lowgains if item['splitmode'] > 0 else self.chans
@@ -454,13 +460,14 @@ class DP_ramp(object):
 q_resp - a logger queue
 """
         self.q_resp = q_resp
+        logname = multiprocessing.current_process().name + '.ramp'
+        self.logger = logging.getLogger(logname)
         self.aramp = np.arange(2048, dtype='int16')
 
     def calculate(self, item):
-        if item['functype'] != 'R':
+        if item.get('functype', None) != 'R':
             return
-        logging.getLogger('DP_ramp').debug(
-            'Processing %s', item2label(item))
+        self.logger.debug('Processing %s', item2label(item))
         itemr = {key: item[key] for key in ('uubnum', 'functype')}
         res = {'timestamp': item['timestamp']}
         for ch in range(10):

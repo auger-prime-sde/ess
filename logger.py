@@ -156,7 +156,7 @@ timeout - interval for collecting data
     def run(self):
         logger = logging.getLogger('logger')
         last_ts = datetime(2016, 1, 1)  # minus infinity
-        while not self.stop.is_set():
+        while not self.stop.is_set() or self.records:
             if self.records:
                 qtend = min([rec['tend'] for rec in self.records.values()])
             else:
@@ -164,7 +164,7 @@ timeout - interval for collecting data
             # logger.debug('tend = %s' %
             # datetime.strftime(tend, "%Y-%m-%d %H:%M:%S"))
             # read from queue until some record is timeouted
-            while not self.stop.is_set():
+            while True:
                 timeout = (qtend - datetime.now()).total_seconds()
                 # logger.debug('timeout = %.6f' % timeout)
                 if timeout < 0.0:
@@ -263,6 +263,7 @@ class QLogHandler(object):
 class QueDispatch(threading.Thread):
     """A simple dispatcher between queues with None as a sentinel"""
     def __init__(self, q_in, q_out, zLog=False, logname='QueDispatch'):
+        super(QueDispatch, self).__init__()
         self.q_in, self.q_out = q_in, q_out
         self.zLog = zLog
         self.logger = logging.getLogger(logname)

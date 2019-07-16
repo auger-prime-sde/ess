@@ -8,7 +8,7 @@ import logging
 import json
 
 # ESS stuff
-from timer import point_ticker, list_ticker
+from timer import one_tick, point_ticker, list_ticker
 from modbus import Modbus, ModbusError, Binder, BinderSegment, BinderProg
 
 
@@ -157,6 +157,7 @@ jsonobj - either json string or json file"""
         cp = None                  # points in cycle
         numrepeat = None           # number to repeat
         ap = gp                    # actual points
+        self.timerstop = None
         for segment in jso['program']:
             if 'num_repeat' in segment:  # start cycle
                 assert cp is None, "Nested cycle"
@@ -183,6 +184,13 @@ jsonobj - either json string or json file"""
                 temp_seg, humid_seg, cp, numrepeat = None, None, None, None
                 ap = gp
                 continue
+            elif 'stop' in segment:  # stop timer after a delay
+                assert self.timerstop is None, "Double stop timer"
+                assert cp is None, "Stop timer while in cycle"
+                self.timerstop = gp.t + int(segment['stop'])
+                continue
+            else:
+                assert self.timerstop is None, "Segment after stop"
             dur = segment["duration"]
             # temperature & operc
             temp_end = segment.get("temperature", temp_prev)
@@ -539,3 +547,6 @@ and add them to timer"""
                                   list_ticker(self.test_points, offset,
                                               'test_point',
                                               self.timepoints))
+        if self.timerstop is not None:
+            self.timer.add_ticker(
+                'stop', one_tick(None, delay=offset+self.timerstop))

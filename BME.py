@@ -10,7 +10,7 @@ from time import sleep
 from datetime import datetime, timedelta
 from serial import Serial
 
-from dataproc import label2item
+from dataproc import item2label
 
 
 class SerialReadTimeout(AssertionError):
@@ -69,57 +69,55 @@ timesync - sync Arduino time
         self.timer = timer
         self.q_resp = q_resp
         # check that we are connected to BME
-        logger = logging.getLogger('bme')
+        self.logger = logging.getLogger('bme')
         s = None               # avoid NameError on isinstance(s, Serial) check
         try:
             s = Serial(port, baudrate=115200)
-            logger.info('Opening serial %s', repr(s))
-            resp = readSerRE(s, BME.re_bmeinit, timeout=3, logger=logger)
+            self.logger.info('Opening serial %s', repr(s))
+            readSerRE(s, BME.re_bmeinit, timeout=3, logger=self.logger)
             if timesync:
                 # initialize time
-                logger.info('BME time sync')
+                self.logger.info('BME time sync')
                 ts = (datetime.now() + timedelta(seconds=1)).strftime(
                     "t %Y-%m-%dT%H:%M:%S\r")
                 s.write(bytes(ts, 'ascii'))
-                readSerRE(s, BME.re_bmetimeset, timeout=3, logger=logger)
-                logger.info('synced to ' + ts)
+                readSerRE(s, BME.re_bmetimeset, timeout=3, logger=self.logger)
+                self.logger.info('synced to ' + ts)
         except Exception:
-            logger.exception("Init serial with BME failed")
+            self.logger.exception("Init serial with BME failed")
             if isinstance(s, Serial):
-                logger.info('Closing serial %s', s.port)
+                self.logger.info('Closing serial %s', s.port)
                 s.close()
             raise SerialReadTimeout
         self.ser = s
 
     def __del__(self):
-        logger = logging.getLogger('bme')
-        logger.info('Closing serial')
+        self.logger.info('Closing serial')
         try:
             self.ser.close()
         except Exception:
             pass
 
     def run(self):
-        logger = logging.getLogger('bme')
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
-                logger.info('Timer stopped, closing serial')
+                self.logger.info('Timer stopped, closing serial')
                 self.ser.close()
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if any([name in flags
                     for name in ('meas.thp', 'meas.pulse', 'meas.freq')]):
-                logger.debug('BME event timestamp ' +
+                self.logger.debug('BME event timestamp ' +
                              datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
-                logger.debug('BME read')
+                self.logger.debug('BME read')
                 self.ser.write(b'm')
-                resp = readSerRE(self.ser, BME.re_bmemeas, logger=logger)
-                logger.debug('BME read finished')
+                resp = readSerRE(self.ser, BME.re_bmemeas, logger=self.logger)
+                self.logger.debug('BME read finished')
                 d = BME.re_bmemeas.match(resp).groupdict()
                 bmetime = d.pop('dt')
-                logger.debug('BME vs event time diff: %f s',
+                self.logger.debug('BME vs event time diff: %f s',
                              (datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S') -
                               timestamp).total_seconds())
                 res = {'timestamp': timestamp}

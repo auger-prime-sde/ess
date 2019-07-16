@@ -9,11 +9,12 @@ import os
 import sys
 import json
 import logging
+import logging.config
+import logging.handlers
 import threading
 import multiprocessing
 from datetime import datetime, timedelta
 import queue
-# from prc import PRCServer - not working on Python3
 
 # ESS stuff
 from timer import Timer, periodic_ticker
@@ -21,8 +22,8 @@ from logger import LogHandlerRamp, LogHandlerPickle, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol
 from logger import makeDLpedestals, makeDLpedestalstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
-from logger import makeDLfreqgain, makeDLcutoff
-from logger import QueDispatch
+from logger import makeDLfreqgain  # , makeDLcutoff
+from logger import QueDispatch, QLogHandler
 from BME import BME, TrigDelay, PowerControl
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
 from UUB import uubnum2mac
@@ -54,10 +55,6 @@ class ESS(object):
         dt = datetime.now()
         dt = dt.replace(second=0, microsecond=0) + timedelta(seconds=60)
 
-        # event to stop
-        self.evtstop = threading.Event()
-        self.prcport = d['ports'].get('prc', None)
-
         # datadir
         self.datadir = dt.strftime(
             d.get('datadir', 'data-%Y%m%d/'))
@@ -82,6 +79,8 @@ class ESS(object):
 
         self.basetime = dt
         self.timer = Timer(dt)
+        # event to stop
+        self.timer.timerstop = self.timerstop = threading.Event()
         self.timer.start()
 
         # queues
@@ -91,24 +90,31 @@ class ESS(object):
         self.q_resp = queue.Queue()
         self.q_att = queue.Queue()
 
+        self.qlistener = logging.handlers.QueueListener(
+            self.q_log, QLogHandler())
+        self.qlistener.start()
+
         # UUB channels
         self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
         self.highgains = d.get('highgains', [2, 4, 6, 10])
         self.chans = sorted(self.lowgains+self.highgains)
 
         # power supply
+        self.ps = None
         if 'power' in d and 'power' in d['ports']:
             port = d['ports']['power']
             self.ps = PowerSupply(port, self.timer, self.q_resp, **d['power'])
             self.ps.start()
 
         # BME
+        self.bme = None
         if 'BME' in d['ports']:
             port = d['ports']['BME']
             self.bme = BME(port, self.timer, self.q_resp)
             self.bme.start()
 
         # FLIR
+        self.flir = None
         if 'flir' in d['ports']:
             port = d['ports']['flir']
             uubnum = d.get('flir.uubnum', 0)
@@ -118,6 +124,7 @@ class ESS(object):
             self.flir.start()
 
         # chamber
+        self.chamber = None
         if 'chamber' in d['ports']:
             port = d['ports']['chamber']
             self.chamber = Chamber(port, self.timer, self.q_resp)
@@ -172,8 +179,6 @@ class ESS(object):
         # UUBs - UUBdaq and UUBlisten
         self.ulisten = UUBlisten(self.q_ndata)
         self.ulisten.start()
-        # self.uconv = UUBconvData(self.q_ndata, self.q_dp)
-        # self.uconv.start()
         self.udaq = UUBdaq(self.timer, self.ulisten, self.q_resp,
                            self.afg, self.splitmode, self.td,
                            self.trigger)
@@ -198,9 +203,9 @@ class ESS(object):
                   'lowgains': self.lowgains, 'chans': self.chans}
         if self.afg is not None:
             dp_ctx['hswidth'] = self.afg.param['hswidth']
-        self.n_dp = d.get('n_dataprocess', 1)
+        self.n_dp = d.get('n_dp', multiprocessing.cpu_count() - 2)
         self.dataprocs = [multiprocessing.Process(
-            target=DataProcessor, name='DP%i' % i, args=(dp_ctx, ))
+            target=DataProcessor, name='DP%d' % i, args=(dp_ctx, ))
                           for i in range(self.n_dp)]
         for dp in self.dataprocs:
             dp.start()
@@ -220,6 +225,7 @@ class ESS(object):
 
         # ESS program
         self.starttime = None
+        self.essprog = None
         if 'essprogram' in d['tickers']:
             fn = d['tickers']['essprogram']
             if 'essprogram.macros' in d['tickers']:
@@ -366,8 +372,11 @@ class ESS(object):
     def __del__(self):
         self.stop()
 
+    def _noaction(self):
+        pass
+
     def stop(self):
-        """Stop all threads"""
+        """Stop all threads and processes"""
         self.timer.stop.set()
         self.timer.evt.set()
         self.dl.stop.set()
@@ -377,12 +386,32 @@ class ESS(object):
         self.ulisten.stop.set()
         for i in range(self.n_dp):
             self.q_ndata.put(None)
-        self.n_dp = 0
-        for dp in self.dataprocs.pop():
-            dp.join()
         if self.q_dpres is not None:
             self.q_dpres.put(None)
-            self.q_dpres = None
+        # join all threads
+        self.timer.join()
+        self.qlistener.stop()
+        if self.ps is not None:
+            self.ps.join()
+        if self.bme is not None:
+            self.bme.join()
+        if self.flir is not None:
+            self.flir.join()
+        if self.chamber is not None:
+            self.chamber.join()
+        self.ulisten.join()
+        self.udaq.join()
+        self.telnet.join()
+        for uub in self.uubtsc.values():
+            uub.join()
+        self.qdispatch.join()
+        if self.essprog is not None:
+            self.essprog.join()
+        self.dl.join()
+        # join DP processes
+        for dp in self.dataprocs:
+            dp.join()
+        self.stop = self._noaction
 
 
 def Pretest(jsconf, uubnum):
@@ -408,7 +437,7 @@ if __name__ == '__main__':
     logger = logging.getLogger('ESS')
     # start RPyC TBD
     logger.debug('Waiting for ess.evtstop.')
-    ess.evtstop.wait()
+    ess.timerstop.wait()
     logger.info('Stopping everything.')
     ess.stop()
     logger.info('Everything stopped.')

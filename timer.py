@@ -75,12 +75,7 @@ class Timer(threading.Thread):
     def __init__(self, basetime):
         super(Timer, self).__init__()
         self.basetime = basetime
-        self.tickers = {}  # name: [nextval, detail, gener, offset]
-        self.tickers2add = []
-        self.tickers2del = []
-        self.immediate = []  # (name: detail)
-        self.timestamp = None
-        self.flags = {}
+        self._clear()
         self.stop = threading.Event()
         self.evt = threading.Event()
         logger = logging.getLogger('timer')
@@ -104,8 +99,19 @@ offset - an offset to basetime (seconds)
         """Schedule an event with name and detail ASAP"""
         self.immediate.append((name, detail))
 
+    def _clear(self):
+        """Clear all tickers et al."""
+        self.tickers = {}  # name: [nextval, detail, gener, offset]
+        self.tickers2add = []
+        self.tickers2del = []
+        self.immediate = []  # (name: detail)
+        self.timestamp = None
+        self.flags = {}
+        self.timerstop = None   # if Event, set() at the end of program
+
     def run(self):
         logger = logging.getLogger('timer')
+        zTimerStop = False
         while not self.stop.is_set():
             # update self.tickers
             while self.tickers2add:
@@ -172,6 +178,9 @@ offset - an offset to basetime (seconds)
                     datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S.%f"))
                 continue
 
+            if 'stop' in newflags:
+                zTimerStop = True
+                del newflags['stop']
             # coarse sleep
             sec = (timestamp - now).seconds
             if sec > 2:
@@ -187,6 +196,14 @@ offset - an offset to basetime (seconds)
             self.flags = newflags
             self.evt.set()
             self.evt.clear()
+
+            # self stop
+            if zTimerStop:
+                logger.info('timer self stop')
+                if self.timerstop is not None:
+                    self.timerstop.set()
+                self._clear()
+                zTimerStop = False
         logger.info('timer.run finished')
 
     def join(self, timeout=None):
