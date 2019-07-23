@@ -26,7 +26,7 @@
 #include <linux/spi/spidev.h>
 
 #define CTRLPORT 8886   // The port for cmd and resp
-#define MSGMAXLEN 11    // Max length of message
+#define MSGLEN 18       // Length of UDP data (to avoid padding)
 #define NADC 5          // Number of ADCs
 #define WAITTIME   1000000L  // timeout in select, us
 
@@ -45,7 +45,7 @@
 #define RAMPOFF    0x00
 
 /* global variables */
-char buf[MSGMAXLEN];
+char buf[MSGLEN];
 struct sockaddr src_addr;
 socklen_t addrlen;
 
@@ -193,6 +193,7 @@ int main(int argc, char **argv) {
   /* main loop */
   //  fprintf(stderr, "entering main loop\n");
   c = 0;
+  addrlen = sizeof(src_addr);
   do {
     FD_ZERO(&rset);
     FD_SET(sock, &rset);
@@ -204,9 +205,12 @@ int main(int argc, char **argv) {
       continue;   // timeout
     }
     
-    len = recvfrom(sock, (void *)buf, MSGMAXLEN, 0, &src_addr, &addrlen);
+    len = recvfrom(sock, (void *)buf, MSGLEN, 0, &src_addr, &addrlen);
+    if(len != MSGLEN)
+      continue;   // incomplete packet ???
     resp = RESP_BASE;
-    for( i = 0; i < len; i++ ) {
+    buf[MSGLEN-1] = '\0';  // sentinel
+    for( i = 0; buf[i] != '\0'; i++ ) {
       if(( c = buf[i] ) == CMD_QUIT) {
 	resp ++;
 	break; }
@@ -223,7 +227,7 @@ int main(int argc, char **argv) {
 	break; }
     } /* end for */
     buf[0] = resp;
-    sendto(sock, buf, 1, MSG_DONTWAIT, &src_addr, addrlen);
+    sendto(sock, buf, MSGLEN, MSG_DONTWAIT, &src_addr, addrlen);
   } while( c != CMD_QUIT );
 
   //  fprintf(stderr, "left main loop\n");

@@ -812,17 +812,9 @@ def ADCtup2c(tup):
 
 class ADCramp(object):
     """Switch ADC to/from ramp test mode"""
+    MSGLEN = 18   # length of UDP payload (minimal without padding)
     def __init__(self, uubnum):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-# !!! seem to be binded to lo instead of enp1s0
-#         while True:
-#             try:
-#                 sport = random.randint(12345, 23456)
-#                 self.sock.bind((LADDR, sport))
-#                 break
-#             except socket.error:
-#                 continue
-#       self.sock.setsockopt(socket.SOL_SOCKET, IN.SO_BINDTODEVICE, LIFACE)
         self.sock.settimeout(0.01)
         self.addr = (uubnum2ip(uubnum), ADCPORT)
         self.logger = logging.getLogger('ADCramp %04d' % uubnum)
@@ -834,18 +826,19 @@ class ADCramp(object):
         """Send command, receive response and check it.
 cmd - str to send
 If OK, return True, else return False"""
-        assert len(cmd) <= 11
+        clen = len(cmd)
+        assert clen < ADCramp.MSGLEN
         self.logger.debug('emptying recv buf')
         self._empty_socket()
         self.logger.debug('sending %s', repr(cmd))
-        self.sock.sendto(bytes(cmd, 'ascii'), self.addr)
-        self.logger.debug('sent')
+        msg = bytes(cmd, 'ascii') + bytes(ADCramp.MSGLEN - clen)
+        self.sock.sendto(msg, self.addr)
         try:
-            resp, addr = self.sock.recvfrom(1)
+            resp, addr = self.sock.recvfrom(ADCramp.MSGLEN)
         except socket.timeout:
             self.logger.info('timeout')
             return False
-        expresp = 0x20 + len(cmd)
+        expresp = 0x20 + clen
         if resp[0] != expresp:
             self.logger.info('Unexpected response %02X (%02X expected)',
                              resp[0], expresp)
