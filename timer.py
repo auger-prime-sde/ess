@@ -16,10 +16,12 @@ count - number of values to generate, indefinitely if None
 yields (None, value)
 """
     val = offset
+    assert count is None or isinstance(count, int), \
+        "periodic_ticker count must be None or integer"
     while count is None or count > 0:
         yield val, None
         val += interval
-        if count > 0:
+        if count is not None:
             count -= 1
 
 
@@ -78,9 +80,9 @@ class Timer(threading.Thread):
         self._clear()
         self.stop = threading.Event()
         self.evt = threading.Event()
-        logger = logging.getLogger('timer')
-        logger.info('Timer initialized: basetime %s',
-                    datetime.strftime(basetime, "%Y-%m-%d %H:%M:%S.%f"))
+        self.logger = logging.getLogger('timer')
+        self.logger.info('Timer initialized: basetime %s',
+                         datetime.strftime(basetime, "%Y-%m-%d %H:%M:%S.%f"))
 
     def add_ticker(self, name, gener, offset=0):
         """Add a new ticker to timer
@@ -110,16 +112,15 @@ offset - an offset to basetime (seconds)
         self.timerstop = None   # if Event, set() at the end of program
 
     def run(self):
-        logger = logging.getLogger('timer')
         zTimerStop = False
         while not self.stop.is_set():
             # update self.tickers
             while self.tickers2add:
                 name, gener, offset = self.tickers2add.pop()
                 if name in self.tickers:
-                    logger.error("Duplicate ticker %s, ignoring", name)
+                    self.logger.error("Duplicate ticker %s, ignoring", name)
                     continue
-                logger.info('Added ticker ' + name)
+                self.logger.info('Added ticker ' + name)
                 # at least one value must be produced
                 nextval, detail = next(gener)
                 nextval += offset
@@ -128,9 +129,9 @@ offset - an offset to basetime (seconds)
                 name = self.tickers2del.pop()
                 if name in self.tickers:
                     del self.tickers[name]
-                    logger.info('Removing ticker ' + name)
+                    self.logger.info('Removing ticker ' + name)
                 else:
-                    logger.info('Ticker %s not present for removal', name)
+                    self.logger.info('Ticker %s not present for removal', name)
 
             if not self.tickers and not self.immediate:
                 sleep(0.3)
@@ -147,7 +148,7 @@ offset - an offset to basetime (seconds)
             newflags = {}
             tickers2del = []
             for name, t in self.tickers.items():
-                # logger.debug('ticker iteration: %s: %s', name, repr(t))
+                # self.logger.debug('ticker iteration: %s: %s', name, repr(t))
                 if t[0] == delta:
                     newflags[name] = t[1]
                     try:
@@ -158,7 +159,7 @@ offset - an offset to basetime (seconds)
                         tickers2del.append(name)
             for name in tickers2del:
                 del self.tickers[name]
-                logger.info('Exhausted ticker %s removed', name)
+                self.logger.info('Exhausted ticker %s removed', name)
 
             if delta >= delta0:
                 nimmediate = []
@@ -173,7 +174,7 @@ offset - an offset to basetime (seconds)
             timestamp = self.basetime + timedelta(seconds=delta)
             now = datetime.now()
             if now > timestamp:
-                logger.debug(
+                self.logger.debug(
                     'Skipping passed tick %s',
                     datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S.%f"))
                 continue
@@ -184,31 +185,31 @@ offset - an offset to basetime (seconds)
             # coarse sleep
             sec = (timestamp - now).seconds
             if sec > 2:
-                logger.debug('coarse sleep %ds', sec-2)
+                self.logger.debug('coarse sleep %ds', sec-2)
                 sleep(sec-2)
             # fine sleep
             delta = timestamp - datetime.now()
             sec = delta.seconds + 0.000001 * delta.microseconds
-            logger.debug('fine sleep %.6fs', sec)
+            self.logger.debug('fine sleep %.6fs', sec)
             sleep(sec)
-            logger.debug('event')
-            self.timestamp = timestamp
-            self.flags = newflags
-            self.evt.set()
-            self.evt.clear()
+            if newflags:  # may be empty if only stop was present
+                self.logger.debug('event: %s', ', '.join(newflags))
+                self.timestamp = timestamp
+                self.flags = newflags
+                self.evt.set()
+                self.evt.clear()
 
             # self stop
             if zTimerStop:
-                logger.info('timer self stop')
+                self.logger.info('timer self stop')
                 if self.timerstop is not None:
                     self.timerstop.set()
                 self._clear()
                 zTimerStop = False
-        logger.info('timer.run finished')
+        self.logger.info('timer.run finished')
 
     def join(self, timeout=None):
-        logger = logging.getLogger('timer')
-        logger.debug('Timer.join')
+        self.logger.debug('Timer.join')
         self.stop.set()   # stop run() and inform listeners that we finish
         self.flags = {}
         self.evt.set()    # trigger all listeners

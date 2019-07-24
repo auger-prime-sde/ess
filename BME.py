@@ -91,40 +91,45 @@ timesync - sync Arduino time
             raise SerialReadTimeout
         self.ser = s
 
-    def __del__(self):
+    def stop(self):
         self.logger.info('Closing serial')
         try:
             self.ser.close()
         except Exception:
             pass
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass
 
     def run(self):
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
-                self.logger.info('Timer stopped, closing serial')
-                self.ser.close()
-                return
+                self.logger.info('Timer stopped')
+                break
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if any([name in flags
                     for name in ('meas.thp', 'meas.pulse', 'meas.freq')]):
-                self.logger.debug('BME event timestamp ' +
-                             datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
                 self.logger.debug('BME read')
                 self.ser.write(b'm')
                 resp = readSerRE(self.ser, BME.re_bmemeas, logger=self.logger)
                 self.logger.debug('BME read finished')
                 d = BME.re_bmemeas.match(resp).groupdict()
-                bmetime = d.pop('dt')
+                bmetime = d.pop('dt').decode('ascii')
+                bmetimestamp = datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S')
                 self.logger.debug('BME vs event time diff: %f s',
-                             (datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S') -
-                              timestamp).total_seconds())
+                                  (bmetimestamp - timestamp).total_seconds())
                 res = {'timestamp': timestamp}
                 # prefix keys from re_bme with 'bme.'
                 for k, v in d.items():
                     res['bme_'+k] = float(v)
                 self.q_resp.put(res)
+        self.stop()
 
 
 class TrigDelay(object):
@@ -293,9 +298,16 @@ return tuple of two list: (uubsOn, uubsOff)"""
                 res['timestamp'] = timestamp
                 self.q_resp.put(res)
 
-    def __del__(self):
+    def stop(self):
         try:
             self.logger.info('Closing serial')
             self.ser.close()
         except Exception:
             pass
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass

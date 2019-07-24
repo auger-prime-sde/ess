@@ -88,6 +88,7 @@ kwargs - parameters for output voltage/current limit configuration
                 self.q_resp.put({'timestamp': timestamp,
                                  'ps_u': voltage,
                                  'ps_i': current})
+        self.stop()
 
     def config(self, **kwargs):
         """Configuration of output paramters
@@ -224,9 +225,16 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
                           voltage, current)
         return (voltage, current)
 
-    def __del__(self):
+    def stop(self):
+        self.logger.info('Closing serial')
         try:
-            self.logger.info('Closing serial')
             self.ser.close()
         except Exception:
             pass
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass

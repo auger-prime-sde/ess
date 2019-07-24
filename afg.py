@@ -98,12 +98,19 @@ for functype F:
             self.writeUserfun(halfsine, params['usernum'],
                               5000, 5000/(20*math.pi))
 
-    def __del__(self):
+    def stop(self):
         self.logger.info('Switching off channel and closing')
         for ch in (0, 1):
             if self.param['gains'][ch] is not None:
                 self.send('output%d:state off' % (ch+1))
         os.close(self.fd)
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass
 
     def send(self, line, lvl=logging.DEBUG):
         """Send line to AFG
@@ -284,9 +291,6 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
         fout.write('\0' * nzeros)
         fout.write(''.join([pack('>H', x) for x in values]))
 
-if __name__ == '__main__':
-    writeTFW(halfsine, 'halfsine', 5000, 5000/(2*math.pi * 10))
-
 
 class RPiTrigger(object):
     """Class for trigger on Raspberry Pi"""
@@ -295,9 +299,20 @@ class RPiTrigger(object):
     def __init__(self):
         self.proc = Popen([self.PULSE_BIN])
 
-    def __del__(self):
+    def stop(self):
         self.proc.terminate()
         self.proc.poll()
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass
 
     def trigger(self):
         self.proc.send_signal(signal.SIGUSR1)
+
+
+if __name__ == '__main__':
+    writeTFW(halfsine, 'halfsine', 5000, 5000/(2*math.pi * 10))

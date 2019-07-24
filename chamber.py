@@ -44,6 +44,7 @@ q_resp - queue to send response"""
             if self.timer.stop.is_set():
                 logger.info('Timer stopped, closing serial')
                 self.binder.modbus.ser.close()
+                self.binder = None
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags

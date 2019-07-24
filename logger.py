@@ -156,6 +156,7 @@ timeout - interval for collecting data
     def run(self):
         logger = logging.getLogger('logger')
         last_ts = datetime(2016, 1, 1)  # minus infinity
+        logger.info('starting run()')
         while not self.stop.is_set() or self.records:
             if self.records:
                 qtend = min([rec['tend'] for rec in self.records.values()])
@@ -239,7 +240,7 @@ timeout - interval for collecting data
                     for filt in filterlist:
                         nrec = filt(nrec)
                     recs[key] = nrec
-                logger.debug('Rec written to handlers: %s', repr(recs))
+                # logger.debug('Rec written to handlers: %s', repr(recs))
                 for h, key in self.handlers:
                     h.write_rec(recs[key])
         logger.info('run() finished, deleting handlers')

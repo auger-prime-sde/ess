@@ -6,7 +6,6 @@
 import re
 import multiprocessing
 import logging
-import string
 import json
 from datetime import datetime
 import numpy as np
@@ -29,7 +28,7 @@ Return str EM1M2...Mn"""
     else:
         raise AssertionError("x too big")
     imant = int((x + eps) * 10 ** (manlength-1))  # mantisa as int
-    mant = string.rstrip('%d' % imant, '0')
+    mant = ('%d' % imant).rstrip('0')
     return '%d%s' % (expo, mant)
 
 

@@ -15,9 +15,11 @@ import threading
 import multiprocessing
 from datetime import datetime, timedelta
 import queue
+import shutil
 
 # ESS stuff
 from timer import Timer, periodic_ticker
+from modbus import Binder
 from logger import LogHandlerRamp, LogHandlerPickle, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol
 from logger import makeDLpedestals, makeDLpedestalstat
@@ -36,17 +38,39 @@ from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
 
-VERSION = '20190713'
+VERSION = '20190717'
 
 
 class ESS(object):
     """ESS process implementation"""
 
-    def __init__(self, js):
-        if hasattr(js, 'read'):
-            d = json.load(js)
+    def __init__(self, jsfn, jsdata=None):
+    """ Constructor.
+jsfn - file name of JSON config file
+jsdata - JSON data (str), ignored if jsfn is not None"""
+        # clear conditional members to None
+        self.ps = None
+        self.bme = None
+        self.flir = None
+        self.chamber = None
+        self.td = None
+        self.afg = None
+        self.trigger = None
+        self.splitmode = None
+        self.splitgain = None
+        self.starttime = None
+        self.essprog = None
+        self.db = None
+
+        if jsfp is not None:
+            with open(jsfp, 'r') as fp:
+                d = json.load(fp)
+            configfn = jsfp
+        elif jsdata is not None:
+            d = json.loads(jsdata)
+            configfn = None
         else:
-            d = json.loads(js)
+            raise ValueError("No JSON config provided")
 
         self.phase = d['phase']
         self.tester = d['tester']
@@ -62,6 +86,12 @@ class ESS(object):
             self.datadir += os.sep
         if not os.path.isdir(self.datadir):
             os.mkdir(self.datadir)
+        # save configuration
+        if configfn is not None:
+            shutil.copy(configfn, self.datadir)
+        else:
+            with open(self.datadir + 'config.json', 'w') as fp:
+                fp.write(js)
 
         if 'comment' in d:
             with open(self.datadir + 'README.txt', 'w') as f:
@@ -100,21 +130,18 @@ class ESS(object):
         self.chans = sorted(self.lowgains+self.highgains)
 
         # power supply
-        self.ps = None
         if 'power' in d and 'power' in d['ports']:
             port = d['ports']['power']
             self.ps = PowerSupply(port, self.timer, self.q_resp, **d['power'])
             self.ps.start()
 
         # BME
-        self.bme = None
         if 'BME' in d['ports']:
             port = d['ports']['BME']
             self.bme = BME(port, self.timer, self.q_resp)
             self.bme.start()
 
         # FLIR
-        self.flir = None
         if 'flir' in d['ports']:
             port = d['ports']['flir']
             uubnum = d.get('flir.uubnum', 0)
@@ -124,7 +151,6 @@ class ESS(object):
             self.flir.start()
 
         # chamber
-        self.chamber = None
         if 'chamber' in d['ports']:
             port = d['ports']['chamber']
             self.chamber = Chamber(port, self.timer, self.q_resp)
@@ -134,17 +160,13 @@ class ESS(object):
         if 'trigdelay' in d['ports']:
             predefined = d.get('trigdelay', None)
             self.td = TrigDelay(d['ports']['trigdelay'], predefined)
-        else:
-            self.td = None
 
         # AFG
-        self.afg = None
         if 'afg' in d:
             kwargs = d.get("afg", {})
             self.afg = AFG(**kwargs)
 
         # Trigger
-        self.trigger = None
         if 'trigger' in d:
             trigger = d['trigger']
             assert trigger in ('RPi', 'TrigDelay', 'AFG'), \
@@ -162,7 +184,6 @@ class ESS(object):
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # PowerControl
-        self.splitmode = None
         if 'powercontrol' in d['ports']:
             splitmode = d.get('splitmode', None)
             self.pc = PowerControl(d['ports']['powercontrol'], self.timer,
@@ -170,7 +191,6 @@ class ESS(object):
             self.splitmode = self.pc.splitterMode
 
         # SplitterGain
-        self.splitgain = None
         if self.afg is not None:
             calibration = d.get('splitter_calibration', None)
             self.splitgain = SplitterGain(self.afg.param['gains'], None,
@@ -209,7 +229,7 @@ class ESS(object):
                           for i in range(self.n_dp)]
         for dp in self.dataprocs:
             dp.start()
-        self.qdispatch = QueDispatch(self.q_dpres, self.q_resp)
+        self.qdispatch = QueDispatch(self.q_dpres, self.q_resp, zLog=False)
         self.qdispatch.start()
 
         # tickers
@@ -224,8 +244,6 @@ class ESS(object):
             self.timer.add_ticker('meas.iv', periodic_ticker(iv_period))
 
         # ESS program
-        self.starttime = None
-        self.essprog = None
         if 'essprogram' in d['tickers']:
             fn = d['tickers']['essprogram']
             if 'essprogram.macros' in d['tickers']:
@@ -236,6 +254,7 @@ class ESS(object):
             with open(fn, 'r') as fp:
                 self.essprog = ESSprogram(fp, self.timer, self.q_resp,
                                           essprog_macros)
+            shutil.copy(fn, self.datadir)
             self.essprog.start()
             if 'startprog' in d['tickers']:
                 self.essprog.startprog(int(d['tickers']['startprog']))
@@ -325,7 +344,6 @@ class ESS(object):
             self.dl.add_handler(lh, (dpfilter_ramp, ))
 
         # database
-        self.db = None
         if 'db' in d['dataloggers']:
             self.db = DBconnector(self, d['dataloggers']['db'])
             flabels = d['dataloggers']['db'].get('flabels', None)
@@ -388,6 +406,9 @@ class ESS(object):
             self.q_ndata.put(None)
         if self.q_dpres is not None:
             self.q_dpres.put(None)
+        # close connections to AFG,
+        if self.afg is not None:
+            self.afg.stop()
         # join all threads
         self.timer.join()
         self.qlistener.stop()
@@ -397,7 +418,8 @@ class ESS(object):
             self.bme.join()
         if self.flir is not None:
             self.flir.join()
-        if self.chamber is not None:
+        if self.chamber is not None and self.chamber.binder is not None:
+            self.chamber.binder.setState(Binder.STATE_BASIC)
             self.chamber.join()
         self.ulisten.join()
         self.udaq.join()
@@ -412,31 +434,31 @@ class ESS(object):
         for dp in self.dataprocs:
             dp.join()
         self.stop = self._noaction
+        print("ESS.stop() finished")
 
 
-def Pretest(jsconf, uubnum):
+def Pretest(jsfn, uubnum):
     """Wrap for ESS with uubnum"""
     subst = {'UUBNUM': uubnum,
              'UUBNUMSTR': '%04d' % uubnum,
              'MACADDR': uubnum2mac(uubnum)}
-    with open(jsconf, 'r') as fp:
+    with open(jsfn, 'r') as fp:
         js = fp.read()
     for key, val in subst.items():
         js = js.replace('$'+key, str(val))
-    return js
+    return ESS(jsfn=None, jsdata=js)
 
 
 if __name__ == '__main__':
     try:
-        with open(sys.argv[1], 'r') as fp:
-            ess = ESS(fp)
+        ess = ESS(sys.argv[1])
     except (IndexError, IOError, ValueError):
         print("Usage: %s <JSON config file>" % sys.argv[0])
         raise
 
     logger = logging.getLogger('ESS')
     # start RPyC TBD
-    logger.debug('Waiting for ess.evtstop.')
+    logger.info('ESSprogram started, waiting for timerstop.')
     ess.timerstop.wait()
     logger.info('Stopping everything.')
     ess.stop()
