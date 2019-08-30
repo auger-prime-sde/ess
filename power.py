@@ -107,7 +107,7 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
             args[i] = {k: None for k in POWER_OPER}
             argtuple = kwargs.get('ch%d' % i, None)
             if argtuple is not None:
-                args[i].update({dict(list(zip(POWER_OPER, argtuple)))})
+                args[i].update(dict(list(zip(POWER_OPER, argtuple))))
         # copy ch0 to uubch where uubch's value is None
         if self.uubch is not None:
             for key in POWER_OPER:
@@ -140,10 +140,11 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
 """
         if state in (0, 1, False, True):
             state = 'ON' if state else 'OFF'
+        assert state in ('ON', 'OFF')
         for ch in chans:
             self.logger.debug('Switch ch%d %s', ch, state)
             self.ser.write(b'INST OUT%d\n' % ch)
-            self.ser.write(b'OUTP:STATE %s\n' % state)
+            self.ser.write(b'OUTP:STATE %s\n' % bytes(state, 'ascii'))
 
     def _setVoltage_hmp(self, ch, value):
         self.logger.debug('Set voltage ch%d: %fV', ch, value)
@@ -187,7 +188,13 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
 
     # CPX400 methods
     def _output_cpx(self, chans, state):
+        """Set channels in chans to state
+chans - list of channels to switch, no action if 1 not in chans
+state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
+"""
+        assert state in (0, 1, False, True, 'ON', 'OFF')
         if 1 in chans:
+            state = 1 if state in (1, True, 'ON') else 0
             pstate = 'ON' if state else 'OFF'
             self.logger.debug('Switch ch1 %s', pstate)
             self.ser.write(b'OP1 %d\n' % state)
