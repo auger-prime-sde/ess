@@ -15,17 +15,17 @@ from BME import readSerRE, SerialReadTimeout
 
 class FLIR(threading.Thread):
     """Thread managing FLIR camera"""
-    # baudrates accected by FLIR
+    # baudrates accepted by FLIR
     BAUDRATES = (19200, 115200, 9600, 38400, 57600)
     MAXBAUDRATE = 115200
     BLOCKSIZE = 512
     TOUT = 0.3
     IMTYPES = {'p': '.fff', 'o': '.fff', 'e': '.jpg', 'j': '.jpg'}
-    re_cmd = re.compile(r'(.*)\r\nOK>', re.DOTALL)
-    re_fblock = re.compile(r'\r\nOK\r\n' +
-                           r'(?P<size>..)(?P<crc>..)(?P<data>.*)\r\nOK>',
+    re_cmd = re.compile(br'(.*)\r\nOK>', re.DOTALL)
+    re_fblock = re.compile(br'\r\nOK\r\n' +
+                           br'(?P<size>..)(?P<chksum>..)(?P<data>.*)\r\nOK>',
                            re.DOTALL)
-    re_baudrate = re.compile(r'.*\r\n(?P<baudrate>\d+)\r\nOK>', re.DOTALL)
+    re_baudrate = re.compile(br'.*\r\n(?P<baudrate>\d+)\r\nOK>', re.DOTALL)
 
     def __init__(self, port, timer, q_att, datadir, uubnum=0, imtype=None):
         """Detect baudrate, set termecho to off and switch baudrate to max"""
@@ -36,7 +36,7 @@ class FLIR(threading.Thread):
         self.ser = s = None   # avoid NameError on isinstance(s, Serial) check
         try:
             s = self._detect_baudrate(port)
-            s.write('termecho off\n')
+            s.write(b'termecho off\n')
             readSerRE(s, FLIR.re_cmd, timeout=FLIR.TOUT)
             if s.baudrate < FLIR.MAXBAUDRATE:
                 self._set_baudrate(FLIR.MAXBAUDRATE, s)
@@ -45,7 +45,7 @@ class FLIR(threading.Thread):
             if isinstance(s, Serial) and s.isOpen():
                 self.logger.info('Closing serial %s', s.port)
                 s.close()
-            raise SerialReadTimeout
+            raise
         self.ser = s
         resp = self._send_recv('version')
         self.logger.info('detected: %s', resp.splitlines()[1])
@@ -68,7 +68,7 @@ return open Serial connection or raise exception"""
             try:
                 self.logger.debug('trying baudrate %d', brate)
                 s = Serial(port, baudrate=brate)
-                s.write('\n')
+                s.write(b'\n')
                 readSerRE(s, FLIR.re_cmd, timeout=FLIR.TOUT)
                 self.logger.debug('baudrate %d detected', brate)
                 return s
@@ -87,12 +87,11 @@ ser - serial instance, if None, use self.ser
         if ser is None:
             ser = self.ser
         self.logger.info('Setting baudrate %d', baudrate)
-        cmd = 'baudrate %d' % baudrate
-        ser.write(cmd + '\n')
-        ser.read_until('\r\n')
+        ser.write(b'baudrate %d\n' % baudrate)
+        ser.read_until(b'\r\n')
         ser.baudrate = baudrate
         sleep(0.1)
-        ser.write('baudrate\n')
+        ser.write(b'baudrate\n')
         resp = readSerRE(ser, FLIR.re_baudrate,
                          timeout=FLIR.TOUT, logger=self.logger)
         newbaudrate = int(FLIR.re_baudrate.match(resp).groupdict()['baudrate'])
@@ -101,12 +100,13 @@ ser - serial instance, if None, use self.ser
 
     def _send_recv(self, cmd, timeout=1):
         """Send a command and receive a response
-return the response"""
-        self.ser.write(cmd + '\n')
+cmd - str with command
+return the response (before 'OK>', as str)"""
+        self.ser.write(bytes(cmd, 'ascii') + b'\n')
         resp = readSerRE(self.ser, FLIR.re_cmd,
                          timeout=timeout, logger=self.logger)
         m = FLIR.re_cmd.match(resp)
-        return m.groups()[0]
+        return m.groups()[0].decode('ascii')
 
     def _getfblock(self, path, seek, size):
         """get data from file
@@ -115,18 +115,21 @@ seek - offset
 size - size of block to get
 return the data block"""
         cmd = 'getfblock "%s" %d %d' % (path, seek, size)
-        self.ser.write(cmd + '\n')
+        self.ser.write(bytes(cmd, 'ascii') + b'\n')
         resp = readSerRE(self.ser, FLIR.re_fblock, timeout=2, logger=None)
         d = FLIR.re_fblock.match(resp).groupdict()
         rsize = unpack('>H', d['size'])[0]
+        rchksum = unpack('>H', d['chksum'])[0]
+        chksum = sum(d['data']) % 0x10000
         assert rsize == len(d['data'])
+        assert chksum == rchksum
         return d['data']
 
     def getfile(self, flirpath, fname):
         """Get file <flirpath> from FLIR and store as <fname>"""
         self.logger.info('Storing %s to %s', flirpath, fname)
         offset = 0
-        with open(fname, 'w') as fp:
+        with open(fname, 'wb') as fp:
             while True:
                 block = self._getfblock(flirpath, offset, FLIR.BLOCKSIZE)
                 if len(block) == 0:
@@ -139,8 +142,8 @@ return the data block"""
         """Take a snapshot on FLIR"""
         flirpath = 'images/' + imagename
         self.logger.info('Snapshot to %s', flirpath)
-        self.ser.write('store -%c %s\n' % (self.typ[0], flirpath))
-        readSerRE(self.ser, FLIR.re_cmd, timeout=15, logger=self.logger)
+        cmd = 'store -%s %s' % (self.typ[0], flirpath)
+        self._send_recv(cmd, timeout=15)
 
     def listimages(self):
         """Return list of all images on FLIR"""
