@@ -10,7 +10,7 @@ import serial
 import crcmod
 from functools import reduce
 
-VERSION = '20190712'
+VERSION = '20190830'
 
 # constants
 READ_HOLDING_REGISTERS = 0x03
@@ -47,16 +47,19 @@ timeout   - timeout for serial read (seconds, float)
         self.slave_id = slave_id
         self.crc = crcmod.predefined.mkCrcFun('modbus')
         self.logger = logging.getLogger('modbus')
+        self.ser = None
         try:
-            self.ser = serial.Serial(port, baudrate, serial.EIGHTBITS,
-                                     serial.PARITY_NONE, serial.STOPBITS_ONE,
-                                     timeout=timeout)
+            s = serial.Serial(port, baudrate, serial.EIGHTBITS,
+                              serial.PARITY_NONE, serial.STOPBITS_ONE,
+                              timeout=timeout)
         except serial.SerialException:
             raise ModbusError("Cannot open serial on port %s" % port)
+        self.ser = s
 
     def __del__(self):
-        self.ser.close()
-        self.ser = None  # trigger serial.__del__() hopefully
+        if self.ser is not None:
+            self.ser.close()
+            self.ser = None
 
     def send(self, data, n):
         """Append CRC to data and send through serial.
