@@ -50,6 +50,7 @@ class SplitterGain(object):
                  ('D', False),
                  ('E', False),
                  ('F', False), ('F', True))
+    SPLITGAIN = 0.5  # hardcoded splitter gain due impedance matching
 
     def __init__(self, pregains=(1, None), mdochans=None, uubnums=None,
                  calibration=None):
@@ -60,6 +61,8 @@ uubnums - list of upto 10 UUB numbers
 calibration - dict(key: correction_value),
               key: "%d%s%s" % (splitmode, splitch, flabel)
               correction_value: 1.0 in ideal case
+channels: [A-F][0-9] ... splitter, on AFG chan A
+          R[0-9] ... reference, on AFG chan B
 """
         assert len(pregains) == 2
         self.pregains = [float(p) if p is not None else None
@@ -71,12 +74,11 @@ calibration - dict(key: correction_value),
                            for ch, splitch in enumerate(mdochans)
                            if splitch is not None and (
                                    len(splitch) == 2 and
-                                   splitch[0] in 'ABCDEF' and
-                                   splitch[1] in '0123456789') or
-                           splitch == 'REF'}
-            if any([len(splitch) == 2 for splitch in self.mdomap.values()]):
+                                   splitch[0] in 'ABCDEFR' and
+                                   splitch[1] in '0123456789')}
+            if any([splitch[0] in 'ABCDEF' for splitch in self.mdomap.values()]):
                 assert self.pregains[0] is not None
-            if 'REF' in self.mdomap.values():
+            if any([splitch[0] == 'R' for splitch in self.mdomap.values()]):
                 assert self.pregains[1] is not None
         if uubnums is not None:
             assert len(uubnums) < 10 and \
@@ -104,16 +106,17 @@ flabel - freq for sine wave or pulse if empty string"""
         group = SplitterGain.UUB2SPLIT[chan][0]
         return self._gain(splitmode, '%c%d' % (group, index), flabel)
 
-    def _checksplitch(self, splitch):
+    @staticmethod
+    def _checksplitch(splitch):
         assert isinstance(splitch, str) and len(splitch) == 2
-        assert splitch[0] in 'ABCDEF' and splitch[1] in '0123456789'
+        assert splitch[0] in 'ABCDEFR' and splitch[1] in '0123456789'
 
     def _gain(self, splitmode, splitch, flabel):
         """Return gain for splitter channel
 splitch - i.e. C8"""
-        if splitch == 'REF':
+        SplitterGain._checksplitch(splitch)
+        if splitch[0] == 'R':
             return self.pregains[1]
-        self._checksplitch(splitch)
         assert splitmode in (0, 1, 3)
         if splitmode == 0:
             gain = 1.0 / 32
@@ -124,8 +127,7 @@ splitch - i.e. C8"""
         # splitter calibration as correction if available
         key = "%d%s%s" % (splitmode, splitch, flabel)
         correction = self.calibration.get(key, 1.0)
-        # 0.5 hardcoded gain due impedance matching
-        return 0.5 * self.pregains[0] * gain * correction
+        return self.SPLITGAIN * self.pregains[0] * gain * correction
 
 
 def DataProcessor(dp_ctx):
@@ -228,9 +230,7 @@ kwargs and item are merged, item is not modified"""
         attr.append('c%d' % (kwargs['chan'] % 10))
     if 'splitch' in kwargs:
         arg = kwargs['splitch']
-        assert isinstance(arg, str)
-        assert arg == 'REF' or len(arg) == 2 and \
-            arg[0] in 'ABCDEF' and arg[1] in '0123456789'
+        SplitterGain._checksplitch(arg)
         attr.append('s' + arg)
     functype = kwargs.get('functype', '')
     if 'splitmode' in kwargs and functype in ('P', 'F'):
@@ -257,7 +257,7 @@ re_labels = [re.compile(regex) for regex in (
     r'(?P<timestampmicro>20\d{18})$',
     r'u(?P<uubnum>\d{4})$',
     r'c(?P<chan>\d)$',
-    r's(?P<splitch>[A-F]\d|REF)$',
+    r's(?P<splitch>[A-FR]\d)$',
     r'a(?P<splitmode>[013])$',
     r'v(?P<voltage>\d{2,3})$',
     r'f(?P<flabel>\d{2,4})$',
