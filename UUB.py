@@ -158,19 +158,21 @@ uub - UUBmeas or UUBtsc (must have ip and logger attributes)
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.settimeout(1.0)
+            s.settimeout(0.2)
             # uub.logger.debug('s.connect')
             s.connect(addr)
             # uub.logger.debug('s.close')
             s.close()
-            # uub.logger.debug('isLive: True')
-            return True
+            res = True
+            break
         except (socket.timeout, socket.error):
             # uub.logger.debug('socket.timeout/error')
             s.close()
             if datetime.now() > exptime:
-                # uub.logger.debug('isLive: False')
-                return False
+                res = False
+                break
+    uub.logger.debug('isLive: %s', res)
+    return res
 
 
 class UUBtsc(threading.Thread):
@@ -180,16 +182,16 @@ class UUBtsc(threading.Thread):
     re_scdata = re.compile(r'''.*
    PMT1 \s+ (?P<HV_PMT1>\d+(\.\d+)?)
         \s+ (?P<I_PMT1>\d+(\.\d+)?)
-        \s+ (?P<T_PMT1>\d+(\.\d+)?) \s*
+        \s+ (?P<T_PMT1>-?\d+(\.\d+)?) \s*
    PMT2 \s+ (?P<HV_PMT2>\d+(\.\d+)?)
         \s+ (?P<I_PMT2>\d+(\.\d+)?)
-        \s+ (?P<T_PMT2>\d+(\.\d+)?) \s*
+        \s+ (?P<T_PMT2>-?\d+(\.\d+)?) \s*
    PMT3 \s+ (?P<HV_PMT3>\d+(\.\d+)?)
         \s+ (?P<I_PMT3>\d+(\.\d+)?)
-        \s+ (?P<T_PMT3>\d+(\.\d+)?) \s*
+        \s+ (?P<T_PMT3>-?\d+(\.\d+)?) \s*
    PMT4 \s+ (?P<HV_PMT4>\d+(\.\d+)?)
         \s+ (?P<I_PMT4>\d+(\.\d+)?)
-        \s+ (?P<T_PMT4>\d+(\.\d+)?)  \s*
+        \s+ (?P<T_PMT4>-?\d+(\.\d+)?)  \s*
    .* Power .* Nominal .*
    1V    \s+ (?P<u_1V>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_1V>\d+(\.\d+)?) \s* \[mA\] \s*
@@ -214,7 +216,7 @@ class UUBtsc(threading.Thread):
                    (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
    .* Sensors \s+
-   T= \s+ (?P<temp>\d+) \s* \*0\.1K, \s*
+   T= \s+ (?P<temp>-?\d+) \s* \*0\.1K, \s*
    P= \s+ (?P<press>\d+) \s* mBar
 ''', re.VERBOSE + re.DOTALL)
 
@@ -266,27 +268,28 @@ q_resp - queue to send response
                 res['live%04d' % self.uubnum] = isLive(self)
                 if 'test_point' in flags:
                     res['test_point'] = flags['test_point']
-            self.logger.debug('Connecting UUB')
-            conn = http.client.HTTPConnection(self.ip, HTTPPORT)
-            try:
-                # read Zynq temperature
-                if 'meas.thp' in flags:
-                    res.update(self.readZynqTemp(conn))
-                # read SlowControl data
-                if 'meas.sc' in flags:
-                    res.update(self.readSlowControl(conn))
-            except (http.client.CannotSendRequest, socket.error,
-                    AttributeError) as e:
-                self.logger.error('HTTP request failed, %s', e.__str__())
-            finally:
-                conn.close()
-                self.logger.debug('HTTP connection closed')
+            if 'meas.thp' in flags or 'meas.sc' in flags:
+                self.logger.debug('Connecting UUB')
+                conn = http.client.HTTPConnection(self.ip, HTTPPORT)
+                try:
+                    # read Zynq temperature
+                    if 'meas.thp' in flags:
+                        res.update(self.readZynqTemp(conn))
+                    # read SlowControl data
+                    if 'meas.sc' in flags:
+                        res.update(self.readSlowControl(conn))
+                except (http.client.CannotSendRequest, socket.error,
+                        AttributeError) as e:
+                    self.logger.error('HTTP request failed, %s', e.__str__())
+                finally:
+                    conn.close()
+                    self.logger.debug('HTTP connection closed')
             self.q_resp.put(res)
 
     def readSerialNum(self, timeout=None):
         """Read UUB serial number
 Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
-        re_sernum = re.compile(r'.*\nSN: (?P<sernum>' +
+        re_sernum = re.compile(r'.*SN: (?P<sernum>' +
                                r'([a-fA-F0-9]{2}-){5}[a-fA-F0-9]{2})',
                                re.DOTALL)
 
