@@ -39,6 +39,7 @@ class HalfSineFitter(object):
         self.Nphase = 100      # cut on fft coefs for calculation of phases
         # init model
         self._calc_model()
+        self.recurent = False
 
     def halfsine(self, ampli=1, pede=0, binstart=None):
         """
@@ -97,6 +98,12 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
         mphase = np.outer(self.mphase, np.ones(Ncol))
         phasedif = np.unwrap(np.angle(yfft[1:self.Nphase, :]) - mphase, axis=0)
         slope = np.dot(self.abs2[1:self.Nphase], phasedif) / self.normphase
+        if abs(slope) > pi / 20 and not self.recurent:
+            self.binstart -= N/2/pi * slope
+            self._calc_model()
+            self.recurent = True
+            return self.fit(yall, stage)
+        self.recurent = False
         binstart = self.binstart - N/2/pi * slope
 
         res['binstart'] = binstart
