@@ -11,7 +11,7 @@ import numpy as np
 
 class MDO(object):
     """Class for data readout from oscilloscope MDO3000"""
-    PARAM = {'WFMOUTPRE:BYT_NR': 2,
+    PARAM = {'WFMOUTPRE:BYT_NR': 1,
              'DATA:ENCDG': 'RIBINARY'}
     STRPARAM = ('WFMOUTPRE:BYT_OR', 'WFMOUTPRE:BN_FMT', 'WFMOUTPRE:ENCDG',
                 'DATA:ENCDG')
@@ -26,8 +26,8 @@ class MDO(object):
         try:
             self.fd = os.open(device, os.O_RDWR)
             self.logger.debug('%s open', device)
-            os.write(self.fd, '*IDN?')
-            resp = os.read(self.fd, 1000)
+            os.write(self.fd, b'*IDN?')
+            resp = os.read(self.fd, 1000).decode('ascii')
             self.logger.info('Connected, %s', resp)
         except OSError as e:
             if e.errno == errno.ENOENT:
@@ -45,10 +45,18 @@ class MDO(object):
                   if key in kwargs}
         self.setParams(**params)
 
-    def __del__(self):
+    def stop(self):
         self.logger.info('closing')
         if self.fd is not None:
             os.close(self.fd)
+            self.fd = None
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass
 
     def send(self, line, lvl=logging.DEBUG, resplen=0):
         """Send line to MDO3000
@@ -56,9 +64,9 @@ lvl - optional logging level
 """
         line.rstrip()
         self.logger.log(lvl, 'Sending %s', line)
-        os.write(self.fd, line)
+        os.write(self.fd, bytes(line, 'ascii'))
         if resplen > 0:
-            resp = os.read(self.fd, resplen)
+            resp = os.read(self.fd, resplen).decode('ascii')
             return resp
 
     def setParams(self, **d):
@@ -80,35 +88,55 @@ lvl - optional logging level
                            'XUNIT', 'XZERO', 'XINCR',
                            'YUNIT', 'YZERO', 'YMULT', 'YOFF')}
 
-    def readWFM(self, ch, dataslice=None):
+    def readWFM(self, ch, dataslice=None, fn=None):
         """Read waveform from oscilloscope
 ch - oscilloscope channel to read
 dataslice - optional (start, stop, step) to slice acquired data
+fn - if not None, save data (raw format) to the file
 return tuple (numpy.array yvals, float xincr, float xzero, xunit, yunit)"""
         self.send('DATA:SOURCE CH%d' % ch)
         self.send('HEADER 1')
         self.send('WFMOUTPRE?')
-        resp = os.read(self.fd, 1000).rstrip()
+        resp = os.read(self.fd, 1000).decode('ascii').rstrip()
         self.logger.debug('WFM: %s', resp)
         wfmd = self._parseWFM(resp)
         self.send('HEADER 0')
         self.send('CURVE?')
         h = os.read(self.fd, 2)
-        assert h[0] == '#'
-        numpt = int(os.read(self.fd, int(h[1])))
+        assert h[0] == ord('#')
+        numpt = int(os.read(self.fd, h[1] - ord('0')))
         data = os.read(self.fd, numpt)
-        ndata = numpt/(int(wfmd['BIT_NR'])/8)
+        self.logger.debug('WFM transferred')
+        ndata = numpt // (int(wfmd['BIT_NR']) // 8)
         fmtstr = (MDO.ENDIAN[wfmd['BYT_OR']] + str(ndata) +
                   MDO.NRTYPE[wfmd['BIT_NR']])
-        yvals = np.array(unpack(fmtstr, data)) - float(wfmd['YOFF'])
-        yvals = float(wfmd['YZERO']) + float(wfmd['YMULT'])*yvals
+        yraw = unpack(fmtstr, data)
         xincr, xzero = [float(wfmd[k]) for k in ('XINCR', 'XZERO')]
-        xunit, yunit = [wfmd[k].strip('"') for k in ('XUNIT', 'YUNIT')]
         if dataslice is not None:
             start, stop, step = dataslice
-            yvals = yvals[start:stop:step]
+            yraw = yraw[start:stop:step]
             if start is not None:
                 xzero += xincr*start
             if step is not None:
                 xincr *= step
+        if fn is not None:
+            wfmd['XZERO'] = xzero
+            wfmd['XINCR'] = xincr
+            prolog = """\
+# Waveform from MDO, raw data
+# x_i = XZERO + i * XINCR
+# y_i = YZERO + YMULT * ( raw_i - YOFF )
+# XZERO = {XZERO:f}; XINCR = {XINCR:f}
+# YZERO = {YZERO:s}; YMULT = {YMULT:s}; YOFF = {YOFF:s}
+# XUNIT: {XUNIT:s}, YUNIT: {YUNIT:s}
+""".format(**wfmd)
+            with open(fn, 'w') as fp:
+                fp.write(prolog)
+                for y in yraw:
+                    fp.write(str(y) + '\n')
+            self.logger.debug('raw data saved to %s', fn)
+        yvals = np.array(yraw) - float(wfmd['YOFF'])
+        yvals = float(wfmd['YZERO']) + float(wfmd['YMULT'])*yvals
+        xunit, yunit = [wfmd[k].strip('"') for k in ('XUNIT', 'YUNIT')]
+        self.logger.debug('readWFM done')
         return (yvals, xincr, xzero, xunit, yunit)
