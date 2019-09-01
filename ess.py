@@ -7,6 +7,7 @@
 
 import os
 import sys
+import re
 import json
 import logging
 import logging.config
@@ -16,17 +17,18 @@ import multiprocessing
 from datetime import datetime, timedelta
 import queue
 import shutil
+from serial import Serial, SerialException
 
 # ESS stuff
 from timer import Timer, periodic_ticker
-from modbus import Binder
+from modbus import Binder, Modbus, ModbusError
 from logger import LogHandlerRamp, LogHandlerPickle, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol
 from logger import makeDLpedestals, makeDLpedestalstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain  # , makeDLcutoff
 from logger import QueDispatch, QLogHandler
-from BME import BME, TrigDelay, PowerControl
+from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
 from UUB import uubnum2mac
 from chamber import Chamber, ESSprogram
@@ -41,11 +43,163 @@ from db import DBconnector
 VERSION = '20190717'
 
 
+class DetectUSB(object):
+    """Try to detect USB devices in devlist"""
+    re_TTYUSB = re.compile(r'ttyUSB\d+')
+    re_TTYACM = re.compile(r'ttyACM\d+')
+    re_USBTMC = re.compile(r'usbtmc(?P<tmcid>\d+)')
+    SERIALS = {
+        "BME": ('ttyUSB', 115200, None, BME.re_bmeinit),
+        "trigdelay": ('ttyUSB', 115200, None, TrigDelay.re_init),
+        "powercontrol": ('ttyUSB', 115200, None, PowerControl.re_init),
+        "power_cpx": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_cpx),
+        "power_hmp": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_hmp)}
+    TMCS = {
+        "afg": (b'*IDN?', re.compile(rb'.*AFG')),
+        "mdo": (b'*IDN?', re.compile(rb'.*MDO'))}
+
+    def __init__(self):
+        self.found = {}
+        self.failed = []
+        devfiles = os.listdir('/dev')
+        self.devices = {
+            'ttyUSB': ['/dev/' + f for f in devfiles
+                       if DetectUSB.re_TTYUSB.match(f)],
+            'ttyACM': ['/dev/' + f for f in devfiles
+                       if DetectUSB.re_TTYACM.match(f)],
+            'usbtmc': list(filter(DetectUSB.re_USBTMC.match, devfiles))}
+        self.logger = logging.getLogger('DetectUSB')
+        for devclass in ('ttyUSB', 'ttyACM', 'usbtmc'):
+            self.logger.debug('scanned %s: %s', devclass,
+                              ', '.join(self.devices[devclass]))
+
+    def detect(self, devlist, trials=3):
+        for trial in range(trials):
+            self.logger.info('detect trial %d', trial+1)
+            self._detect(devlist)
+            self.logger.debug('found: %s', ', '.join(self.found.keys()))
+            if not self.failed:
+                return self.found
+            self.logger.debug('trial %d finished, not found yet: %s',
+                              trial+1, ', '.join(self.failed))
+            devlist = self.failed
+        raise RuntimeError(
+            'USB devices not found: %s' % ', '.join(self.failed))
+
+    def _detect(self, devlist):
+        self.failed = []
+        for dev in ('BME', 'trigdelay', 'powercontrol',
+                    'power_cpx', 'power_hmp'):
+            if dev in devlist:
+                devclass, baudrate, cmd_id, re_resp = DetectUSB.SERIALS[dev]
+                for port in self.devices[devclass]:
+                    self.logger.debug('Detecting %s on %s @ %d',
+                                      dev, port, baudrate)
+                    if self._check_serial(port, baudrate, cmd_id, re_resp):
+                        self.found[dev] = port
+                        self.devices[devclass].remove(port)
+                        self.logger.debug('%s found at %s', dev, port)
+                        break
+                    else:
+                        self.logger.debug('%s not at %s', dev, port)
+                else:
+                    self.failed.append(dev)
+                    self.logger.debug('%s not found', dev)
+
+        for dev in DetectUSB.TMCS.keys():
+            if dev in devlist:
+                cmd_id, re_resp = DetectUSB.TMCS[dev]
+                for fn in self.devices['usbtmc']:
+                    self.logger.debug('Detecting %s as %s', dev, fn)
+                    tmcid = self._check_tmc(fn, cmd_id, re_resp)
+                    if tmcid is not None:
+                        self.found[dev] = tmcid
+                        self.devices['usbtmc'].remove(fn)
+                        self.logger.debug('%s found as %s', dev, fn)
+                        break
+                    else:
+                        self.logger.debug('%s not %s', dev, fn)
+                else:
+                    self.failed.append(dev)
+                    self.logger.debug('%s not found', dev)
+
+        if 'chamber' in devlist:  # detect Binder
+            modbus = None
+            for port in self.devices['ttyUSB']:
+                self.logger.debug('Detecting chamber on %s', port)
+                try:
+                    modbus = Modbus(port)
+                    modbus.read_holding_registers(Binder.ADDR_MODE)
+                except ModbusError:
+                    continue
+                finally:
+                    if modbus is not None:
+                        modbus.__del__()
+                self.found['chamber'] = port
+                self.devices['ttyUSB'].remove(port)
+                break
+
+        if 'flir' in devlist:  # detect FLIR
+            flir = None
+            for port in self.devices['ttyUSB']:
+                self.logger.debug('Detecting flir on %s', port)
+                try:
+                    flir = FLIR(port, None, None, None)
+                    self.found['flir'] = port
+                    self.devices['ttyUSB'].remove(port)
+                    self.logger.debug('flir found at %s', port)
+                    flir.__del__()
+                    break
+                except SerialReadTimeout:
+                    if flir is not None:
+                        flir.__del__()
+                        flir = None
+                    self.logger.debug('flir not at %s', port)
+            else:
+                self.failed.append('flir')
+                self.logger.debug('flir not found')
+
+    def _check_serial(self, port, baudrate, cmd_id, re_resp):
+        ser = None
+        try:
+            ser = Serial(port, baudrate,
+                         bytesize=8, parity='N', stopbits=1, timeout=0.5)
+            if cmd_id is not None:
+                ser.write(cmd_id)
+            readSerRE(ser, re_resp, timeout=2.0, logger=self.logger)
+            return True
+        except (SerialReadTimeout, SerialException, OSError):
+            return False
+        except Exception:
+            self.logger.exception('_check_serial %s', port)
+            return False
+        finally:
+            if ser is not None:
+                ser.close()
+
+    def _check_tmc(self, fn, cmd_id, re_resp):
+        fd = None
+        try:
+            fd = os.open('/dev/' + fn, os.O_RDWR)
+            os.write(fd, cmd_id)
+            resp = os.read(fd, 1000)
+            self.logger.debug('read %s', repr(resp))
+            if re_resp.match(resp) is not None:
+                tmcid = int(DetectUSB.re_USBTMC.match(fn).groupdict()['tmcid'])
+                return tmcid
+        except Exception:
+            self.logger.exception('_check_tmc %s', fn)
+            return None
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+
 class ESS(object):
     """ESS process implementation"""
 
     def __init__(self, jsfn, jsdata=None):
-    """ Constructor.
+        """ Constructor.
 jsfn - file name of JSON config file
 jsdata - JSON data (str), ignored if jsfn is not None"""
         # clear conditional members to None
@@ -62,10 +216,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.essprog = None
         self.db = None
 
-        if jsfp is not None:
-            with open(jsfp, 'r') as fp:
+        if jsfn is not None:
+            with open(jsfn, 'r') as fp:
                 d = json.load(fp)
-            configfn = jsfp
+            configfn = jsfn
         elif jsdata is not None:
             d = json.loads(jsdata)
             configfn = None
@@ -91,7 +245,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             shutil.copy(configfn, self.datadir)
         else:
             with open(self.datadir + 'config.json', 'w') as fp:
-                fp.write(js)
+                fp.write(jsdata)
 
         if 'comment' in d:
             with open(self.datadir + 'README.txt', 'w') as f:
@@ -128,6 +282,28 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
         self.highgains = d.get('highgains', [2, 4, 6, 10])
         self.chans = sorted(self.lowgains+self.highgains)
+
+        # detect USB
+        # ports has priority over detected devices
+        if 'devlist' in d:
+            du = DetectUSB()
+            found = du.detect(d['devlist'])
+            if 'power_cpx' in found and 'power_hmp' in found:
+                if 'powerdev' in d:
+                    assert d['powerdev'] in ('power_hmp', 'power_cpx')
+                    found['power'] = found.pop(d['powerdev'])
+                else:
+                    raise RuntimeError(
+                        'Both power_hmp and power_cpx detected, ' +
+                        'cannot distinguish which should be used')
+            elif 'power_cpx' in found:
+                found['power'] = found.pop('power_cpx')
+            elif 'power_hmp' in found:
+                found['power'] = found.pop('power_hmp')
+            if 'ports' in d:
+                found.update(d['ports'])
+            d['ports'] = found
+            del du
 
         # power supply
         if 'power' in d and 'power' in d['ports']:
