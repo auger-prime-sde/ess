@@ -420,6 +420,7 @@ jsonobj - either json string or json file"""
         self.cmds = [(ttime, gp.cms[ttime]) for ttime in sorted(gp.cms)]
         self.flirs = [(ftime, gp.fls[ftime]) for ftime in sorted(gp.fls)]
         self.lto_touts = [(ltime, gp.lto[ltime]) for ltime in sorted(gp.lto)]
+        self.lto_touts.append((None, None))  # sentinel
         self.timepoints = {ptime: pind for pind, ptime in enumerate(gp.keys())}
 
     def _macro(self, o):
@@ -445,7 +446,7 @@ return polyline approximation at the time t"""
             self.timer.add_immediate('binder.prog', {'prog': self.prog,
                                                      'progno': self.progno})
         timestamp = None
-        ltime, lto = self.lto_touts.pop(0) if self.lto_touts else (None, None)
+        ltime, lto = self.lto_touts.pop(0)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -467,13 +468,10 @@ return polyline approximation at the time t"""
                 if dur < 0:
                     dur = None
             res = {'timestamp': timestamp, 'rel_time': dur}
-            if ltime is not None and ltime <= dur:
+            if ltime is not None and dur is not None and ltime <= dur:
                 if ltime == dur:
                     res['log_timeout'] = lto
-                if self.lto_touts:
-                    ltime, lto = self.lto_touts.pop(0)
-                else:
-                    ltime, lto = (None, None)
+                ltime, lto = self.lto_touts.pop(0)
             for name in ('meas.ramp', 'meas.noise', 'meas.pulse', 'meas.freq'):
                 if name in flags:
                     mname = name.split('.')[1]
