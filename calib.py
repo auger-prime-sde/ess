@@ -7,30 +7,108 @@ import sys
 import os
 import json
 import logging
+import shutil
 from datetime import datetime
 from time import sleep
 import numpy as np
+
 # ESS stuff
 from afg import AFG
-from BME import TrigDelay, PowerControl
+from BME import PowerControl
 from mdo import MDO
 from UUB import gener_funcparams
 from dataproc import item2label, SplitterGain
 from hsfitter import HalfSineFitter, SineFitter
 
-VERSION = "20190516"
+VERSION = "20190901"
 
-try:
-    with open(sys.argv[1], 'r') as fp:
-        d = json.load(fp)
-except (IndexError, IOError, ValueError):
-    print("Usage: %s <JSON config file>" % sys.argv[0])
-    raise
-
-# timeouts
+# timeouts & constants
 TOUT_PREP = 0.4   # delay between afg setting and trigger in s
 TOUT_DAQ = 0.1    # timeout between trigger and oscilloscope readout
-MINVOLTSCALE = 0.005  # minimal voltage scale on MDO [V]
+MINVOLTSCALE = 0.001  # minimal voltage scale on MDO [V]
+
+
+def mdoSetVert(splitmode, volt_pp, mdo, splitgain, offsets, logger):
+    """Set optimal MDO vertical scale and offset for each channel"""
+    NDIV = 6.0  # number of divisions for volt_pp
+    lsb = []
+    for mdoch, splitch in splitgain.mdomap.items():
+        amplif = splitgain.gainMDO(splitmode, mdoch)
+        scale = volt_pp * amplif / NDIV
+        offset = offsets[(splitch, splitmode)] - scale * NDIV/2
+        if scale < MINVOLTSCALE:
+            scale = MINVOLTSCALE
+        mdo.send('CH%d:SCALE %f' % (mdoch, scale))
+        # read back scale, there is 25 dig. levels per div on 1B
+        resp = mdo.send('CH%d:SCALE?' % mdoch, resplen=20)
+        scale = float(resp)
+        lsb.append('%s: %f' % (splitch, scale/25))
+        mdo.send('CH%d:OFFSET %f' % (mdoch, offset))
+    logger.info('LSBs set by SCALE [mV]: %s', ', '.join(lsb))
+
+
+def calibOffsets(mdo, afg, pc, mdomap, fp, formstr, logger):
+    """Find offset value and noise, write results to file
+return dict {splitch: offset value}"""
+    INITSCALE = 0.04  # offset must be in <-5*INITSCALE, 5*INITSCALE>, [volt]
+    offsets = {(splitch, splitmode): None for splitch in mdomap.values()
+               for splitmode in (0, 1, 3)}
+    logger.info('Offset calibration, coarse estimation LSB: %f V', INITSCALE)
+    for splitmode in (0, 1, 3):
+        pc.splitterMode(splitmode)
+        for mdoch in mdomap.keys():
+            mdo.send('CH%d:OFFSET 0.0' % mdoch)
+            mdo.send('CH%d:SCALE %f' % (mdoch, INITSCALE))
+        sleep(TOUT_PREP)
+        trigger()
+        sleep(TOUT_DAQ)
+        # readout coarse offset + noise and set
+        for mdoch, splitch in mdomap.items():
+            res = mdo.readWFM(mdoch)
+            offset = np.mean(res[0])
+            std = np.std(res[0])
+            logger.debug('%s:%d coarse read offset: %.6f V, noise %.6f V',
+                         splitch, splitmode, offset, std)
+            mdo.send('CH%d:OFFSET %f' % (mdoch, offset))
+            resp = mdo.send('CH%d:OFFSET?' % mdoch, resplen=20)
+            offset = float(resp)
+            if std < MINVOLTSCALE:
+                std = MINVOLTSCALE
+            mdo.send('CH%d:SCALE %f' % (mdoch, std))
+            resp = mdo.send('CH%d:SCALE?' % mdoch, resplen=20)
+            std = float(resp)
+            logger.debug(
+                '%s:%d fine set: offset %.5f V, scale %.5f V, LSB %.2f mV',
+                splitch, splitmode, offset, std, std / 25 * 1000)
+            offsets[(splitch, splitmode)] = offset
+        # fine readout
+        sleep(TOUT_PREP)
+        trigger()
+        sleep(TOUT_DAQ)
+        for mdoch, splitch in mdomap.items():
+            res = mdo.readWFM(mdoch)
+            offset = 1000 * np.mean(res[0])  # in mV
+            noise = 1000 * np.std(res[0])    # in mV
+            logger.debug('%s:%d fine read offset: %.3f mV, noise %.3f mV',
+                         splitch, splitmode, offset, noise)
+            fp.write(formstr.format(splitch=splitch, splitmode=splitmode,
+                                    offset=offset, noise=noise))
+    return offsets
+
+
+try:
+    jsfn = sys.argv[1]
+    with open(jsfn, 'r') as fp:
+        d = json.load(fp)
+    # replace MDO channels from command line
+    _mdochans = sys.argv[2:]
+    _nch = len(_mdochans)
+    assert _nch <= 4
+    if _nch > 0:
+        d['mdochans'][:_nch] = _mdochans
+except (IndexError, IOError, ValueError, AssertionError):
+    print("Usage: %s <JSON config file> [<MDO channels>]" % sys.argv[0])
+    raise
 
 dt = datetime.now()
 datadir = dt.strftime(d.get('datadir', './'))
@@ -38,6 +116,7 @@ if datadir[-1] != os.sep:
     datadir += os.sep
 if not os.path.isdir(datadir):
     os.makedirs(datadir)
+shutil.copy(jsfn, datadir)
 
 if 'comment' in d:
     with open(datadir + 'README.txt', 'w') as f:
@@ -55,17 +134,19 @@ if 'logging' in d:
 logger = logging.getLogger('calib')
 
 
-td_predefined = d.get('trigdelay', {'P': 0, 'F': 30})
-td = TrigDelay(d['ports']['trigdelay'], td_predefined)
+# triggering: either TrigDelay or AFG (with dataslice adjusted)
+# td_predefined = d.get('trigdelay', {'P': 0, 'F': 30})
+# td = TrigDelay(d['ports']['trigdelay'], td_predefined)
+# trigger = TrigDelay.trigger
 pc = PowerControl(d['ports']['powercontrol'], None, None, [None]*10)
 afgparams = d.get('afgparams', {})
 afg = AFG(tmcid=d['usbtmc']['afg'], **afgparams)
+trigger = afg.trigger
 afg_chans = [i for i, gain in enumerate(afg.param['gains'])
              if gain is not None]
 
 mdo = MDO(tmcid=d['usbtmc']['mdo'])
 mdochans = d.get('mdochans')
-ref = mdochans.index('REF') if 'REF' in mdochans else None
 try:
     trig = mdochans.index('TRIG')
     mdochans[trig] = None
@@ -77,16 +158,23 @@ splitgain = SplitterGain(pregains=afg.param['gains'], mdochans=mdochans)
 
 for item in d['setup_mdo']:
     mdo.send(item.format(TRIG=trig+1))
-for CH, splitch in splitgain.mdomap.iteritems():
+for CH, splitch in splitgain.mdomap.items():
     for item in d['setup_mdoch']:
         mdo.send(item.format(CH=CH))
+if 'mdo_delays' in d:
+    mdo_delays = {}
+    for functype in 'P', 'F':
+        mdo_delays[functype] = d['mdo_delays'].get(functype, 20.0)
+else:
+    mdo_delays = {'P': 20.0, 'F': 20.0}
 
 generF = [rec[2] for rec in gener_funcparams() if rec[1] == 'F'][0]
 generP = [rec[2] for rec in gener_funcparams() if rec[1] == 'P'][0]
 
 dataslice = d.get('dataslice')
-dataslice_max = (min([ds[0] for ds in dataslice.itervalues()]),
-                 max([ds[1] for ds in dataslice.itervalues()]), 1)
+dataslice_max = (min([ds[0] for ds in dataslice.values()]),
+                 max([ds[1] for ds in dataslice.values()]), 1)
+mdo.send('DATA:START %d; STOP %d' % (dataslice_max[0]+1, dataslice_max[1]))
 FREQs = {'hr': 2500., 'lr': 125.}
 nharm = d.get('nharm', 1)
 npoly = d.get('npoly', 1)
@@ -96,7 +184,7 @@ hsf = {}
 for resol in ('hr', 'lr'):
     if 'freq_' + resol in dataslice:
         start, stop, step = dataslice['freq_' + resol]
-        N = (stop - start)/step
+        N = (stop - start) // step
         sf[resol] = SineFitter(N=N, FREQ=FREQs[resol],
                                NHARM=nharm, NPOLY=npoly)
         sf[resol].crop = False
@@ -105,7 +193,7 @@ for resol in ('hr', 'lr'):
 
     if 'pulse_' + resol in dataslice:
         start, stop, step = dataslice['pulse_' + resol]
-        N = (stop - start)/step
+        N = (stop - start) // step
         if N & (N-1):   # not a power of 2
             logger.warning('N for pulse_%s (%d) not power of 2', resol, N)
         hsf[resol] = HalfSineFitter(hswidth, N=N, FREQ=FREQs[resol],
@@ -119,22 +207,23 @@ if any(hsf):
     prolog = """\
 # calibration of splitter by pulses
 # {dt:%Y-%m-%d}
-# columns: splitch | resol | splitmode | Pvoltage[V] |
+# columns: splitch | resol | splitmode | Pvoltage[V] | index |
 #          ampli[V] | pede[V] | chi[V]
 """.format(dt=dt)
     datapulses.write(prolog)
     logdata = ['{splitch:3s}', '{resol:2s}',
-               '{splitmode:1d}', '{voltage:3.1f}',
+               '{splitmode:1d}', '{voltage:3.1f}', '{index:03d}',
                '{ampli:7.5f}', '{pede:8.5f}', '{chi:7.5f}']
     datapulses_formstr = '  '.join(logdata) + '\n'
-    fitpulses = {splitch: [] for splitch in splitgain.mdomap.itervalues()}
+    fitpulses = {splitch: [] for splitch in splitgain.mdomap.values()}
 
 if any(sf):
     datafreqs = open(datadir + 'datafreqs.txt', 'a')
     prolog = """\
 # calibration of splitter by sines
 # {dt:%Y-%m-%d}
-# columns: splitch | resol | flabel | freq[MHz] | splitmode | Fvoltage[V] |
+# columns: splitch | resol | flabel | freq[MHz] |
+#          splitmode | Fvoltage[V] | index |
 #          ampli[V] | chi[V] | <params>
 # params: cos/sin coeffs[V]: n*omega, n = 1..{nharm:d}
 #         vandermont coeffs: x**k, k = 0..{npoly:d}
@@ -142,46 +231,59 @@ if any(sf):
 """.format(dt=dt, nharm=nharm, npoly=npoly)
     datafreqs.write(prolog)
     logdata = ['{splitch:2s}', '{resol:2s}',
-               '{flabel:3s}', '{freq:6.2f}', '{splitmode:1d}',
-               '{voltage:3.1f}', '{ampli:7.5f}', '{chi:7.5f}']
+               '{flabel:3s}', '{freqm:6.2f}', '{splitmode:1d}',
+               '{voltage:3.1f}', '{index:03d}',
+               '{ampli:7.5f}', '{chi:7.5f}']
     datafreqs_formstr = '  '.join(logdata)
-    fitfreqs = {splitch: [] for splitch in splitgain.mdomap.itervalues()}
+    fitfreqs = {splitch: [] for splitch in splitgain.mdomap.values()}
 
+foff = open(datadir + 'offsets.txt', 'a')
+prolog = """\
+# offsets + noise with no AFG input
+# {dt:%Y-%m-%d}
+# columns: splitch | splitmode | offset [mV] | noise [mV]
+""".format(dt=dt)
+foff.write(prolog)
+foff_formstr = "{splitch:2s} {splitmode:1d}  {offset:7.3f}  {noise:5.3f}\n"
+
+mdo.send('ACQUIRE:STATE ON')
+afg.switchOn(False, afg_chans)
+offsets = calibOffsets(mdo, afg, pc, splitgain.mdomap,
+                       foff, foff_formstr, logger)
+foff.close()
 
 # data acquisition - pulses
 if 'P' in d['daqparams'] and any(hsf):
-    td.delay = 'P'
+    # td.delay = 'P'
+    logger.info('Pulse measurement')
+    mdo.send('HORIZONTAL:POSITION %f' % mdo_delays['P'])
     afg.setParams(functype='P')
     afg.switchOn(True, afg_chans)
     for afg_dict, item_dict in generP(**d['daqparams']['P']):
-        afg.setParams(**afg_dict)
-        if 'splitmode' in item_dict:
-            splitmode = item_dict['splitmode']
-            pc.splitterMode(splitmode)
-        else:
-            splitmode = None
-        # set optimal MDO vertical scale for each channel
-        for mdoch in splitgain.mdomap.iterkeys():
-            amplif = splitgain.gainMDO(splitmode, mdoch)
-            scale = item_dict['voltage'] * amplif / 6.0
-            if scale < MINVOLTSCALE:
-                scale = MINVOLTSCALE
-            mdo.send('CH%d:SCALE %f' % (mdoch, scale))
-        mdo.send('ACQUIRE:STATE ON')
-        sleep(TOUT_PREP)
-        afg.trigger()
+        if afg_dict is not None:
+            afg.setParams(**afg_dict)
+            if 'splitmode' in item_dict:
+                splitmode = item_dict['splitmode']
+                pc.splitterMode(splitmode)
+            else:
+                splitmode = None
+            mdoSetVert(pc.splitterMode(), item_dict['voltage'], mdo, splitgain,
+                       offsets, logger)
+            sleep(TOUT_PREP)
+        trigger()
         logger.debug('trigger sent')
         sleep(TOUT_DAQ)
-        for mdoch, splitch in splitgain.mdomap.iteritems():
-            res = mdo.readWFM(mdoch, dataslice_max)
+        for mdoch, splitch in splitgain.mdomap.items():
             fname = datadir + item2label(item_dict, splitch=splitch) + '.txt'
-            logger.info('saving %s', fname)
-            np.savetxt(fname, res[0])
+            res = mdo.readWFM(mdoch, fn=fname)
+            # logger.info('saving %s', fname+'.txt')
+            # np.savetxt(fname, res[0], fmt='%8.5f')
+            # logger.debug('saved')
             for resol in ('hr', 'lr'):
                 if not hsf[resol]:
                     continue
                 start, stop, step = dataslice['pulse_' + resol]
-                N = (stop - start)/step
+                N = (stop - start) // step
                 yall = res[0][start:stop:step].reshape((N, 1))
                 resfit = hsf[resol].fit(yall, HalfSineFitter.CHI)
                 ampli = resfit['ampli'][0]
@@ -189,60 +291,67 @@ if 'P' in d['daqparams'] and any(hsf):
                     splitch=splitch, resol=resol, ampli=ampli,
                     pede=resfit['pede'][0], chi=resfit['chi'][0], **item_dict))
                 eV = splitgain.gainMDO(splitmode, mdoch)*item_dict['voltage']
-                fitpulses[splitch].append((resol, eV, ampli))
+                fitpulses[splitch].append((resol, splitmode, eV, ampli))
     afg.switchOn(False, afg_chans)
+datapulses.close()
 
 # data acquisition - freqs
 if 'F' in d['daqparams'] and any(sf):
-    td.delay = 'F'
+    # td.delay = 'F'
+    logger.info('Frequency measurement')
+    mdo.send('HORIZONTAL:POSITION %f' % mdo_delays['F'])
     afg.setParams(functype='F')
     afg.switchOn(True, afg_chans)
     for afg_dict, item_dict in generF(**d['daqparams']['F']):
-        afg.setParams(**afg_dict)
-        freq, flabel = item_dict['freq'], item_dict['flabel']
-        if 'splitmode' in item_dict:
-            splitmode = item_dict['splitmode']
-            pc.splitterMode(splitmode)
-        else:
-            splitmode = None
-        # set optimal MDO vertical scale for each channel
-        for mdoch in splitgain.mdomap.iterkeys():
-            amplif = splitgain.gainMDO(splitmode, mdoch)
-            scale = 2 * item_dict['voltage'] * amplif / 6.0
-            if scale < MINVOLTSCALE:
-                scale = MINVOLTSCALE
-            mdo.send('CH%d:SCALE %f' % (mdoch, scale))
-        mdo.send('ACQUIRE:STATE ON')
-        sleep(TOUT_PREP)
-        afg.trigger()
+        if afg_dict is not None:
+            afg.setParams(**afg_dict)
+            freq, flabel = item_dict['freq'], item_dict['flabel']
+            if afg_dict is not None:
+                if 'splitmode' in item_dict:
+                    splitmode = item_dict['splitmode']
+                    pc.splitterMode(splitmode)
+                else:
+                    splitmode = None
+                mdoSetVert(pc.splitterMode(), 2*item_dict['voltage'], mdo,
+                           splitgain, offsets, logger)
+                sleep(TOUT_PREP)
+        trigger()
         logger.debug('trigger sent')
         sleep(TOUT_DAQ)
-        for mdoch, splitch in splitgain.mdomap.iteritems():
-            res = mdo.readWFM(mdoch, dataslice_max)
+        for mdoch, splitch in splitgain.mdomap.items():
             fname = datadir + item2label(item_dict, splitch=splitch) + '.txt'
-            logger.info('saving %s', fname)
-            np.savetxt(fname, res[0])
+            res = mdo.readWFM(mdoch, fn=fname)
+            # logger.info('saving %s', fname+'.txt')
+            # np.savetxt(fname, res[0], fmt='%8.5f')
+            # logger.debug('saved')
             for resol in ('hr', 'lr'):
                 if not hsf[resol]:
                     continue
                 start, stop, step = dataslice['freq_' + resol]
-                N = (stop - start)/step
+                N = (stop - start) // step
+                logger.debug('reshape')
                 yall = res[0][start:stop:step].reshape((N, 1))
+                logger.debug('sine fitter, %s, splitmode %d, %.2fMHz, %.1fV',
+                             resol, splitmode, freq/1e6, item_dict['voltage'])
                 resfit = sf[resol].fit(yall, flabel, freq, SineFitter.CHI)
+                logger.debug('sine fit done')
                 ampli = resfit['ampli'][0]
                 datafreqs.write(datafreqs_formstr.format(
-                    splitch=splitch, resol=resol,
-                    flabel=flabel, freq=1e-6*freq,
-                    splitmode=item_dict['splitmode'],
-                    voltage=item_dict['voltage'],
-                    ampli=ampli, chi=resfit['chi'][0]))
+                    splitch=splitch, resol=resol, freqm=1e-6*freq,
+                    ampli=ampli, chi=resfit['chi'][0], **item_dict))
                 params = resfit['param'].flatten('C').tolist()
                 datafreqs.write('  ' + ' '.join(['%9.6f' % par
                                                  for par in params]))
                 datafreqs.write('\n')
                 eV = splitgain.gainMDO(splitmode, mdoch)*item_dict['voltage']
-                fitfreqs[splitch].append((resol, eV, 'f'+flabel, ampli))
+                fitfreqs[splitch].append(
+                    (resol, splitmode, eV, 'f'+flabel, ampli))
     afg.switchOn(False, afg_chans)
+datafreqs.close()
+
+mdo.send('ACQUIRE:STATE OFF')
+afg.stop()
+mdo.stop()
 
 # epilog
 if any(hsf):

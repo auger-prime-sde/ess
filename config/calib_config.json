@@ -1,5 +1,5 @@
 {
-  "datadir": "calibration/calib-%Y%m%d/",
+  "datadir": "calibration/splitter1-%Y%m%d/",
   "logging": {
     "level": 10,
     "format": "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
@@ -8,22 +8,22 @@
     "afg": 1,
     "mdo": 2},
   "ports": {
-    "trigdelay": "/dev/ttyUSB2",
-    "powercontrol": "/dev/ttyUSB0" },
-  "trigdelay": { "P": 0, "F": 30 },
+    "powercontrol": "/dev/ttyUSB3" },
   "afgparams": { "gains": [2.0, null]},
   "daqparams": {
     "F": {
       "freqs": [60e3, 100e3, 300e3, 1.0e6, 3.0e6,
 		10e6, 20e6, 30e6, 40e6, 51e6, 59e6, 70e6, 80e6, 90e6],
       "splitmodes": [0, 1],
-      "voltages": [0.1, 0.8]},
+      "voltages": [0.1, 0.3, 0.8],
+      "count": 10},
     "P": {
       "splitmodes": [0, 3],
-      "voltages": [0.2, 0.4, 1.0, 1.6]}
+      "voltages": [0.1, 0.2, 0.4, 0.8, 1.6],
+      "count": 10}
   },
-  "mdochans": ["A0", "B0", "F0", "TRIG"],
-  "setup_mdo": ["ACQUIRE:STOPAFTER SEQUENCE",
+  "mdochans": [null, null, null, "TRIG"],
+  "setup_mdo": ["ACQUIRE:STOPAFTER RUNSTOP",
 		"ACQUIRE:MODE SAMPLE",
 		"TRIGGER:A:MODE NORMAL",
 		"TRIGGER:A:TYPE EDGE",
@@ -33,18 +33,17 @@
 		"TRIGGER:A:LEVEL:CH{TRIG:d} TTL",
 		"CH{TRIG:d}:TERMINATION FIFTY",
 		"HORIZONTAL:DELAY:MODE OFF",
-		"HORIZONTAL:POSITION 20",
 		"HORIZONTAL:SCALE 4e-6",
-		"HORIZONTAL:RECORDLENGTH 100000",
-		"DATA:START 1",
-		"DATA:STOP 100000"
+		"HORIZONTAL:RECORDLENGTH 100000"
 	       ],
-  "setup_mdoch": ["CH{CH:d}:POSITION 3.0",
+  "setup_mdoch": ["CH{CH:d}:POSITION 0.0",
 		  "CH{CH:d}:TERMINATION FIFTY" ],
+  "mdo_delays": {"P": 15.0, "F": 1.0},
   "dataslice": {
     "pulse_hr": [0, 65536, 1],
     "pulse_lr": [6100, 47060, 20],
     "freq_hr": [5250, 47910, 1],
     "freq_lr": [5250, 47910, 20]},
-  "nharm": 4
+  "nharm": 1,
+  "npoly": 0
 }
