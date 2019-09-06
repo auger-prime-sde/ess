@@ -162,11 +162,13 @@ uub - UUBmeas or UUBtsc (must have ip and logger attributes)
             # uub.logger.debug('s.connect')
             s.connect(addr)
             # uub.logger.debug('s.close')
+            # s.shutdown(socket.SHUT_RD)
             s.close()
             res = True
             break
         except (socket.timeout, socket.error):
             # uub.logger.debug('socket.timeout/error')
+            # s.shutdown(socket.SHUT_RD)
             s.close()
             if datetime.now() > exptime:
                 res = False
@@ -233,15 +235,19 @@ q_resp - queue to send response
         self.ip = uubnum2ip(uubnum)
         self.serial = None
         self.TIMEOUT = 5
+        self.TRIALS = 3  # number of trials to read internal SN
         self.logger = logging.getLogger('UUB-%04d' % uubnum)
         self.logger.info('UUBtsc created, IP %s.', self.ip)
 
     def run(self):
         self.logger.debug('Waiting for UUB being live')
         while self.serial is None:
-            s = self.readSerialNum(self.TIMEOUT)
+            s = self.readSerialNum(self.TIMEOUT, self.TRIALS)
             if s is None:
                 self.logger.debug('UUB not live yet, next try')
+            elif s is False:
+                self.logger.error('Cannot read internal SN')
+                break
             else:
                 self.serial = s
                 dt = datetime.now().replace(microsecond=0)
@@ -286,7 +292,7 @@ q_resp - queue to send response
                     self.logger.debug('HTTP connection closed')
             self.q_resp.put(res)
 
-    def readSerialNum(self, timeout=None):
+    def readSerialNum(self, timeout=None, trials=1):
         """Read UUB serial number
 Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
         re_sernum = re.compile(r'.*SN: (?P<sernum>' +
@@ -296,19 +302,25 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
         if timeout is not None and not isLive(self, timeout):
             return None
         self.logger.debug('Reading UUB serial number')
-        conn = http.client.HTTPConnection(self.ip, HTTPPORT)
-        try:
-            # self.logger.debug('sending conn.request')
-            conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
-            # self.logger.debug('conn.getresponse')
-            resp = conn.getresponse().read().decode('ascii')
-            # self.logger.debug('re_sernum')
-            res = re_sernum.match(resp).groupdict()['sernum']
-            # self.logger.debug('breaking')
-        except (http.client.CannotSendRequest, socket.error, AttributeError):
-            conn.close()
-            return None
-        conn.close()
+        while trials > 0:
+            conn = http.client.HTTPConnection(self.ip, HTTPPORT)
+            try:
+                # self.logger.debug('sending conn.request')
+                conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
+                # self.logger.debug('conn.getresponse')
+                resp = conn.getresponse().read().decode('ascii')
+                # self.logger.debug('re_sernum')
+                res = re_sernum.match(resp).groupdict()['sernum']
+                # self.logger.debug('breaking')
+            except AttributeError:
+                res = False
+            except (http.client.CannotSendRequest, socket.error):
+                res = None
+            finally:
+                conn.close()
+            if res is not None and res != False:
+                break
+            trials -= 1
         return res
 
     def readZynqTemp(self, conn):
@@ -352,9 +364,9 @@ return dictionary: sc<uubnum>_<variable>: value
 
 class UUBdaq(threading.Thread):
     """Thread managing data acquisition from UUBs"""
-    TOUT_PREP = 0.1   # delay between afg setting and trigger in s
+    TOUT_PREP = 0.2   # delay between afg setting and trigger in s
     TOUT_RAMP = 0.05  # delay between setting ADC ramp and trigger in s
-    TOUT_DAQ = 0.2    # timeout between trigger and UUBlisten cancel
+    TOUT_DAQ = 0.1    # timeout between trigger and UUBlisten cancel
 
     def __init__(self, timer, ulisten, q_resp,
                  afg, splitmode, trigdelay, trigger,
@@ -469,7 +481,8 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         self.port = DATAPORT
         self.laddr = LADDR
         self.PACKETSIZE = 1500
-        self.SLEEPTIME = 0.001  # timeout for checking active event
+        self.RCVBUF = 1000000  # size of UDP socket recv buffer in bytes
+        self.SLEEPTIME = 0.01  # timeout for checking active event
         self.NPOINT = 2048    # number of measured points
         self.details = None
         self.uubnums = set()  # UUBs to monitor
@@ -483,12 +496,14 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         logger = logging.getLogger('UUBlisten')
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((self.laddr, self.port))
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.RCVBUF)
         self.sock.settimeout(self.SLEEPTIME)
         logger.info("Listening on %s:%d", self.laddr, self.port)
         while not self.stop.is_set():
             try:
                 data, addr = self.sock.recvfrom(self.PACKETSIZE)
             except socket.timeout:
+                # logger.debug('socket timeout')
                 continue
             finally:
                 if self.clear:

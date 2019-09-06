@@ -204,6 +204,7 @@ offset - an offset to basetime (seconds)
                 self.logger.info('timer self stop')
                 if self.timerstop is not None:
                     self.timerstop.set()
+                sleep(1.0)   # let other threads process eventual newflags
                 self._clear()
                 zTimerStop = False
         self.logger.info('timer.run finished')

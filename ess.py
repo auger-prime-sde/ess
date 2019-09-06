@@ -261,12 +261,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     kwargs['filename'] = self.datadir + kwargs['filename']
             logging.basicConfig(**kwargs)
 
-        self.basetime = dt
-        self.timer = Timer(dt)
-        # event to stop
-        self.timer.timerstop = self.timerstop = threading.Event()
-        self.timer.start()
-
         # queues
         self.q_ndata = multiprocessing.Queue()
         self.q_dpres = multiprocessing.Queue()
@@ -282,6 +276,27 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
         self.highgains = d.get('highgains', [2, 4, 6, 10])
         self.chans = sorted(self.lowgains+self.highgains)
+
+        # start DataProcessors before anything is logged, otherwise child
+        # processes may lock at acquiring lock to existing log handlers
+        dp_ctx = {'q_ndata': self.q_ndata,
+                  'q_resp': self.q_dpres,
+                  'q_log': self.q_log,
+                  'datadir': self.datadir,
+                  'lowgains': self.lowgains, 'chans': self.chans}
+        if 'afg' in d:
+            afgkwargs = d["afg"]
+            dp_ctx['hswidth'] = afgkwargs.get('hswidth', AFG.PARAM['hswidth'])
+        else:
+            afgkwargs = {}
+        self.n_dp = d.get('n_dp', multiprocessing.cpu_count() - 2)
+        self.dataprocs = [multiprocessing.Process(
+            target=DataProcessor, name='DP%d' % i, args=(dp_ctx, ))
+                          for i in range(self.n_dp)]
+        for dp in self.dataprocs:
+            dp.start()
+        self.qdispatch = QueDispatch(self.q_dpres, self.q_resp, zLog=False)
+        self.qdispatch.start()
 
         # detect USB
         # ports has priority over detected devices
@@ -304,6 +319,13 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 found.update(d['ports'])
             d['ports'] = found
             del du
+
+        # timer
+        self.basetime = dt
+        self.timer = Timer(dt)
+        # event to stop
+        self.timer.timerstop = self.timerstop = threading.Event()
+        self.timer.start()
 
         # power supply
         if 'power' in d and 'power' in d['ports']:
@@ -339,8 +361,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # AFG
         if 'afg' in d:
-            kwargs = d.get("afg", {})
-            self.afg = AFG(**kwargs)
+            self.afg = AFG(**afgkwargs)
 
         # Trigger
         if 'trigger' in d:
@@ -390,23 +411,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                        for uubnum in self.uubnums}
         for uub in self.uubtsc.values():
             uub.start()
-
-        # data processing
-        dp_ctx = {'q_ndata': self.q_ndata,
-                  'q_resp': self.q_dpres,
-                  'q_log': self.q_log,
-                  'datadir': self.datadir,
-                  'lowgains': self.lowgains, 'chans': self.chans}
-        if self.afg is not None:
-            dp_ctx['hswidth'] = self.afg.param['hswidth']
-        self.n_dp = d.get('n_dp', multiprocessing.cpu_count() - 2)
-        self.dataprocs = [multiprocessing.Process(
-            target=DataProcessor, name='DP%d' % i, args=(dp_ctx, ))
-                          for i in range(self.n_dp)]
-        for dp in self.dataprocs:
-            dp.start()
-        self.qdispatch = QueDispatch(self.q_dpres, self.q_resp, zLog=False)
-        self.qdispatch.start()
 
         # tickers
         if 'meas.thp' in d['tickers']:

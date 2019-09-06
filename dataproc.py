@@ -88,7 +88,7 @@ channels: [A-F][0-9] ... splitter, on AFG chan A
         else:
             self.uubnums = [None] * 10
         if calibration is not None:
-            self.calibration = json.load(file(calibration))
+            self.calibration = json.load(open(calibration, 'r'))
         else:
             self.calibration = {}
 
