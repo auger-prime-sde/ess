@@ -77,8 +77,7 @@ kwargs - parameters for output voltage/current limit configuration
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
-                self.logger.info('Timer stopped, quitting PowerSupply.run()')
-                return
+                break
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if 'power' in flags:
@@ -88,7 +87,7 @@ kwargs - parameters for output voltage/current limit configuration
                 self.q_resp.put({'timestamp': timestamp,
                                  'ps_u': voltage,
                                  'ps_i': current})
-        self.stop()
+        self.logger.info('run finished')
 
     def config(self, **kwargs):
         """Configuration of output paramters
@@ -233,7 +232,6 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
         return (voltage, current)
 
     def stop(self):
-        self.logger.info('Closing serial')
         try:
             self.ser.close()
         except Exception:

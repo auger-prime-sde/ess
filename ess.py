@@ -24,7 +24,7 @@ from timer import Timer, periodic_ticker
 from modbus import Binder, Modbus, ModbusError
 from logger import LogHandlerRamp, LogHandlerPickle, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol
-from logger import makeDLpedestals, makeDLpedestalstat
+from logger import makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain  # , makeDLcutoff
 from logger import QueDispatch, QLogHandler
@@ -446,7 +446,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         dpfilter_cutoff = None
         dpfilter_ramp = None
         dpfilter_stat_pede = None
-        dpfilter_stat_pedesig = None
+        dpfilter_stat_noise = None
         # temperature
         if d['dataloggers'].get('temperature', False):
             self.dl.add_handler(
@@ -467,11 +467,12 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 if dpfilter_stat_pede is None:
                     dpfilter_stat_pede = make_DPfilter_stat('pede')
                 if dpfilter_stat_pedesig is None:
-                    dpfilter_stat_pedesig = make_DPfilter_stat('pedesig')
+                    dpfilter_stat_noise = make_DPfilter_stat('noise')
                 for uubnum in self.uubnums:
-                    self.dl.add_handler(makeDLpedestalstat(self, uubnum),
-                                        (dpfilter_stat_pede,
-                                         dpfilter_stat_pedesig))
+                    self.dl.add_handler(makeDLstat(self, uubnum, 'pede'),
+                                        (dpfilter_stat_pede, ))
+                    self.dl.add_handler(makeDLstat(self, uubnum, 'noise'),
+                                        (dpfilter_stat_noise, ))
 
         # amplitudes of halfsines
         if 'ampli' in d['dataloggers']:
@@ -586,9 +587,14 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.q_ndata.put(None)
         if self.q_dpres is not None:
             self.q_dpres.put(None)
-        # close connections to AFG,
         if self.afg is not None:
             self.afg.stop()
+        if self.td is not None:
+            self.td.stop()
+        # stop RPiTrigger
+        if (self.trigger is not None and
+            isinstance(self.trigger.__self__, RPiTrigger)):
+            self.trigger.__self__.stop()
         # join all threads
         self.timer.join()
         self.qlistener.stop()
@@ -620,7 +626,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 def Pretest(jsfn, uubnum):
     """Wrap for ESS with uubnum"""
     subst = {'UUBNUM': uubnum,
-             'UUBNUMSTR': '%04d' % uubnum,
+             'UUBNSTR': '%04d' % uubnum,
              'MACADDR': uubnum2mac(uubnum)}
     with open(jsfn, 'r') as fp:
         js = fp.read()

@@ -46,7 +46,6 @@ class MDO(object):
         self.setParams(**params)
 
     def stop(self):
-        self.logger.info('closing')
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None

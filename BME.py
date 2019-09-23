@@ -58,7 +58,7 @@ class BME(threading.Thread):
                             rb' +(?P<press2>\d+(\.\d*)?)[\r\n]*',
                             re.DOTALL)
 
-    def __init__(self, port, timer, q_resp, timesync=False):
+    def __init__(self, port, timer=None, q_resp=None, timesync=False):
         """Constructor.
 port - serial port to connect
 timer - instance of timer
@@ -92,7 +92,6 @@ timesync - sync Arduino time
         self.ser = s
 
     def stop(self):
-        self.logger.info('Closing serial')
         try:
             self.ser.close()
         except Exception:
@@ -106,6 +105,9 @@ timesync - sync Arduino time
         pass
 
     def run(self):
+        if self.timer is None or self.q_resp is None:
+            self.logger.error('timer and q_resp instance not provided, exiting')
+            return
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -129,7 +131,7 @@ timesync - sync Arduino time
                 for k, v in d.items():
                     res['bme_'+k] = float(v)
                 self.q_resp.put(res)
-        self.stop()
+        self.logger.info('Run finished')
 
 
 class TrigDelay(object):
@@ -162,7 +164,12 @@ predefined - dict functype: delay with predefined values """
         self.predefined = predefined if predefined is not None else {}
 
     def __del__(self):
-        self.ser.close()
+        self.stop()
+
+    def stop(self):
+        if self.ser is not None:
+            self.ser.close()
+            self.ser = None
 
     @property
     def delay(self):
@@ -204,7 +211,8 @@ class PowerControl(threading.Thread):
     re_readrelay = re.compile(rb'.*?([01]{10})\s*OK', re.DOTALL)
     NCHANS = 10   # number of channel
 
-    def __init__(self, port, timer, q_resp, uubnums, splitmode=None):
+    def __init__(self, port, timer=None, q_resp=None, uubnums=[None]*10,
+                 splitmode=None):
         """Constructor
 port - serial port to connect
 timer - instance of timer
@@ -283,12 +291,13 @@ return tuple of two list: (uubsOn, uubsOff)"""
                 for s in PowerControl.re_readcurr.match(resp).groups()]
 
     def run(self):
+        if self.timer is None or self.q_resp is None:
+            self.logger.error('timer and q_resp instance not provided, exiting')
+            return
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
-                self.logger.info('Timer stopped, closing serial')
-                self.ser.close()
-                return
+                break
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if 'meas.iv' in flags:
@@ -297,10 +306,10 @@ return tuple of two list: (uubsOn, uubsOff)"""
                        for uubnum, port in self.uubnums.items()}
                 res['timestamp'] = timestamp
                 self.q_resp.put(res)
+        self.logger.info('run finished')
 
     def stop(self):
         try:
-            self.logger.info('Closing serial')
             self.ser.close()
         except Exception:
             pass

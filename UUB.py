@@ -697,7 +697,8 @@ class UUBtelnet(threading.Thread):
         self.PROMPT = "#"     # prompt to expect after successfull login
 
     def _read_until(self, tn, match):
-        """Telnet.read_until but raise AssertionError if does not match"""
+        """Telnet.read_until but raise AssertionError if does not match
+match - bytes or bytearray"""
         resp = tn.read_until(match, self.TOUT)
         assert resp.find(match) >= 0
         return resp
@@ -717,11 +718,11 @@ return list of failed UUBs or None"""
             try:
                 self.logger.debug('logging to UUB %04d', uubnum)
                 tn = Telnet(uubnum2ip(uubnum))
-                self._read_until(tn, "login: ")
-                tn.write(self.LOGIN + "\n")
-                self._read_until(tn, "Password: ")
-                tn.write(self.PASSWD + "\n")
-                self._read_until(tn, self.PROMPT)
+                self._read_until(tn, b"login: ")
+                tn.write(bytes(self.LOGIN, 'ascii') + b"\n")
+                self._read_until(tn, b"Password: ")
+                tn.write(bytes(self.PASSWD, 'ascii') + b"\n")
+                self._read_until(tn, bytes(self.PROMPT, 'ascii'))
                 self.telnets[ind] = tn
             except (socket.error, EOFError, AssertionError):
                 self.logger.warning('logging to UUB %04d failed', uubnum)
@@ -763,8 +764,9 @@ return list of failed UUBs or None"""
                 try:
                     self.logger.debug('sending command "%s" to UUB %04d',
                                       cmd, uubnum)
-                    tn.write(cmd + "\n")
-                    self._read_until(tn, cmd + "\r\n")
+                    bcmd = bytes(cmd, 'ascii')
+                    tn.write(bcmd + b"\n")
+                    self._read_until(tn, bcmd + b"\r\n")
                 except (socket.error, EOFError, AssertionError):
                     self.logger.warning('sending commands to UUB %04d failed',
                                         uubnum)

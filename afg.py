@@ -99,7 +99,7 @@ for functype F:
                               5000, 5000/(20*math.pi))
 
     def stop(self):
-        self.logger.info('Switching off channel and closing')
+        # Switching off channel and closing fd
         for ch in (0, 1):
             if self.param['gains'][ch] is not None:
                 self.send('output%d:state off' % (ch+1))
@@ -294,7 +294,7 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
 
 class RPiTrigger(object):
     """Class for trigger on Raspberry Pi"""
-    PULSE_BIN = '/home/suma/pulse'  # binary to manage GPIO
+    PULSE_BIN = '/home/pi/pulse'  # binary to manage GPIO
 
     def __init__(self):
         self.proc = Popen([self.PULSE_BIN])

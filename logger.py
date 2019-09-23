@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from queue import Empty
 
 from dataproc import item2label, float2expo
-
+NOTCALC = '9999.99'  # number not calculated as overflow expected
 
 class MyFormatter(string.Formatter):
     """Formatter with default values for missing keys"""
@@ -381,20 +381,20 @@ uubnum - UUB number to log"""
     return LogHandlerFile(fn, formatstr, prolog=prolog)
 
 
-def makeDLpedestals(ctx, uubnum, count=None):
-    """Create LogHandlerFile for pedestals and their sigma
+def makeDLpedenoise(ctx, uubnum, count=None):
+    """Create LogHandlerFile for pedestals and noise
 ctx - context object, used keys: datadir + basetime + chans
 uubnum - UUB to log"""
-    fn = ctx.datadir + ('pede_uub%04d' % uubnum) +\
+    fn = ctx.datadir + ('pedenoise_u%04d' % uubnum) +\
         ctx.basetime.strftime('-%Y%m%d.log')
     prolog = """\
-# Pedestals and their std. dev.
+# Pedestals and noise
 # UUB #%04d, date %s
 # columns: timestamp | meas_point""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     if count is not None:
         prolog += " | index"
-    for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+    for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan)
                            for chan in ctx.chans])
     prolog += '\n'
@@ -402,7 +402,7 @@ uubnum - UUB to log"""
     if count is None:
         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                    '{meas_point:3d}']
-        for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+        for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
             logdata += ['{%s:%s}' % (item2label(
                 functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
                         for chan in ctx.chans]
@@ -412,7 +412,7 @@ uubnum - UUB to log"""
         for ind in range(count):
             logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                        '{meas_point:3d}', "%03d" % ind]
-            for typ, fmt in (('pede', '7.2f'), ('pedesig', '7.2f')):
+            for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
                 logdata += ['{%s:%s}' % (
                     item2label(functype='N', uubnum=uubnum, chan=chan,
                                typ=typ, index=ind), fmt)
@@ -423,21 +423,31 @@ uubnum - UUB to log"""
                           skiprec=lambda d: 'meas_noise' not in d)
 
 
-def makeDLpedestalstat(ctx, uubnum):
-    """Create LogHandlerFile for staticstics of pedestals (mean + std)
+def makeDLstat(ctx, uubnum, styp):
+    """Create LogHandlerFile for staticstics (mean + stdev)
 ctx - context object, used keys: datadir + basetime + chans
-uubnum - UUB to log"""
-    fn = ctx.datadir + ('pedestat_uub%04d' % uubnum) +\
+uubnum - UUB to log
+styp - variable to calculate statistics for (e.g. pede or noise)"""
+    params = {
+        'pede': {'fn': 'pede_u%04d',
+                 'prolog': 'Pedestals statistics: mean + stdev',
+                 'skiprec': 'meas_noise'},
+        'noise': {'fn': 'noise_u%04d',
+                  'prolog': 'Noise statistics: mean + stdev',
+                  'skiprec': 'meas_noise'}
+    }
+    assert styp in params.keys()
+    p = params[styp]
+    fn = ctx.datadir + (p['fn'] % uubnum) +\
         ctx.basetime.strftime('-%Y%m%d.log')
     prolog = """\
-# Pedestals and their std. dev. - staticstics
+# %s
 # UUB #%04d, date %s
 # columns: timestamp | meas_point""" % (
-        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+        p['prolog'], uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
                '{meas_point:3d}']
-    for typ, fmt in (('pedemean', '7.2f'), ('pedestddev', '7.2f'),
-                     ('pedesigmean', '7.2f')):
+    for typ, fmt in ((styp+'mean', '7.2f'), (styp+'stdev', '7.2f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan) for chan in ctx.chans])
         logdata += ['{%s:%s}' % (item2label(
             functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
@@ -445,7 +455,7 @@ uubnum - UUB to log"""
     prolog += '\n'
     formatstr = ' '.join(logdata) + '\n'
     return LogHandlerFile(fn, formatstr, prolog=prolog,
-                          skiprec=lambda d: 'meas_noise' not in d)
+                          skiprec=lambda d: p['skiprec'] not in d)
 
 
 def makeDLhsampli(ctx, uubnum, keys):
@@ -484,7 +494,7 @@ keys - voltages and/or splitmodes and/or count"""
                 if ind is not None:
                     logdata.append('%03d' % ind)
                     itemr['index'] = ind
-                logdata += [' '*7 if (chan in ctx.highgains and splitmode > 0)
+                logdata += [NOTCALC if (chan in ctx.highgains and splitmode > 0)
                             else '{%s:7.2f}' % item2label(
                                     itemr, chan=chan,
                                     voltage=voltage, splitmode=splitmode)
@@ -534,7 +544,7 @@ keys - freqs, voltages and/or splitmodes"""
                     if ind is not None:
                         logdata.append('%03d' % ind)
                         itemr['index'] = ind
-                    logdata += [' '*7 if (chan in ctx.highgains and
+                    logdata += [NOTCALC if (chan in ctx.highgains and
                                           splitmode > 0)
                                 else '{%s:7.2f}' % item2label(
                                         itemr, chan=chan, flabel=flabel,

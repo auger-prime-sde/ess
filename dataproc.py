@@ -338,13 +338,13 @@ q_resp - a logger queue
         self.logger.debug('Processing %s', item2label(item))
         array = item['yall'][self.BINSTART:self.BINEND, :]
         mean = array.mean(axis=0)
-        stddev = array.std(axis=0)
+        stdev = array.std(axis=0, ddof=1)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
                  for key in ('uubnum', 'functype', 'index')
                  if key in item}
-        for ch, (m, s) in enumerate(zip(mean, stddev)):
-            for typ, val in (('pede', m), ('pedesig', s)):
+        for ch, (m, s) in enumerate(zip(mean, stdev)):
+            for typ, val in (('pede', m), ('noise', s)):
                 label = item2label(itemr, typ=typ, chan=ch+1)
                 res[label] = val
         self.q_resp.put(res)
@@ -482,9 +482,9 @@ def make_DPfilter_stat(typ):
  - calculate staticstics on <typ>
 input items:
    typ: <typ>, index, <others>
-output items:
+output items (stdev=standard deviation estimation):
    typ: <typ>mean, <others>
-   typ: <typ>stddev, <others>
+   typ: <typ>stdev, <others>
 others: uubnum, chan, splitmode, voltage, flabel (optional), functype
 """
     otherkeys = ('uubnum', 'chan', 'splitmode', 'voltage', 'flabel',
@@ -508,7 +508,7 @@ others: uubnum, chan, splitmode, voltage, flabel (optional), functype
             item = {k: val for k, val in zip(otherkeys, key)
                     if val is not None}
             res_out[item2label(item, typ=typ+'mean')] = y.mean()
-            res_out[item2label(item, typ=typ+'stddev')] = y.std()
+            res_out[item2label(item, typ=typ+'stdev')] = y.std(ddof=1)
         return res_out
     return filter_stat
 
