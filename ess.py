@@ -137,6 +137,7 @@ class DetectUSB(object):
                         modbus.__del__()
                 self.found['chamber'] = port
                 self.devices['ttyUSB'].remove(port)
+                self.logger.debug('chamber found at %s', port)
                 break
 
         if 'flir' in devlist:  # detect FLIR
@@ -211,6 +212,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.afg = None
         self.trigger = None
         self.splitmode = None
+        self.spliton = None
         self.splitgain = None
         self.starttime = None
         self.essprog = None
@@ -386,6 +388,23 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.pc = PowerControl(d['ports']['powercontrol'], self.timer,
                                    self.q_resp, self.uubnums, splitmode)
             self.splitmode = self.pc.splitterMode
+            ### dirty hack: power on/off splitter by HMP4040
+            ### 10.1V/2A on ch2, 2.1V/2A on ch3
+            def makeSpliton(port_hmp):
+                rs = PowerSupply(
+                    port_hmp, ch2=(10.1, 2.0, True), ch3=(2.1, 2.0, True))
+                def spliton(stat):
+                    """Power splitter on/off"""
+                    if stat is None:
+                        rs.stop()
+                    elif stat:
+                        rs.config(ch2=(None, None, True),
+                                  ch3=(None, None, True))
+                    else:
+                        rs.config(ch2=(None, None, None, True),
+                                  ch3=(None, None, None, True))
+                return spliton
+            self.spliton = makeSpliton(d['ports']['power_hmp']
 
         # SplitterGain
         if self.afg is not None:
@@ -397,8 +416,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.ulisten = UUBlisten(self.q_ndata)
         self.ulisten.start()
         self.udaq = UUBdaq(self.timer, self.ulisten, self.q_resp,
-                           self.afg, self.splitmode, self.td,
-                           self.trigger)
+                           self.afg, self.splitmode, self.spliton,
+                           self.td, self.trigger)
         self.udaq.start()
         self.udaq.uubnums2add.extend(self.uubnums)
 
@@ -462,11 +481,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if d['dataloggers'].get('pede', False):
             count = d['dataloggers'].get('pedestatcount', None)
             for uubnum in self.uubnums:
-                self.dl.add_handler(makeDLpedestals(self, uubnum, count))
+                self.dl.add_handler(makeDLpedenoise(self, uubnum, count))
             if count is not None:
                 if dpfilter_stat_pede is None:
                     dpfilter_stat_pede = make_DPfilter_stat('pede')
-                if dpfilter_stat_pedesig is None:
+                if dpfilter_stat_noise is None:
                     dpfilter_stat_noise = make_DPfilter_stat('noise')
                 for uubnum in self.uubnums:
                     self.dl.add_handler(makeDLstat(self, uubnum, 'pede'),
@@ -552,8 +571,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 elif item == 'noisestat':
                     if dpfilter_stat_pede is None:
                         dpfilter_stat_pede = make_DPfilter_stat('pede')
-                    if dpfilter_stat_pedesig is None:
-                        dpfilter_stat_pedesig = make_DPfilter_stat('pedesig')
+                    if dpfilter_stat_noise is None:
+                        dpfilter_stat_noise = make_DPfilter_stat('noise')
                     self.dl.add_handler(self.db.getLogHandler(item),
                                         (dpfilter_stat_pede,
                                          dpfilter_stat_pedesig))
@@ -591,6 +610,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.afg.stop()
         if self.td is not None:
             self.td.stop()
+        if self.pc is not None:
+            self.pc.stop()
+        if self.spliton is not None:
+            self.spliton(False)
+            self.spliton(None)           ### to be corrected
         # stop RPiTrigger
         if (self.trigger is not None and
             isinstance(self.trigger.__self__, RPiTrigger)):

@@ -139,9 +139,9 @@ return afg_dict, item_dict"""
                         yield afg_dict, item_dict
 
     return (('meas.ramp', 'R', generR),
-            ('meas.noise', 'N', generN),
             ('meas.pulse', 'P', generP),
-            ('meas.freq', 'F', generF))
+            ('meas.freq', 'F', generF),
+            ('meas.noise', 'N', generN))
 
 
 def isLive(uub, timeout=0):
@@ -369,7 +369,7 @@ class UUBdaq(threading.Thread):
     TOUT_DAQ = 0.1    # timeout between trigger and UUBlisten cancel
 
     def __init__(self, timer, ulisten, q_resp,
-                 afg, splitmode, trigdelay, trigger,
+                 afg, splitmode, spliton, trigdelay, trigger,
                  gener_param=gener_funcparams()):
         """Constructor
 timer - instance of timer
@@ -377,14 +377,15 @@ ulisten - instance of UUBlistener
 q_resp - queue for responses (for meas_point/meas_<name>/db_<name>
 afg - instance of AFG
 splitmode - bound method PowerControl.splitterMode
+spliton - bound method to power on/off splitter
 trigdelay - instance of TrigDelay
 trigger - bound method for trigger
 gener_param - generator of measurement paramters (see gener_funcparams)
 """
         super(UUBdaq, self).__init__()
         self.timer, self.ulisten, self.q_resp = timer, ulisten, q_resp
-        self.afg, self.splitmode, self.trigger = afg, splitmode, trigger
-        self.trigdelay = trigdelay
+        self.afg, self.splitmode, self.spliton = afg, splitmode, spliton
+        self.trigger, self.trigdelay = trigger, trigdelay
         self.tnames = [rec[0] for rec in gener_param]  # timer names
         self.functypes = {rec[0]: rec[1] for rec in gener_param}
         self.geners = {rec[0]: rec[2] for rec in gener_param}
@@ -433,6 +434,11 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     for adcr in self.adcramp.values():
                         adcr.switchOn()
                     sleep(UUBdaq.TOUT_RAMP)
+                elif tname == 'meas.noise':
+                    if self.spliton is not None:
+                        logger.info('splitter power off for meas.noise')
+                        self.spliton(False)
+                        sleep(UUBdaq.TOUT_PREP)
                 elif tname in ('meas.pulse', 'meas.freq'):
                     self.afg.switchOn(True)
                 # run measurement for all parameters
@@ -462,6 +468,11 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     for adcr in self.adcramp.values():
                         adcr.switchOff()
                     sleep(UUBdaq.TOUT_RAMP)
+                elif tname == 'meas.noise':
+                    if self.spliton is not None:
+                        logger.info('splitter power on after meas.noise')
+                        self.spliton(True)
+                        sleep(UUBdaq.TOUT_PREP)
                 elif tname in ('meas.pulse', 'meas.freq'):
                     self.afg.switchOn(False)
         # end while(True)
