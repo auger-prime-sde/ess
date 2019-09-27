@@ -5,7 +5,7 @@
  *
  */
 
-#define VERSION "2019-07-09"
+#define VERSION "2019-09-27"
 
 #undef DEBUGTOG
 #ifndef sbi
@@ -47,9 +47,11 @@ char relPin[] = { 53 /* PB0 */, 51 /* PB2 */,
 		  33 /* PC4 */, 31 /* PC6 */,
 		  29 /* PA7 */, 27 /* PA5 */ };
 
-/* splitter control pins */
+/* splitter control pins (splitmode) */
 #define spPin0 43 /* PL6 */
 #define spPin1 45 /* PL4 */
+/* splitter on/off pin */
+#define spPin2 37 /* PC0 */
 
 /*
  * ISR to cummulate ADC result
@@ -150,7 +152,8 @@ void printError() {
 		 "       n <octal mask> -- switch on relays" "\r\n"
 		 "       f <octal mask> -- switch off relays" "\r\n"
 		 "       d              -- read relays setting" "\r\n"
-		 "       m <octal mask> -- set splitter mode" "\r\n" ));
+		 "       m <octal mask> -- set splitter mode" "\r\n"
+		 "       1/0            -- switch splitter ON/OFF" "\r\n"));
 }
 
 void printIdent() {
@@ -176,8 +179,10 @@ void setup() {
   // setup splitter
   pinMode(spPin0, OUTPUT);
   pinMode(spPin1, OUTPUT);
+  pinMode(spPin2, OUTPUT);
   digitalWrite(spPin0, LOW);
   digitalWrite(spPin1, LOW);
+  digitalWrite(spPin2, HIGH);
 
   // setup timer1 for trigger ADC start
   // OC1x disconnected
@@ -207,6 +212,7 @@ void loop() {
   char *ptr;
   float adc, ival;
   
+  val = 0;  /* default for splitter on/off */
   ptr = readline();
   /* skip optional spaces */
   while(*ptr == ' ')
@@ -242,6 +248,12 @@ void loop() {
     digitalWrite(spPin0, val & 1);
     val >>= 1;
     digitalWrite(spPin1, val & 1);
+    Serial.println("OK");
+    break;
+  case '1':
+    val = 1;
+  case '0':
+    digitalWrite(spPin2, val);  /* val is 1 or 0 */
     Serial.println("OK");
     break;
   case '?':
