@@ -5,7 +5,7 @@
  *
  */
 
-#define VERSION "2019-05-03"
+#define VERSION "2019-07-09"
 
 #undef DEBUGTOG
 #ifndef sbi
@@ -22,17 +22,23 @@ char buffer[BUFSIZE];
 #define SAMPERIOD ((uint16_t) 80)          /* sampling period, 0.5us */
 
 #define NCHAN 10
-float alpha = 0.9996;
+float alpha = 0.0;
 volatile uint8_t pin; /* currently processed ADC pin */
 volatile float adcvals[NCHAN];  /* running average with expo decay */
 
 /* ADC offset, slopes mA/ADC + quadratic correction */
-float offs[NCHAN] = {511.553, 508.286, 509.963, 508.343, 512.597,
+float offs[NCHAN] = {0.0, 508.286, 509.963, 508.343, 512.597,
 		     509.291, 509.383, 510.202, 509.428, 511.657};
-float slopes[NCHAN] = {41.49, 39.32, 34.95, 36.28, 35.69,
+float slopes[NCHAN] = {1.0, 39.32, 34.95, 36.28, 35.69,
 		       36.28, 35.15, 34.44, 35.44, 36.21};
-float qs[NCHAN] = {0.2864, 0.3939, 0.2154, 0.2653, 0.2676,
+float qs[NCHAN] = {0.0, 0.3939, 0.2154, 0.2653, 0.2676,
 		   0.2479, 0.2501, 0.1838, 0.2032, 0.1849};
+/* float offs[NCHAN] = {511.553, 508.286, 509.963, 508.343, 512.597, */
+/* 		     509.291, 509.383, 510.202, 509.428, 511.657}; */
+/* float slopes[NCHAN] = {41.49, 39.32, 34.95, 36.28, 35.69, */
+/* 		       36.28, 35.15, 34.44, 35.44, 36.21}; */
+/* float qs[NCHAN] = {0.2864, 0.3939, 0.2154, 0.2653, 0.2676, */
+/* 		   0.2479, 0.2501, 0.1838, 0.2032, 0.1849}; */
 
 /* mapping relay pins */
 char relPin[] = { 53 /* PB0 */, 51 /* PB2 */,
@@ -64,7 +70,8 @@ ISR(ADC_vect) {
   sei();
   
   val = ((uint16_t)hval << 8) | (uint16_t)lval;
-  adcvals[oldpin] = alpha * adcvals[oldpin] + val;
+  //  adcvals[oldpin] = alpha * adcvals[oldpin] + val;
+  adcvals[oldpin] = val;
 #ifdef DEBUGTOG
   cbi(PORTB, PORTB6);
 #endif
