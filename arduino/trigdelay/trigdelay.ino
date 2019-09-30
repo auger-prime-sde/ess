@@ -1,57 +1,28 @@
 /*
- * Delay trigger pulse
+ * Trigger generator and trigger
  * Petr Tobiska <tobiska@fzu.cz>
  * 2018-08-17
 
-Wait for falling edge on pin INPUT. Wait and generate pulse on output pins.
+Send trigger (TRIG) and optionally delayed to output
 
  pins: 
- - input   PD2 (INT0) - D2
- - output  PB0 - D8
-           PB3 - D11
-
+ - trigger   PD2 - D2
+ - outputs   PB0 - D8
+             PB3 - D11
  */
 
-#define VERSION "20180830"
+#define VERSION "20190709"
 
 #include<avr/io.h>
 #include<Arduino.h>
 
-#define PIN_INPUT 2    // port D, bit 2
+#define PIN_TRIG  2    // port D, bit 2
 #define PIN_OUT1  8    // port B, bit 0
 #define PIN_OUT2  11   // port B, bit 3
-#define P_OUT _SFR_IO_ADDR(PORTB)
 
-//volatile uint16_t wait_qus;   // 16/4 us to wait
-volatile uint8_t wait_qus;   // 16/3 us to wait
 #define BUFSIZE 10
 char buffer[BUFSIZE];
-
-ISR(INT0_vect) {
-  uint8_t qus = wait_qus;
-  if(qus > 0) {
-    // busy wait
-    __asm__ __volatile__ (
-        "loop: subi %0,1" "\n\t" // 2 cycles
-        "brne loop" : "=r" (qus) : "0" (qus) // 2 cycles
-        );
-  }
-  // digitalWrite(PIN_OUT1, HIGH);
-  // PORTD |= B01000000;
-  // digitalWrite(PIN_OUT1, LOW);
-  //  PORTD &= ~B01000000;
-  // __asm__ __volatile__  (
-  //                     " sbi %[PORT],%[BIT]    ;set data bit \n\t"
-  //                     " nop \n\t nop \n\t nop \n\t nop \n\t nop \n\t nop \n\t nop \n\t"
-  //                     " cbi %[PORT],%[BIT]    ;clear data bit \n\t"
-  //                     : :
-  //                       [PORT] "I" (P_OUT), [BIT] "I" (0));
-
-  
-  PORTB = _BV(0) | _BV(3);
-  _NOP(); _NOP(); _NOP(); _NOP();
-  PORTB = 0;   
-}
+uint8_t qus = 0;   // delay between trigger and output pulses
 
 /*
  * read a line from serial, terminated by \r
@@ -70,13 +41,15 @@ char* readline() {
       if(rsize > 0) {
         *ptr++ = c;
         rsize --; }
-    } //   else delay(2000);  // timer0 stopped
+    }
   }
 }
 
 void printError() {
-  Serial.println(F("Error: d <trigger delay>\\r" "\n"
-                   "       q\\r"));
+  Serial.println(F("Error: d <trigger delay>  .. set delay" "\n"
+                   "       q                  .. query delay" "\n"
+		   "       t                  .. trigger" "\n"
+		   "       ?                  .. print identification"));
 }
 
 void printIdent() {
@@ -84,28 +57,21 @@ void printIdent() {
 }
 
 void setup() {
-  Serial.begin(115200);
-  // configure outputs
-  pinMode(PIN_INPUT, INPUT_PULLUP);
+  // configure pins
+  pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_OUT1, OUTPUT);
   pinMode(PIN_OUT2, OUTPUT);
+  digitalWrite(PIN_TRIG, LOW);
   digitalWrite(PIN_OUT1, LOW);
   digitalWrite(PIN_OUT2, LOW);
 
-  // configure INT0
-  EICRA = _BV(ISC00) | _BV(ISC01);
-  EIMSK = _BV(INT0);
-
-  // disable Timer0 overflow interrupt (for millis et al.)
-  TIMSK0 &= ~TOIE0;
-
-  wait_qus = 0;
+  Serial.begin(115200);
   printIdent();
 }
 
 void loop() {
   char c, *ptr;
-  uint8_t res;
+  uint8_t tmp;
 
   ptr = readline();
   /* skip optional spaces */
@@ -116,15 +82,50 @@ void loop() {
   case 'd':   // set trigger delay
     while(*ptr == ' ')
       ptr++;
-    res = 0;
+    tmp = 0;
     for( c = *ptr++; ('0' <= c) && (c <= '9'); c = *ptr++)
-      res = 10*res + c - '0';
-    wait_qus = res;
+      tmp = 10*tmp + c - '0';
+    qus = tmp;
     Serial.println("OK");
     break;
   case 'q':
     Serial.print(F("trigdelay [3/16 us]: "));
-    Serial.println((int)wait_qus, 10);
+    Serial.println((int)qus, 10);
+    break;
+  case 't':   // make trigger pulse
+    if(qus == 0) {
+      cli();
+      PORTD = _BV(2);
+      PORTB = _BV(0) | _BV(3);
+      _NOP();
+      PORTD = 0;
+      PORTB = 0;
+      sei(); }
+    else if(qus == 1) {
+      PORTD = _BV(2);
+      _NOP();
+      _NOP();
+      PORTD = 0;
+      PORTB = _BV(0) | _BV(3);
+      _NOP();
+      _NOP();
+      PORTB = 0; }
+    else {
+      tmp = qus - 1;
+      PORTD = _BV(2);
+      _NOP();
+      _NOP();
+      PORTD = 0;
+      // busy wait
+      __asm__ __volatile__ (
+			    "loop: subi %0,1" "\n\t" // 1 cycle
+			    "brne loop" : "=r" (tmp) : "0" (tmp) // 2 cycles
+			    );
+      PORTB = _BV(0) | _BV(3);
+      _NOP();
+      _NOP();
+      PORTB = 0; }
+    Serial.println("OK");
     break;
   case '?':
     printIdent();
