@@ -11,6 +11,7 @@ from struct import unpack
 from serial import Serial
 
 from BME import readSerRE, SerialReadTimeout
+from threadid import syscall, SYS_gettid
 
 
 class FLIR(threading.Thread):
@@ -121,8 +122,9 @@ return the data block"""
         rsize = unpack('>H', d['size'])[0]
         rchksum = unpack('>H', d['chksum'])[0]
         chksum = sum(d['data']) % 0x10000
-        assert rsize == len(d['data'])
-        assert chksum == rchksum
+        if rsize != len(d['data']) or chksum != rchksum:
+            self.logger.error('%s => %s', cmd, repr(resp))
+            raise AssertionError
         return d['data']
 
     def getfile(self, flirpath, fname):
@@ -154,6 +156,8 @@ return the data block"""
         self._send_recv('rm images/%s%s' % (imagename, self.typ[1]))
 
     def run(self):
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         snapshots = {}   # images stored during the session
         downloaded = []
         while True:

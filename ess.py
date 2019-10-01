@@ -32,7 +32,7 @@ from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
 from UUB import uubnum2mac
 from chamber import Chamber, ESSprogram
-from dataproc import DataProcessor, SplitterGain
+from dataproc import DataProcessor, DirectGain, SplitterGain, make_notcalc
 from dataproc import make_DPfilter_linear, make_DPfilter_ramp
 from dataproc import make_DPfilter_cutoff, make_DPfilter_stat
 from afg import AFG, RPiTrigger
@@ -211,6 +211,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.td = None
         self.afg = None
         self.trigger = None
+        self.pc = None
         self.splitmode = None
         self.spliton = None
         self.splitgain = None
@@ -275,9 +276,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.qlistener.start()
 
         # UUB channels
-        self.lowgains = d.get('lowgains', [1, 3, 5, 7, 9])
-        self.highgains = d.get('highgains', [2, 4, 6, 10])
-        self.chans = sorted(self.lowgains+self.highgains)
+        self.chans = d.get('chans', range(1, 11))
 
         # start DataProcessors before anything is logged, otherwise child
         # processes may lock at acquiring lock to existing log handlers
@@ -285,10 +284,12 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                   'q_resp': self.q_dpres,
                   'q_log': self.q_log,
                   'datadir': self.datadir,
-                  'lowgains': self.lowgains, 'chans': self.chans}
+                  'splitmode': d.get('splitmode', None),
+                  'chans': self.chans}
         if 'afg' in d:
             afgkwargs = d["afg"]
-            dp_ctx['hswidth'] = afgkwargs.get('hswidth', AFG.PARAM['hswidth'])
+            for key in ('hswidth', 'Pvoltage', 'Fvoltage', 'freq'):
+                dp_ctx[key] = afgkwargs.get(key, AFG.PARAM[key])
         else:
             afgkwargs = {}
         self.n_dp = d.get('n_dp', multiprocessing.cpu_count() - 2)
@@ -379,14 +380,14 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             elif trigger == 'AFG':
                 assert self.afg is not None, \
                     "AFG as trigger required, but it does not exist"
-                self.trigger = self.td.trigger
+                self.trigger = self.afg.trigger
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # PowerControl
         if 'powercontrol' in d['ports']:
-            splitmode = d.get('splitmode', None)
-            self.pc = PowerControl(d['ports']['powercontrol'], self.timer,
-                                   self.q_resp, self.uubnums, splitmode)
+            self.pc = PowerControl(
+                d['ports']['powercontrol'], self.timer,
+                self.q_resp, self.uubnums, dp_ctx['splitmode'])
             self.splitmode = self.pc.splitterMode
             ### dirty hack: power on/off splitter by HMP4040
             ### 10.1V/2A on ch2, 2.1V/2A on ch3
@@ -404,13 +405,17 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                         rs.config(ch2=(None, None, None, True),
                                   ch3=(None, None, None, True))
                 return spliton
-            self.spliton = makeSpliton(d['ports']['power_hmp']
+            self.spliton = makeSpliton(d['ports']['power_hmp'])
 
-        # SplitterGain
+        # SplitterGain & notcalc
         if self.afg is not None:
-            calibration = d.get('splitter_calibration', None)
-            self.splitgain = SplitterGain(self.afg.param['gains'], None,
-                                          self.uubnums, calibration)
+            if 'splitter' in d:
+                calibration = d['splitter'].get('calibration', None)
+                self.splitgain = SplitterGain(self.afg.param['gains'], None,
+                                              self.uubnums, calibration)
+            else:
+                self.splitgain = DirectGain()
+            self.notcalc = make_notcalc(dp_ctx)
 
         # UUBs - UUBdaq and UUBlisten
         self.ulisten = UUBlisten(self.q_ndata)
@@ -509,7 +514,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if d['dataloggers'].get('linearity', False):
             if dpfilter_linear is None:
                 dpfilter_linear = make_DPfilter_linear(
-                    self.lowgains, self.highgains, self.splitgain)
+                    self.notcalc, self.splitgain)
             for uubnum in self.uubnums:
                 self.dl.add_handler(makeDLlinear(self, uubnum),
                                     (dpfilter_linear, ))
@@ -518,7 +523,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if 'freqgain' in d['dataloggers']:
             if dpfilter_linear is None:
                 dpfilter_linear = make_DPfilter_linear(
-                    self.lowgains, self.highgains, self.splitgain)
+                    self.notcalc, self.splitgain)
             freqs = d['dataloggers']['freqgain']
             for uubnum in self.uubnums:
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
@@ -528,7 +533,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if d['dataloggers'].get('cutoff', False):
             if dpfilter_linear is None:
                 dpfilter_linear = make_DPfilter_linear(
-                    self.lowgains, self.highgains, self.splitgain)
+                    self.notcalc, self.splitgain)
             if dpfilter_cutoff is None:
                 dpfilter_cutoff = make_DPfilter_cutoff()
             for uubnum in self.uubnums:
@@ -556,7 +561,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 elif item == 'cutoff':
                     if dpfilter_linear is None:
                         dpfilter_linear = make_DPfilter_linear(
-                            self.lowgains, self.highgains, self.splitgain)
+                            self.notcalc, self.splitgain)
                     if dpfilter_cutoff is None:
                         dpfilter_cutoff = make_DPfilter_cutoff()
                     self.dl.add_handler(self.db.getLogHandler(item),
@@ -564,7 +569,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 elif item in ('gain', 'freqgain'):
                     if dpfilter_linear is None:
                         dpfilter_linear = make_DPfilter_linear(
-                            self.lowgains, self.highgains, self.splitgain)
+                            self.notcalc, self.splitgain)
                     self.dl.add_handler(
                         self.db.getLogHandler(item, flabels=flabels),
                         (dpfilter_linear, ))

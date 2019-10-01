@@ -19,30 +19,41 @@ from telnetlib import Telnet
 import numpy as np
 
 from dataproc import float2expo
+from threadid import syscall, SYS_gettid
 
 HTTPPORT = 80
 DATAPORT = 8888    # UDP port UUB send data to
 CTRLPORT = 8887    # UDP port UUB listen for commands
 ADCPORT = 8886     # UDP port adcramp on UUB communicates
 LADDR = "192.168.31.254"  # IP address of the computer
-
+VIRGINMAC = '00:0a:35:00:1e:53'
+VIRGINIP = '192.168.31.0'
+VIRGINUUBNUM = 0xF00
 
 def uubnum2mac(uubnum):
     """Calculate MAC address from UUB number"""
-    return '00:0a:35:00:%02x:%02x' % (uubnum >> 8, uubnum & 0xFF)
+    if uubnum == 'xxxx' or uubnum == VIRGINUUBNUM:
+        return VIRGINMAC
+    assert 0 < uubnum < VIRGINUUBNUM, "Wrong UUB number"
+    return '00:0a:35:00:%02d:%02d' % (uubnum // 100, uubnum % 100)
 
 
-re_mac = re.compile(r'^00:0[aA]:35:00:0([0-9a-fA-F]):([0-9a-fA-F]{2})$')
+re_mac = re.compile(r'^00:0[aA]:35:00:([0-9]{2}):([0-9]{2})$')
 def mac2uubnum(mac):
     """ Calculate UUB number from MAC address"""
+    if mac == VIRGINMAC:
+        return VIRGINUUBNUM
     m = re_mac.match(mac)
     assert m is not None, 'Wrong MAC address'
-    comps = [int(x, 16) for x in m.groups()]
-    return 0x100*comps[0] + comps[1]
+    comps = [int(x, 10) for x in m.groups()]
+    return 100*comps[0] + comps[1]
 
 
 def uubnum2ip(uubnum):
     """Calculate IP address from UUB number"""
+    if uubnum == 'xxxx' or uubnum == VIRGINUUBNUM:
+        return VIRGINIP
+    assert 0 < uubnum < VIRGINUUBNUM, "Wrong UUB number"
     return '192.168.%d.%d' % (16 + (uubnum >> 8), uubnum & 0xFF)
 
 
@@ -181,7 +192,7 @@ class UUBtsc(threading.Thread):
     """Thread managing read out Zynq temperature and SlowControl data
  from UUB"""
 
-    re_scdata = re.compile(r'''.*
+    re_scdata_pmt = re.compile(r'''.*
    PMT1 \s+ (?P<HV_PMT1>\d+(\.\d+)?)
         \s+ (?P<I_PMT1>\d+(\.\d+)?)
         \s+ (?P<T_PMT1>-?\d+(\.\d+)?) \s*
@@ -194,6 +205,34 @@ class UUBtsc(threading.Thread):
    PMT4 \s+ (?P<HV_PMT4>\d+(\.\d+)?)
         \s+ (?P<I_PMT4>\d+(\.\d+)?)
         \s+ (?P<T_PMT4>-?\d+(\.\d+)?)  \s*
+   .* Power .* Nominal .*
+   1V    \s+ (?P<u_1V>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_1V>\d+(\.\d+)?) \s* \[mA\] \s*
+   1V2   \s+ (?P<u_1V2>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_1V2>\d+(\.\d+)?) \s* \[mA\] \s*
+   1V8   \s+ (?P<u_1V8>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_1V8>\d+(\.\d+)?) \s* \[mA\] \s*
+   3V3   \s+ (?P<u_3V3>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_3V3>\d+(\.\d+)?) \s* \[mA\] \s*
+             (?P<i_3V3_sc>\d+(\.\d+)?) \s* \[mA\ SC\] \s*
+   P3V3  \s+ (?P<u_P3V3>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_P3V3>\d+(\.\d+)?) \s* \[mA\] \s*
+   N3V3  \s+ -?(?P<u_N3V3>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_N3V3>\d+(\.\d+)?) \s* \[mA\] \s*
+   5V    \s+ (?P<u_5V>\d+(\.\d+)?) \s* \[mV\] \s*
+             (?P<i_5V>\d+(\.\d+)?) \s* \[mA\] \s*
+   12V\ Radio \s+ (?P<u_radio>\d+(\.\d+)?) \s* \[mV\] \s*
+                  (?P<i_radio>\d+(\.\d+)?) \s* \[mA\] \s*
+   12V\ PMTs  \s+ (?P<u_PMTs>\d+(\.\d+)?) \s* \[mV\] \s*
+                  (?P<i_PMTs>\d+(\.\d+)?) \s* \[mA\] \s*
+   24V\ EXT1/2 \s+ (?P<u_ext1>\d+(\.\d+)?) \s* \[mV\] \s*
+                   (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
+                   (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
+   .* Sensors \s+
+   T= \s+ (?P<temp>-?\d+) \s* \*0\.1K, \s*
+   P= \s+ (?P<press>\d+) \s* mBar
+''', re.VERBOSE + re.DOTALL)
+    re_scdata = re.compile(r'''
    .* Power .* Nominal .*
    1V    \s+ (?P<u_1V>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_1V>\d+(\.\d+)?) \s* \[mA\] \s*
@@ -240,6 +279,8 @@ q_resp - queue to send response
         self.logger.info('UUBtsc created, IP %s.', self.ip)
 
     def run(self):
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         self.logger.debug('Waiting for UUB being live')
         while self.serial is None:
             s = self.readSerialNum(self.TIMEOUT, self.TRIALS)
@@ -396,6 +437,8 @@ gener_param - generator of measurement paramters (see gener_funcparams)
 
     def run(self):
         logger = logging.getLogger('UUBdaq')
+        tid = syscall(SYS_gettid)
+        logger.debug('run start, name %s, tid %d', self.name, tid)
         # stop and clear ulisten
         self.ulisten.uubnums = set()
         self.ulisten.clear = True
@@ -505,6 +548,8 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
 
     def run(self):
         logger = logging.getLogger('UUBlisten')
+        tid = syscall(SYS_gettid)
+        logger.debug('run start, name %s, tid %d', self.name, tid)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((self.laddr, self.port))
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.RCVBUF)
@@ -792,6 +837,8 @@ return list of failed UUBs or None"""
                 tn.close()
 
     def run(self):
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():

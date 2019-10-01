@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from serial import Serial
 
 from dataproc import item2label
+from threadid import syscall, SYS_gettid
 
 
 class SerialReadTimeout(AssertionError):
@@ -108,6 +109,8 @@ timesync - sync Arduino time
         if self.timer is None or self.q_resp is None:
             self.logger.error('timer and q_resp instance not provided, exiting')
             return
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -116,7 +119,8 @@ timesync - sync Arduino time
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if any([name in flags
-                    for name in ('meas.thp', 'meas.pulse', 'meas.freq')]):
+                    for name in ('meas.thp', 'meas.ramp', 'meas.noise',
+                                 'meas.iv', 'meas.pulse', 'meas.freq')]):
                 self.logger.debug('BME read')
                 self.ser.write(b'm')
                 resp = readSerRE(self.ser, BME.re_bmemeas, logger=self.logger)
@@ -294,6 +298,8 @@ return tuple of two list: (uubsOn, uubsOff)"""
         if self.timer is None or self.q_resp is None:
             self.logger.error('timer and q_resp instance not provided, exiting')
             return
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():

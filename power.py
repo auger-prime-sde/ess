@@ -8,6 +8,7 @@ import re
 import threading
 from serial import Serial, SerialException
 
+from threadid import syscall, SYS_gettid
 POWER_OPER = ('voltage', 'currLim', 'on', 'off')
 
 
@@ -74,6 +75,8 @@ kwargs - parameters for output voltage/current limit configuration
         self.config(**kwargs)
 
     def run(self):
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
