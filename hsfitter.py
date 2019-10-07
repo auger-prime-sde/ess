@@ -142,7 +142,7 @@ class SineFitter(object):
         self.vander = np.ones((N, NPOLY+1))
         if NPOLY >= 1:
             self.vander[:, 1] = (2*x + 1.0)/N - 1.0
-            for i in range(2, NPOLY):
+            for i in range(2, NPOLY+1):
                 self.vander[:, i] = self.vander[:, i-1] * self.vander[:, 1]
 #        self.x = x.reshape(N, 1)
         self.x = x
