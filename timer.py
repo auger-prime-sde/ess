@@ -8,6 +8,8 @@ import logging
 from time import sleep
 from datetime import datetime, timedelta
 
+from threadid import syscall, SYS_gettid
+
 
 def periodic_ticker(interval, count=None, offset=0):
     """Generator of periodic sequence
@@ -112,6 +114,8 @@ offset - an offset to basetime (seconds)
         self.timerstop = None   # if Event, set() at the end of program
 
     def run(self):
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         zTimerStop = False
         while not self.stop.is_set():
             # update self.tickers
@@ -225,6 +229,8 @@ class EvtDisp(threading.Thread):
 
     def run(self):
         logger = logging.getLogger('EvtDisp')
+        tid = syscall(SYS_gettid)
+        logger.debug('run start, name %s, tid %d', self.name, tid)
         timestamp = None
         while True:
             self.timer.evt.wait()

@@ -40,6 +40,29 @@ def expo2float(s):
     return imant * 10 ** (expo - (len(s) - 2))
 
 
+def freqlabel(item):
+    """Extract flabel and freq from dict item
+return (flabel, freq) or raise ValueError"""
+    if 'flabel' in item:
+        flabel = item['flabel']
+        if 'freq' in item:
+            freq = item['freq']
+        else:
+            freq = expo2float(flabel)
+    elif 'freq' in item:
+        freq = item['freq']
+        flabel = float2expo(freq)
+    else:
+        raise ValueError('Neither flabel nor freq present in %s',
+                         repr(d))
+    return flabel, freq
+
+
+class DirectGain(object):
+    """Gain if not splitter in chain"""
+    def gainUUB(self, splitmode, uubnum, chan, flabel=""):
+        return 1.0
+
 class SplitterGain(object):
     """Gain of Stastny's splitter"""
     # mapping UUB chan to splitchan + high gain (True)
@@ -76,7 +99,8 @@ channels: [A-F][0-9] ... splitter, on AFG chan A
                                    len(splitch) == 2 and
                                    splitch[0] in 'ABCDEFR' and
                                    splitch[1] in '0123456789')}
-            if any([splitch[0] in 'ABCDEF' for splitch in self.mdomap.values()]):
+            if any([splitch[0] in 'ABCDEF'
+                    for splitch in self.mdomap.values()]):
                 assert self.pregains[0] is not None
             if any([splitch[0] == 'R' for splitch in self.mdomap.values()]):
                 assert self.pregains[1] is not None
@@ -130,6 +154,41 @@ splitch - i.e. C8"""
         return self.SPLITGAIN * self.pregains[0] * gain * correction
 
 
+def make_notcalc(ctx, pedestals=[250.0]*10):
+    """Factory to create the notcalc function
+ctx - dict with default Pvoltage and Fvoltage
+pedestals - positions of pedestals [ADC]
+"""
+    Pvoltage = ctx.get('Pvoltage', None)
+    Fvoltage = ctx.get('Fvoltage', None)
+    gainLG, gainHG = 2.0e3, 64.0e3   # ADC/V
+    margin = 3900  # maximal ADC
+    maxvolt = {}  # maxv[splitmode][chan]
+    maxvolt[None] = [None] + [(margin - pedestals[chan-1])/(
+        gainHG if SplitterGain.UUB2SPLIT[chan][1] else gainLG)
+                              for chan in range(1, 11)]
+    maxvolt[None][9] *= 4  # low-low gain
+    maxvolt[1] = maxvolt[None]
+    maxvolt[0] = [None] + [v * 32 for v in maxvolt[1][1:]]
+    maxvolt[3] = maxvolt[None][:]
+    maxvolt[3][9] /= 4
+    maxvolt[3][10] /= 4
+    def notcalc(functype, chan, splitmode=None, voltage=None):
+        assert splitmode in (None, 0, 1, 3), "Wrong splitmode"
+        assert chan in range(1, 11)
+        assert functype in ('P', 'F')
+        if functype == 'F':
+            if voltage is None:
+                voltage = 2*Fvoltage
+            else:
+                voltage *= 2
+        else:
+            if voltage is None:
+                voltage = Pvoltage
+        return voltage > maxvolt[splitmode][chan]
+    return notcalc
+
+
 def DataProcessor(dp_ctx):
     """Data processor, a function to run in a separate process
 dp_ctx - context with configuration (dict)
@@ -154,11 +213,14 @@ dp_ctx - context with configuration (dict)
                   DP_ramp(dp_ctx['q_resp']),
                   DP_pede(dp_ctx['q_resp'])]
     if 'hswidth' in dp_ctx:
+        notcalc = make_notcalc(dp_ctx)
         workhorses.append(DP_hsampli(
-            dp_ctx['q_resp'], dp_ctx['hswidth'],
-            dp_ctx['lowgains'], dp_ctx['chans']))
+            dp_ctx['q_resp'], dp_ctx['hswidth'], notcalc, dp_ctx['chans'],
+            splitmode=dp_ctx['splitmode'], voltage=dp_ctx['Pvoltage']))
         workhorses.append(DP_freq(
-            dp_ctx['q_resp'], dp_ctx['lowgains'], dp_ctx['chans']))
+            dp_ctx['q_resp'], notcalc, dp_ctx['chans'],
+            splitmode=dp_ctx['splitmode'], voltage=dp_ctx['Fvoltage'],
+            freq=dp_ctx['freq']))
     q_ndata = dp_ctx['q_ndata']
     logger.debug('init done')
     while True:
@@ -197,7 +259,7 @@ attr are (optional, but in this order):
   timestampmicro  \d{14}      datetime       YYYYmmddHHMMSSffffff
   uubnum          u\d{4}      int 0-9999     u0015
   chan            c\d         int 1-10       c1 - c9, c0 .. channels 1 - 10
-  splitch         s[A-F]\d    str            A-F .. 12, 34, 56, 7, 8, 9
+  splitch         s[A-F]\d    str            A-F .. 12, 34, 56, 7, 8, 9&10
   splitmode       a[013]      0, 1, 3        splitter mode
   voltage         v\d{2,3}    float          voltage coded as v1.v2v3 [volt]
   freq            f\d{2,4}    float          EM1M2M3 coded freq M1.M2M3*10^E Hz
@@ -237,7 +299,10 @@ kwargs and item are merged, item is not modified"""
         assert kwargs['splitmode'] in (0, 1, 3)
         attr.append('a%d' % kwargs['splitmode'])
     if 'voltage' in kwargs and functype in ('P', 'F'):
-        svolt = 'v%03d' % int(kwargs['voltage'] * 100.)
+        if functype == 'F':
+            svolt = 'v%03d' % int(kwargs['voltage'] * 200.)
+        else:
+            svolt = 'v%03d' % int(kwargs['voltage'] * 100.)
         if(svolt[-1] == '0'):
             svolt = svolt[:-1]
         attr.append(svolt)
@@ -292,6 +357,8 @@ def label2item(label):
     if 'voltage' in d:
         svolt = d['voltage']
         d['voltage'] = float('%c.%s' % (svolt[0], svolt[1:]))
+        if d['functype'] == 'F':
+            d['voltage'] /= 2
     if 'flabel' in d:
         try:
             d['freq'] = expo2float(d['flabel'])
@@ -353,32 +420,34 @@ q_resp - a logger queue
 class DP_hsampli(object):
     """Data processor workhorse to calculate amplitude of half-sines"""
 
-    def __init__(self, q_resp, hswidth, lowgains, chans, **kwargs):
+    def __init__(self, q_resp, hswidth, notcalc, chans, **kwargs):
         """Constructor.
 q_resp - a logger queue
 hswidth - width of half-sine in microseconds
-lowgains - UUB channels to process if splitmode == 1
+notcalc - function of functype, chan, splitmode, voltage
+          to return True if overflow expected (channel not processed)
 chans - all UUB channels to process (all channels with signal)
 kwargs: splitmode, voltage (fixed paramters)"""
         self.q_resp = q_resp
         logname = multiprocessing.current_process().name + '.hsampli'
         self.logger = logging.getLogger(logname)
         self.sf = SineFitter()
-        self.lowgains, self.chans = lowgains, chans
+        self.notcalc, self.chans = notcalc, chans
         self.keys = {key: kwargs[key]
                      for key in ('splitmode', 'voltage')
                      if key in kwargs}
         self.q_resp = q_resp
         self.hsf = HalfSineFitter(hswidth)
-        self.lowgains, self.chans = lowgains, chans
+        self.notcalc, self.chans = notcalc, chans
 
     def calculate(self, item):
         if item.get('functype', None) != 'P':
             return
         self.logger.debug('Processing %s', item2label(item))
-        item = item.copy()
-        item.update(self.keys)
-        chans = self.lowgains if item['splitmode'] == 1 else self.chans
+        splitmode = item.get('splitmode', self.keys['splitmode'])
+        voltage = item.get('voltage', self.keys['voltage'])
+        chans = [chan for chan in self.chans
+                 if not self.notcalc('P', chan, splitmode, voltage)]
         yall = item['yall'][:, [chan-1 for chan in chans]]
         hsfres = self.hsf.fit(yall, HalfSineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
@@ -413,10 +482,11 @@ class DP_freq(object):
     """Data processor workhorse to calculate amplitude of sines
 for functype F"""
 
-    def __init__(self, q_resp, lowgains, chans, **kwargs):
+    def __init__(self, q_resp, notcalc, chans, **kwargs):
         """Constructor.
 q_resp - a logger queue
-lowgains - UUB channels to process when splitmode > 0
+notcalc - function of functype, chan, splitmode, voltage
+          to return True if overflow expected (channel not processed)
 chans - UUB channels to process when splitmode = 0
         (all channels with signal)
 kwargs: freq, splitmode, voltage (fixed paramters)"""
@@ -424,21 +494,25 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
         logname = multiprocessing.current_process().name + '.freq'
         self.logger = logging.getLogger(logname)
         self.sf = SineFitter()
-        self.lowgains, self.chans = lowgains, chans
+        self.notcalc, self.chans = notcalc, chans
         self.keys = {key: kwargs[key]
-                     for key in ('freq', 'splitmode', 'voltage')
+                     for key in ('splitmode', 'voltage', 'flabel', 'freq')
                      if key in kwargs}
 
     def calculate(self, item):
         if item.get('functype', None) != 'F':
             return
         self.logger.debug('Processing %s', item2label(item))
-        item = item.copy()
-        item.update(self.keys)
-        chans = self.lowgains if item['splitmode'] > 0 else self.chans
+        splitmode = item.get('splitmode', self.keys['splitmode'])
+        voltage = item.get('voltage', self.keys['voltage'])
+        try:
+            flabel, freq = freqlabel(item)
+        except ValueError:
+            flabel, freq = freqlabel(self.keys)
+        chans = [chan for chan in self.chans
+                 if not self.notcalc('F', chan, splitmode, voltage)]
         yall = item['yall'][:, [chan-1 for chan in chans]]
-        flabel = float2expo(item['freq'])
-        sfres = self.sf.fit(yall, flabel, item['freq'], stage=SineFitter.AMPLI)
+        sfres = self.sf.fit(yall, flabel, freq, stage=SineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
                  for key in ('functype', 'uubnum', 'flabel',
@@ -513,7 +587,7 @@ others: uubnum, chan, splitmode, voltage, flabel (optional), functype
     return filter_stat
 
 
-def make_DPfilter_linear(lowgains, highgains, splitgain):
+def make_DPfilter_linear(notcalc, splitgain):
     """Dataprocessing filter
  - calculate linear fit & correlation coeff from ampli
 input items:
@@ -540,18 +614,19 @@ or
             if d is None or 'typ' not in d or \
                d['typ'] not in ('ampli', 'fampli'):
                 continue
-            chan, splitmode, uubnum = d['chan'], d['splitmode'], d['uubnum']
-            if not(chan in lowgains or chan in highgains and splitmode == 0):
-                continue
+            chan, uubnum, voltage = d['chan'], d['uubnum'], d['voltage']
+            splitmode = d.get('splitmode', None)
             if d['typ'] == 'ampli':
                 flabel = ''
                 key = ('P', uubnum, chan)
             else:
                 flabel = d.get('flabel', float2expo(d['freq']))
                 key = ('F', uubnum, chan, flabel)
+            if notcalc(key[0], chan, splitmode, voltage):
+                continue
             gain = splitgain.gainUUB(splitmode, uubnum, chan, flabel)
             # voltage in mV
-            volt = 1000*d['voltage'] * gain
+            volt = 1000*voltage * gain
             if key not in data:
                 data[key] = []
             data[key].append((volt, adcvalue))

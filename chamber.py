@@ -10,6 +10,7 @@ import json
 # ESS stuff
 from timer import one_tick, point_ticker, list_ticker
 from modbus import Modbus, ModbusError, Binder, BinderSegment, BinderProg
+from threadid import syscall, SYS_gettid
 
 
 class Chamber(threading.Thread):
@@ -24,25 +25,26 @@ q_resp - queue to send response"""
         self.timer = timer
         self.q_resp = q_resp
         # check that we are connected to Binder climate chamber
-        logger = logging.getLogger('chamber')
+        self.logger = logging.getLogger('chamber')
         b = None
         try:
             m = Modbus(port)
-            logger.info('Opening serial %s', repr(m.ser))
+            self.logger.info('Opening serial %s', repr(m.ser))
             b = Binder(m)
             b.state()
         except ModbusError:
             m.ser.close()
-            logger.exception('Init modbus failed')
+            self.logger.exception('Init modbus failed')
             raise
         self.binder = b
 
     def run(self):
-        logger = logging.getLogger('chamber')
+        tid = syscall(SYS_gettid)
+        self.logger.debug('run start, name %s, tid %d', self.name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
-                logger.info('Timer stopped, closing serial')
+                self.logger.info('Timer stopped, closing serial')
                 self.binder.modbus.ser.close()
                 self.binder = None
                 return
@@ -53,28 +55,28 @@ q_resp - queue to send response"""
                                  'meas.ramp', 'meas.noise', 'meas.iv',
                                  'meas.thp', 'meas.pulse', 'meas.freq')]):
                 continue
-            logger.debug('Chamber event timestamp %s',
+            self.logger.debug('Chamber event timestamp %s',
                          datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'binder.state' in flags:
                 if flags['binder.state'] is None:
-                    logger.info('Stopping program')
+                    self.logger.info('Stopping program')
                     self.binder.setState(Binder.STATE_BASIC)
                 else:
                     try:
                         progno = int(flags['binder.state'])
-                        logger.info('Starting program %d', progno)
+                        self.logger.info('Starting program %d', progno)
                         self.binder.setState(Binder.STATE_PROG, progno)
                     except Exception:
-                        logger.error('Unknown detail for binder.state: %s',
+                        self.logger.error('Unknown detail for binder.state: %s',
                                      repr(flags['binder.state']))
             if any([name in flags
                     for name in ('meas.sc', 'meas.thp',
                                  'meas.ramp', 'meas.noise', 'meas.iv',
                                  'meas.pulse', 'meas.freq')]):
-                logger.debug('Chamber temperature & humidity measurement')
+                self.logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
                 humid = self.binder.getActHumid()
-                logger.debug('Done. t = %.2fdeg.C, h = %.2f%%',
+                self.logger.debug('Done. t = %.2fdeg.C, h = %.2f%%',
                              temperature, humid)
                 res = {'timestamp': timestamp,
                        'chamber_temp': temperature,
@@ -83,7 +85,7 @@ q_resp - queue to send response"""
             if 'binder.prog' in flags:
                 progno, prog = (flags['binder.prog']['progno'],
                                 flags['binder.prog']['prog'])
-                logger.info('Loading program %d', progno)
+                self.logger.info('Loading program %d', progno)
                 prog.send(self.binder, progno)
 
 
@@ -442,6 +444,8 @@ return polyline approximation at the time t"""
 
     def run(self):
         logger = logging.getLogger('ESSprogram')
+        tid = syscall(SYS_gettid)
+        logger.debug('run start, name %s, tid %d', self.name, tid)
         if self.load:
             self.timer.add_immediate('binder.prog', {'prog': self.prog,
                                                      'progno': self.progno})
