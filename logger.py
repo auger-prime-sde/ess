@@ -94,7 +94,7 @@ class LogHandlerRamp(object):
         self.f.flush()
         self.skiprec = lambda d: 'meas_ramp' not in d
         self.formatter = MyFormatter('~')
-        self.formatstr = '{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:2d} '
+        self.formatstr = '{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:4d} '
 
     def write_rec(self, d):
         if self.skiprec is not None and self.skiprec(d):
@@ -411,7 +411,7 @@ uubnum - UUB to log"""
 
     if count is None:
         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                   '{meas_point:3d}']
+                   '{meas_point:4d}']
         for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
             logdata += ['{%s:%s}' % (item2label(
                 functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
@@ -421,7 +421,7 @@ uubnum - UUB to log"""
         loglines = []
         for ind in range(count):
             logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                       '{meas_point:3d}', "%03d" % ind]
+                       '{meas_point:4d}', "%03d" % ind]
             for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
                 logdata += ['{%s:%s}' % (
                     item2label(functype='N', uubnum=uubnum, chan=chan,
@@ -456,7 +456,7 @@ styp - variable to calculate statistics for (e.g. pede or noise)"""
 # columns: timestamp | meas_point""" % (
         p['prolog'], uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{meas_point:3d}']
+               '{meas_point:4d}']
     for typ, fmt in ((styp+'mean', '7.2f'), (styp+'stdev', '7.2f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan) for chan in ctx.chans])
         logdata += ['{%s:%s}' % (item2label(
@@ -505,7 +505,7 @@ keys - voltages and/or splitmodes and/or count"""
         for voltage in voltages:
             for ind in indices:
                 logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                           '{meas_point:2d}']
+                           '{meas_point:4d}']
                 if splitmode is not None:
                     logdata.append('%d' % splitmode)
                     itemr['splitmode'] = splitmode
@@ -565,8 +565,8 @@ keys - freqs, voltages and/or splitmodes"""
             for voltage in voltages:
                 for ind in indices:
                     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                               '{meas_point:2d}',
-                               '%3s %5.2f' % (flabel, freq/1e6)]
+                               '{meas_point:4d}',
+                               '%-4s %6.2f' % (flabel, freq/1e6)]
                     if splitmode is not None:
                         logdata.append('%d' % splitmode)
                         itemr['splitmode'] = splitmode
@@ -599,7 +599,7 @@ uubnum - UUB to log"""
 # columns: timestamp | meas_point""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{meas_point:2d}']
+               '{meas_point:4d}']
     itemr = {'functype': 'P', 'uubnum': uubnum}
     for typ, fmt in (('gain', '6.3f'), ('lin', '7.5f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan)
@@ -625,22 +625,23 @@ freqs - list of frequencies to log"""
 # UUB #%04d, date %s
 # columns: timestamp | meas_point | flabel | freq [MHz]""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    for typ in ('fgain', 'flin'):
+        prolog += ''.join([' | %s.ch%d' % (typ, chan)
+                           for chan in ctx.chans])
+    prolog += '\n'
     itemr = {'functype': 'F', 'uubnum': uubnum}
     loglines = []
     for freq in freqs:
         flabel = float2expo(freq, manlength=3)
         itemr['flabel'] = flabel
         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                   '{meas_point:2d}',
-                   '%3s %5.2f' % (flabel, freq/1e6)]
+                   '{meas_point:4d}',
+                   '%-4s %6.2f' % (flabel, freq/1e6)]
         for typ, fmt in (('fgain', '6.3f'), ('flin', '7.5f')):
-            prolog += ''.join([' | %s.ch%d' % (typ, chan)
-                               for chan in ctx.chans])
             logdata += ['{%s:%s}' % (item2label(itemr, chan=chan, typ=typ),
                                      fmt)
                         for chan in ctx.chans]
         loglines.append(' '.join(logdata) + '\n')
-    prolog += '\n'
     formatstr = ''.join(loglines)
     return LogHandlerFile(fn, formatstr, prolog=prolog,
                           skiprec=lambda d: 'meas_freq' not in d)
@@ -659,7 +660,7 @@ uubnum - UUB to log"""
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     prolog += ''.join([' | cutoff.ch%d' % chan for chan in ctx.chans]) + '\n'
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{meas_point:2d}']
+               '{meas_point:4d}']
     itemr = {'uubnum': uubnum, 'typ': 'cutoff'}
     logdata += ['{%s:5.2f}' % item2label(itemr, chan=chan)
                 for chan in ctx.chans]
