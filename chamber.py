@@ -106,6 +106,7 @@ class ESSprogram(threading.Thread):
             self.lis = {}   # logins {time: flags}
             self.los = {}   # logouts {time: flags}
             self.cms = {}   # telnet cmds {time: flags}
+            self.dls = {}   # telnet downloads {time: flags}
             self.fls = {}   # flir operations {time: flags}
             self.lto = {}   # log_timeout: {time: log_timeout value}
             self.t = 0      # time
@@ -121,7 +122,7 @@ class ESSprogram(threading.Thread):
                      for t, val in otherpoints.__dict__[timelist]])
             # { time: flags } dictionaries
             for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
-                          'lis', 'los', 'cms', 'fls', 'lto'):
+                          'lis', 'los', 'cms', 'dls', 'fls', 'lto'):
                 self.__dict__[dname].update(
                     {t + self.t: val
                      for t, val in otherpoints.__dict__[dname].items()})
@@ -131,7 +132,7 @@ class ESSprogram(threading.Thread):
             """Return all time points"""
             keys = self.tps
             for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
-                          'lis', 'los', 'cms', 'fls', 'lto'):
+                          'lis', 'los', 'cms', 'dls', 'fls', 'lto'):
                 keys.extend(list(self.__dict__[dname].keys()))
             return sorted(set(keys))
 
@@ -373,6 +374,15 @@ jsonobj - either json string or json file"""
                             uubnums = None
                         ap.cms[ttime] = {"cmdlist": cmdlist,
                                          "uubnums": uubnums}
+                    if "dloads" in tp:
+                        filelist = [str(self._macro(fn))
+                                   for fn in self._macro(tp["dloads"])]
+                        if "dloads.uubs" in tp:
+                            uubnums = self._macro(tp["dloads.uubs"])
+                        else:
+                            uubnums = None
+                        ap.dls[ttime] = {"filelist": filelist,
+                                         "uubnums": uubnums}
             # FLIR
             if 'flir' in segment:
                 flir = self._macro(segment["flir"])
@@ -420,6 +430,7 @@ jsonobj - either json string or json file"""
         self.logins = [(ttime, gp.lis[ttime]) for ttime in sorted(gp.lis)]
         self.logouts = [(ttime, gp.los[ttime]) for ttime in sorted(gp.los)]
         self.cmds = [(ttime, gp.cms[ttime]) for ttime in sorted(gp.cms)]
+        self.dloads = [(ttime, gp.dls[ttime]) for ttime in sorted(gp.dls)]
         self.flirs = [(ftime, gp.fls[ftime]) for ftime in sorted(gp.fls)]
         self.lto_touts = [(ltime, gp.lto[ltime]) for ltime in sorted(gp.lto)]
         self.lto_touts.append((None, None))  # sentinel
@@ -542,6 +553,9 @@ and add them to timer"""
         if self.cmds:
             self.timer.add_ticker('telnet.cmds',
                                   point_ticker(self.cmds, offset))
+        if self.dloads:
+            self.timer.add_ticker('telnet.dloads',
+                                  point_ticker(self.dloads, offset))
         if self.flirs:
             self.timer.add_ticker('flir',
                                   point_ticker(self.flirs, offset))

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from time import sleep
 from struct import unpack
 from struct import error as struct_error
-from telnetlib import Telnet
+import telnetlib
 import numpy as np
 
 from dataproc import float2expo
@@ -256,9 +256,6 @@ class UUBtsc(threading.Thread):
    24V\ EXT1/2 \s+ (?P<u_ext1>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
-   .* Sensors \s+
-   T= \s+ (?P<temp>-?\d+) \s* \*0\.1K, \s*
-   P= \s+ (?P<press>\d+) \s* mBar
 ''', re.VERBOSE + re.DOTALL)
 
     def __init__(self, uubnum, timer, q_resp):
@@ -275,6 +272,7 @@ q_resp - queue to send response
         self.serial = None
         self.TIMEOUT = 5
         self.TRIALS = 3  # number of trials to read internal SN
+        self.HTTP_TOUT = 3  # timeout for HTTP connections
         self.logger = logging.getLogger('UUB-%04d' % uubnum)
         self.logger.info('UUBtsc created, IP %s.', self.ip)
 
@@ -317,7 +315,7 @@ q_resp - queue to send response
                     res['test_point'] = flags['test_point']
             if 'meas.thp' in flags or 'meas.sc' in flags:
                 self.logger.debug('Connecting UUB')
-                conn = http.client.HTTPConnection(self.ip, HTTPPORT)
+                conn = http.client.HTTPConnection(self.ip, HTTPPORT, self.HTTP_TOUT)
                 try:
                     # read Zynq temperature
                     if 'meas.thp' in flags:
@@ -344,7 +342,7 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
             return None
         self.logger.debug('Reading UUB serial number')
         while trials > 0:
-            conn = http.client.HTTPConnection(self.ip, HTTPPORT)
+            conn = http.client.HTTPConnection(self.ip, HTTPPORT, self.HTTP_TOUT)
             try:
                 # self.logger.debug('sending conn.request')
                 conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
@@ -387,6 +385,7 @@ conn - HTTPConnection instance
 return dictionary: sc<uubnum>_<variable>: value
 """
         conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-a')
+        self.logger.debug('req sent')   #### DEBUG
         # TO DO: check status
         resp = conn.getresponse().read().decode('ascii')
         self.logger.debug('slowc GET: "%s"', repr(resp))
@@ -396,7 +395,8 @@ return dictionary: sc<uubnum>_<variable>: value
             prefix = 'sc%04d_' % self.uubnum
             res = {prefix+k: float(v) for k, v in m.groupdict().items()}
             # transform 0.1K -> deg.C
-            res[prefix+'temp'] = 0.1 * res[prefix+'temp'] - 273.15
+            if prefix+'temp' in res:
+                res[prefix+'temp'] = 0.1 * res[prefix+'temp'] - 273.15
         else:
             self.logger.warning('Resp to slowc -a does not match expected')
             res = {}
@@ -738,7 +738,7 @@ header - data as in `struct shwr_header'"""
 class UUBtelnet(threading.Thread):
     """Class making telnet to UUBs and run netscope program"""
 
-    def __init__(self, timer, *uubnums):
+    def __init__(self, timer, uubnums, dloadfn=None):
         super(UUBtelnet, self).__init__()
         self.timer = timer
         self.uubnums = list(uubnums)
@@ -746,8 +746,14 @@ class UUBtelnet(threading.Thread):
         self.uubnums2add = []
         self.uubnums2del = []
         self.logger = logging.getLogger('UUBtelnet')
+        self.dloadfp = None
+        if dloadfn is not None:
+            self.logger.info('Opening %s for downloads', dloadfn)
+            self.dloadfp = open(dloadfn, "ab")
+        self.timestamp = None
         # parameters
         self.TOUT = 1  # timeout for read_until
+        self.TOUT_CMD = 0.1  # timeout between cmds and downloads
         self.LOGIN = "root"
         self.PASSWD = "root"
         self.PROMPT = "#"     # prompt to expect after successfull login
@@ -758,6 +764,18 @@ match - bytes or bytearray"""
         resp = tn.read_until(match, self.TOUT)
         assert resp.find(match) >= 0
         return resp
+
+    def _isdead(self, tn):
+        """Check if underlying socket is dead by sending IAC+NOP
+tn - instance of Telnet"""
+        try:
+            # the first sendall() causes socket closing
+            tn.sock.sendall(telnetlib.IAC + telnetlib.NOP)
+            # the second sendall() raises exception because of closed socket
+            tn.sock.sendall(telnetlib.IAC + telnetlib.NOP)
+            return False
+        except ConnectionResetError:
+            return True
 
     def _login(self, uubnums=None):
         """Login to UUBs
@@ -773,7 +791,7 @@ return list of failed UUBs or None"""
                 tn.close()
             try:
                 self.logger.debug('logging to UUB %04d', uubnum)
-                tn = Telnet(uubnum2ip(uubnum))
+                tn = telnetlib.Telnet(uubnum2ip(uubnum))
                 self._read_until(tn, b"login: ")
                 tn.write(bytes(self.LOGIN, 'ascii') + b"\n")
                 self._read_until(tn, b"Password: ")
@@ -810,16 +828,22 @@ return list of failed UUBs or None"""
             if uubnums is not None and uubnum not in uubnums:
                 continue
             tn = self.telnets[ind]
-            if tn is None:
-                self.logger.warning('not logged to UUB %04d yet', uubnum)
+            if tn is None or self._isdead(tn):
+                if tn is None:
+                    self.logger.warning(
+                        'not logged to UUB %04d yet, logging in', uubnum)
+                else:
+                    self.logger.warning(
+                        'telnet to UUB %04d dead, logging out/in', uubnum)
+                    tn.close()
                 if self._login(uubnums=(uubnum, )) is not None:
                     failed.append(uubnum)
                     continue
                 tn = self.telnets[ind]
             for cmd in cmdlist:
                 try:
-                    self.logger.debug('sending command "%s" to UUB %04d',
-                                      cmd, uubnum)
+                    self.logger.debug('command to UUB %04d: "%s"',
+                                      uubnum, cmd)
                     bcmd = bytes(cmd, 'ascii')
                     tn.write(bcmd + b"\n")
                     self._read_until(tn, bcmd + b"\r\n")
@@ -831,10 +855,54 @@ return list of failed UUBs or None"""
                     break  # for cmd in cmdlist
         return failed if failed else None
 
+    def _downloads(self, filelist, uubnums=None):
+        """Download requested files from UUBs via HTTP
+filelist - list of files to download
+uubnums - if not None, logs in only to these UUB
+return list of tuples with failed UUB/file or None"""
+        if self.dloadfp is None:
+            self.logger.error('Download file not open')
+            return None
+        failed = []
+        if uubnums is None:
+            uubnums = self.uubnums
+        if self.timestamp is not None:
+            ts = self.timestamp.strftime("ts=%Y-%m-%dT%H:%M:%S ")
+        else:
+            ts = ""
+        for uubnum in uubnums:
+            conn = http.client.HTTPConnection(uubnum2ip(uubnum), HTTPPORT)
+            for f in filelist:
+                self.logger.debug('Downloading %s from UUB #%04d', f, uubnum)
+                try:
+                    conn.request('GET', '/' + f)
+                    resp = conn.getresponse()
+                    if resp.status != 200:
+                        header = "=*= %suubnum=%04d filename=%s size=-1 =*=\n" % (
+                            ts, uubnum, f)
+                        data = b''
+                    else:
+                        data = resp.read()
+                        header = "=*= %suubnum=%04d filename=%s size=%d =*=\n" % (
+                            ts, uubnum, f, len(data))
+                    self.dloadfp.write(bytes(header, 'ascii'))
+                    self.dloadfp.write(data)
+                except (http.client.CannotSendRequest, socket.error,
+                        AttributeError) as e:
+                    self.logger.error('Download failed, %s', e.__str__())
+                    failed.append((uubnum, f))
+            self.logger.debug('Closing HTTP connection to UUB #%04d', uubnum)
+            conn.close()
+        self.dloadfp.flush()
+        return failed if failed else None
+
     def __del__(self):
         for tn in self.telnets:
             if tn is not None:
                 tn.close()
+        if self.dloadfp is not None:
+            self.dloadfp.close()
+            self.dloadfp = None
 
     def run(self):
         tid = syscall(SYS_gettid)
@@ -845,7 +913,7 @@ return list of failed UUBs or None"""
                 self.logger.info('Timer stopped, closing telnets')
                 self._logout()
                 return
-            # timestamp = self.timer.timestamp   # store info from timer
+            self.timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             while self.uubnums2add:
                 uubnum = self.uubnums2add.pop()
@@ -873,7 +941,13 @@ return list of failed UUBs or None"""
                 cmdlist = flags['telnet.cmds']['cmdlist']
                 uubnums = flags['telnet.cmds'].get('uubnums', None)
                 self._runcmds(cmdlist, uubnums=uubnums)
-
+                sleep(self.TOUT_CMD)  # ad hoc before downloads
+            if 'telnet.dloads' in flags:
+                self.logger.info('telnet downloads')
+                filelist = flags['telnet.dloads']['filelist']
+                uubnums = flags['telnet.dloads'].get('uubnums', None)
+                self._downloads(filelist, uubnums=uubnums)
+                
 
 def ADCtup2c(tup):
     """Convert (adc, on/off, channelsel) tuple to char"""

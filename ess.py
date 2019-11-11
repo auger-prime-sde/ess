@@ -427,7 +427,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.udaq.uubnums2add.extend(self.uubnums)
 
         # UUBs - UUBtelnet
-        self.telnet = UUBtelnet(self.timer, *self.uubnums)
+        dloadfn = d.get('download_fn', None)
+        if dloadfn is not None and dloadfn[0] not in ('.', os.sep):
+            dloadfn = self.datadir + dloadfn
+        self.telnet = UUBtelnet(self.timer, self.uubnums, dloadfn)
         self.telnet.start()
 
         # UUBs - Zync temperature & SlowControl
