@@ -547,7 +547,7 @@ q_resp - a logger queue
             label = item2label(itemr, chan=ch+1)
             yr = np.array(item['yall'][:, ch], dtype='int16') + self.aramp
             yr %= 4096
-            res[label] = np.amin(yr) == np.amax(yr)
+            res[label] = bool(np.amin(yr) == np.amax(yr))
         self.q_resp.put(res)
 
 
