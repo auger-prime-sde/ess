@@ -493,6 +493,10 @@ return polyline approximation at the time t"""
                     res['meas_' + mname] = True
                     if 'db' in flags[name]:
                         res['db_' + mname] = flags[name]['db']
+            # modify db_noise -> db_noisestat if count in flags[meas.noise]
+            if 'meas.noise' in flags and 'count' in flags['meas.noise'] \
+              and 'db_noise' in res:
+                res['db_noisestat'] = res.pop('db_noise')
             if dur in self.timepoints:
                 res['meas_point'] = self.timepoints[dur]
             if self.time_temp and dur is not None:

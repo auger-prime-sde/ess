@@ -87,19 +87,19 @@ class LogHandlerDB(object):
 logitem - item to log, from DBconnector.LOGITEMS
 dbcon - instance of DBconnector, for measpoint, measrecs and _write_measrecords
 uubnums - list of UUBnums to log
-flables - list of frequencies to log for freqgain
+flabels - list of frequencies to log for freqgain
 """
         assert logitem in DBconnector.LOGITEMS
         self.logitem, self.dbcon, self.uubnums = logitem, dbcon, uubnums
         if logitem == 'noise':
             self.skiprec = lambda d: 'db_noise' not in d
-            self.typs = ('pede', 'pedesig')
-            self.typemap = {'pede': 'pede', 'pedesig': 'noise'}
+            self.typs = ('pede', 'noise')
+            self.typemap = {'pede': 'pede', 'noise': 'noise'}
         elif logitem == 'noisestat':
-            self.skiprec = lambda d: 'db_noise' not in d
-            self.typs = ('pedemean', 'pedestddev', 'pedesigmean')
-            self.typemap = {'pedemean': 'pede', 'pedesigmean': 'noise',
-                            'pedestddev': 'pedeerr'}
+            self.skiprec = lambda d: 'db_noisestat' not in d
+            self.typs = ('pedemean', 'pedestdev', 'noisemean', 'noisestdev')
+            self.typemap = {'pedemean': 'pede', 'pedestdev': 'pedesig',
+                            'noisemean': 'noise', 'noisestdev': 'noisesig'}
         elif logitem == 'gain':
             self.skiprec = lambda d: 'db_pulse' not in d
             self.typs = ('gain', )

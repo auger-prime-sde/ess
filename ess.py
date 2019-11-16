@@ -583,7 +583,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                         dpfilter_stat_noise = make_DPfilter_stat('noise')
                     self.dl.add_handler(self.db.getLogHandler(item),
                                         (dpfilter_stat_pede,
-                                         dpfilter_stat_pedesig))
+                                         dpfilter_stat_noise))
                 else:
                     self.dl.add_handler(self.db.getLogHandler(item))
 
