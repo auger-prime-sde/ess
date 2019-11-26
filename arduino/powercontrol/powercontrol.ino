@@ -5,9 +5,11 @@
  *
  */
 
-#define VERSION "2019-09-27"
+#define VERSION "2019-11-25"
 
-#undef DEBUGTOG
+#undef QUAD
+#define DEBUGTOG
+
 #ifndef sbi
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 #endif
@@ -22,36 +24,37 @@ char buffer[BUFSIZE];
 #define SAMPERIOD ((uint16_t) 80)          /* sampling period, 0.5us */
 
 #define NCHAN 10
-float alpha = 0.0;
+float alpha = 0.0;    /* 0.9996 */
 volatile uint8_t pin; /* currently processed ADC pin */
 volatile float adcvals[NCHAN];  /* running average with expo decay */
 
 /* ADC offset, slopes mA/ADC + quadratic correction */
-float offs[NCHAN] = {0.0, 508.286, 509.963, 508.343, 512.597,
-		     509.291, 509.383, 510.202, 509.428, 511.657};
-float slopes[NCHAN] = {1.0, 39.32, 34.95, 36.28, 35.69,
-		       36.28, 35.15, 34.44, 35.44, 36.21};
-float qs[NCHAN] = {0.0, 0.3939, 0.2154, 0.2653, 0.2676,
-		   0.2479, 0.2501, 0.1838, 0.2032, 0.1849};
-/* float offs[NCHAN] = {511.553, 508.286, 509.963, 508.343, 512.597, */
-/* 		     509.291, 509.383, 510.202, 509.428, 511.657}; */
-/* float slopes[NCHAN] = {41.49, 39.32, 34.95, 36.28, 35.69, */
-/* 		       36.28, 35.15, 34.44, 35.44, 36.21}; */
-/* float qs[NCHAN] = {0.2864, 0.3939, 0.2154, 0.2653, 0.2676, */
-/* 		   0.2479, 0.2501, 0.1838, 0.2032, 0.1849}; */
+#ifdef QUAD
+float offs[NCHAN] = {-2.9, -2.3, -3.0, -2.9, -2.4,
+		     -2.6, -2.9, -2.3, -2.4, -2.3};
+float slopes[NCHAN] = {2.404, 2.420, 2.401, 2.398, 2.420,
+		       2.413, 2.400, 2.420, 2.416, 2.422};
+float qs[NCHAN] = {-0.000048, -0.000000, -0.000037, -0.000065, 0.000000,
+		   -0.000013, -0.000063, 0.000001, -0.000012, 0.000017};
+#else
+float offs[NCHAN] = {-2.5, -2.3, -2.7, -2.4, -2.4,
+		     -2.5, -2.4, -2.3, -2.3, -2.4};
+float slopes[NCHAN] = {2.422, 2.420, 2.416, 2.423, 2.420,
+		       2.418, 2.424, 2.420, 2.421, 2.415};
+#endif
 
 /* mapping relay pins */
 char relPin[] = { 53 /* PB0 */, 51 /* PB2 */,
 		  49 /* PL0 */, 47 /* PL2 */,
-		  41 /* PG0 */, 39 /* PG2 */,
+		  45 /* PL4 */, 43 /* PL6 */,
 		  33 /* PC4 */, 31 /* PC6 */,
 		  29 /* PA7 */, 27 /* PA5 */ };
 
 /* splitter control pins (splitmode) */
-#define spPin0 43 /* PL6 */
-#define spPin1 45 /* PL4 */
+#define spPin0 37 /* PC0 */
+#define spPin1 39 /* PG2 */
 /* splitter on/off pin */
-#define spPin2 37 /* PC0 */
+#define spPin2 35 /* PC2 */
 
 /*
  * ISR to cummulate ADC result
@@ -220,11 +223,18 @@ void loop() {
   switch(*ptr++) {
   case 'r':   /* read currents [mA] */
     for (i = 0; i < NCHAN; i++) {
-      cli();  /* atomically copy accumulated value */
-      adc = adcvals[i];
-      sei();
-      adc = offs[i] - (1-alpha)*adc; /* ADC difference */
-      ival = adc * (slopes[i] - qs[i] * adc);
+      if(digitalRead(relPin[i])) {
+        cli();  /* atomically copy accumulated value */
+        adc = adcvals[i];
+        sei();
+        adc = (1-alpha)*adc - offs[i]; /* ADC difference */
+#ifdef QUAD
+	ival = adc * (slopes[i] - qs[i] * adc);
+#else
+	ival = adc * slopes[i];
+#endif
+      } else
+	ival = 0.0;   /* report zero current if relay switched off */
       Serial.print(ival, 1);
       Serial.print(' '); }
     Serial.println("\r\nOK");

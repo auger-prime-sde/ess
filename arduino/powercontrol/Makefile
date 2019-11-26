@@ -4,6 +4,6 @@ MCU = atmega2560
 AVRDUDE_ARD_BAUDRATE = 115200
 AVRDUDE_ARD_PROGRAMMER = wiring
 ARDUINO_LIBS = 
-MONITOR_PORT = /dev/ttyUSB0
+MONITOR_PORT = /dev/ttyACM0
 # OPTIMIZATION_LEVEL = s
 include /usr/share/arduino/Arduino.mk
