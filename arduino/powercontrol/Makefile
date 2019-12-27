@@ -5,5 +5,7 @@ AVRDUDE_ARD_BAUDRATE = 115200
 AVRDUDE_ARD_PROGRAMMER = wiring
 ARDUINO_LIBS = 
 MONITOR_PORT = /dev/ttyACM0
+CXXFLAGS = -fdump-class-hierarchy
+# DEBUG = 1
 # OPTIMIZATION_LEVEL = s
 include /usr/share/arduino/Arduino.mk
