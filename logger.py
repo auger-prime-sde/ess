@@ -7,7 +7,10 @@ import logging
 import string
 import threading
 import pickle
+import json
+import ssl
 from datetime import datetime, timedelta
+from http.client import HTTPSConnection
 from queue import Empty
 
 from dataproc import item2label, float2expo
@@ -128,6 +131,181 @@ class LogHandlerPickle(object):
 
     def __del__(self):
         self.fp.close()
+
+
+class LogHandlerGrafana(object):
+    """LogHandler delivering data to Grafana database"""
+    TEMP_KEYS = ('set_temp', 'chamber_temp', 'temp_BME1', 'temp_BME2',
+                 'temp_DS1', 'temp_DS2', 'temp_DS3', 'temp_DS4', 'temp_DS5')
+    SLOW_KEYS = (('zynq{u:04d}_temp', 'temp_zynq'),
+                 ('sc{u:04d}_temp', 'temp_sc'),
+                 ('itot_u{u:04d}', 'i_tot'),
+                 ('sc{u:04d}_u_1V', 'u_1V'),
+                 ('sc{u:04d}_i_1V', 'i_1V'),
+                 ('sc{u:04d}_u_1V2', 'u_1V2'),
+                 ('sc{u:04d}_i_1V2', 'i_1V2'),
+                 ('sc{u:04d}_u_1V8', 'u_1V8'),
+                 ('sc{u:04d}_i_1V8', 'i_1V8'),
+                 ('sc{u:04d}_u_3V3', 'u_3V3'),
+                 ('sc{u:04d}_i_3V3', 'i_3V3'),
+                 ('sc{u:04d}_i_3V3_sc', 'i_3V3_sc'),
+                 ('sc{u:04d}_u_P3V3', 'u_P3V3'),
+                 ('sc{u:04d}_i_P3V3', 'i_P3V3'),
+                 ('sc{u:04d}_u_N3V3', 'u_N3V3'),
+                 ('sc{u:04d}_i_N3V3', 'i_N3V3'),
+                 ('sc{u:04d}_u_5V', 'u_5V'),
+                 ('sc{u:04d}_i_5V', 'i_5V'))
+
+    def __init__(self, starttime, uubnums, dbinfo):
+        """Constructor.
+starttime - program start
+uubnums - list of UUBs in test
+dbinfo - dict with configuration for Grafana
+    host_addr - DNS name or IP address of a server to connect
+    host_port - (HTTPS) port of the server to connect
+    server_cert - server's certificate
+    client_key - client's private key
+    client_cert - client's certificate
+    urlInit - URL to initialize TestRun
+    urlSetStarttime - URL to set starttime
+    urlWriteRec - URL to write record
+    fmtdatetime - datetime.strftime format for starttime
+stat - list of 'pede', 'noise', 'gain', 'fgain' where use *stat values"""
+        self.logger = logging.getLogger('LHGrafana')
+        self.uubnums = uubnums
+        self.dbinfo = dbinfo
+        self.sslctx = ssl.create_default_context(
+            ssl.Purpose.SERVER_AUTH, cafile=dbinfo['server_cert'])
+        self.sslctx.load_cert_chain(certfile=dbinfo['client_cert'],
+                                    keyfile=dbinfo['client_key'])
+        param = '&'.join(['uub%d=%d' % (i+1, uubnum)
+                          for i, uubnum in enumerate(uubnums)
+                          if uubnum is not None])
+        if starttime is not None:
+            param = 'starttime=%s&%s' % (
+                starttime.strftime(self.dbinfo['fmtdatetime']), param)
+        self.logger.info('Initialize Grafana TestRun')
+        conn = HTTPSConnection(self.dbinfo['host_addr'],
+                               port=self.dbinfo['host_port'],
+                               context=self.sslctx)
+        # conn.set_debuglevel(3)
+        conn.request("GET", self.dbinfo['urlInit'] + param)
+        resp = conn.getresponse()
+        self.logger.debug('Received status %d', resp.status)
+        self.runid = int(resp.read())
+        conn.close()
+        self.logger.info('Received runid: %d', self.runid)
+
+    def setStarttime(self, starttime):
+        self.logger.info('Setting starttime')
+        url = self.dbinfo['urlSetStarttime'].format(
+            runid=self.runid,
+            starttime=starttime.strftime(self.dbinfo['fmtdatetime']))
+        conn = HTTPSConnection(self.dbinfo['host_addr'],
+                               port=self.dbinfo['host_port'],
+                               context=self.sslctx)
+        # conn.set_debuglevel(3)
+        conn.request("GET", url)
+        resp = conn.getresponse()
+        self.logger.debug('Received status %d', resp.status)
+        conn.close()
+
+    def write_rec(self, d):
+        common = {'runid': self.runid,
+                  'timestamp': d['timestamp'].strftime(
+                      self.dbinfo['fmtdatetime'])}
+        if 'rel_time' in d:
+            common['rel_time'] = d['rel_time']
+        res = {}
+        # Temperature
+        temper = {key: d[key] for key in self.TEMP_KEYS
+                  if key in d}
+        if temper:
+            res['temperature'] = temper
+        # SlowValues
+        slowvals = []
+        for uubnum in self.uubnums:
+            if uubnum is None:
+                continue
+            vals = {}
+            for keytemplate, dbname in self.SLOW_KEYS:
+                key = keytemplate.format(u=uubnum)
+                if key in d:
+                    vals[dbname] = d[key]
+            if vals:
+                vals['uubnum'] = uubnum
+                slowvals.append(vals)
+        if slowvals:
+            res['slowvals'] = slowvals
+        # UUB data
+        uubdata = []
+        for uubnum in self.uubnums:
+            if uubnum is None:
+                continue
+            for typ in ('pedemean', 'pede'):
+                vals = self._collect(d, uubnum, typ)
+                if vals is not None:
+                    uubdata.append({'uubnum': uubnum, 'typ': 'pede',
+                                    'values': vals})
+                    break
+            for typ in ('noisemean', 'noise'):
+                vals = self._collect(d, uubnum, typ)
+                if vals is not None:
+                    uubdata.append({'uubnum': uubnum, 'typ': 'noise',
+                                    'values': vals})
+                    break
+            for typ in ('pedestdev', 'noisestdev', 'gain'):
+                vals = self._collect(d, uubnum, typ)
+                if vals is not None:
+                    uubdata.append({'uubnum': uubnum, 'typ': typ,
+                                    'values': vals})
+            for flabel in ('71', '72', '73', '74', '75', '759', '77'):
+                vals = self._collect(d, uubnum, 'freqgain', flabel)
+                if vals is not None:
+                    uubdata.append({'uubnum': uubnum, 'typ': 'freqgain',
+                                    'flabel': flabel, 'values': vals})
+        if uubdata:
+            res['uubdata'] = uubdata
+        # send results if any
+        if res:
+            res['common'] = common
+            payload = json.dumps(res)
+            self.logger.debug('Sending results to grafana')
+            url = self.dbinfo['urlWriteRec'].format(
+                runid=self.runid)
+            conn = HTTPSConnection(self.dbinfo['host_addr'],
+                                   port=self.dbinfo['host_port'],
+                                   context=self.sslctx)
+            # conn.set_debuglevel(3)
+            conn.request("POST", url, body=bytes(payload, 'ascii'),
+                         headers={'Content-Type': 'application/json'})
+            resp = conn.getresponse()
+            self.logger.debug('Received status %d', resp.status)
+            conn.close()
+
+    def _collect(self, d, uubnum, typ, flabel=None):
+        """Collects data of type <typ> (+flabel) for UUB <uubnum>
+return list of 10 values (or None) or None if no data available"""
+        item = {'uubnum': uubnum, 'typ': typ}
+        if typ == 'gain':
+            item['functype'] = 'P'
+        elif typ == 'fgain':
+            item['functype'] = 'F'
+            item['flabel'] = flabel
+        elif typ in ('pede', 'pedemean', 'pedestdev',
+                     'noise', 'noisemean', 'noisestdev'):
+            item['functype'] = 'N'
+        vals = {}
+        for chan in range(1, 11):
+            label = item2label(item, chan=chan)
+            if label in d:
+                vals[chan] = d[label]
+        if vals:
+            res = [None] * 10
+            for chan, val in vals:
+                res[chan-1] = val
+            return res
+        return None
 
 
 class DataLogger(threading.Thread):
