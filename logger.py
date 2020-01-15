@@ -122,7 +122,7 @@ class LogHandlerPickle(object):
     def __init__(self, filename=None):
         if filename is None:
             filename = datetime.now().strftime('data/loghandler-%Y%m%d%H%M')
-        self.fp = open(filename, 'a')
+        self.fp = open(filename, 'ab')
         logging.getLogger('LogHandlerPickle').info('saving to pickle file %s',
                                                    filename)
 
@@ -135,8 +135,15 @@ class LogHandlerPickle(object):
 
 class LogHandlerGrafana(object):
     """LogHandler delivering data to Grafana database"""
-    TEMP_KEYS = ('set_temp', 'chamber_temp', 'temp_BME1', 'temp_BME2',
-                 'temp_DS1', 'temp_DS2', 'temp_DS3', 'temp_DS4', 'temp_DS5')
+    TEMP_KEYS = (('set_temp', 'temp_set'),
+                 ('chamber_temp', 'temp_chamber'),
+                 ('bme_temp1', 'temp_BME1'),
+                 ('bme_temp2', 'temp_BME2'),
+                 ('ds_temp1', 'temp_DS1'),
+                 ('ds_temp2', 'temp_DS2'),
+                 ('ds_temp3', 'temp_DS3'),
+                 ('ds_temp4', 'temp_DS4'),
+                 ('ds_temp5', 'temp_DS5'))
     SLOW_KEYS = (('zynq{u:04d}_temp', 'temp_zynq'),
                  ('sc{u:04d}_temp', 'temp_sc'),
                  ('itot_u{u:04d}', 'i_tot'),
@@ -155,6 +162,10 @@ class LogHandlerGrafana(object):
                  ('sc{u:04d}_i_N3V3', 'i_N3V3'),
                  ('sc{u:04d}_u_5V', 'u_5V'),
                  ('sc{u:04d}_i_5V', 'i_5V'))
+    KEYMAP = {'pedemean': 'pede',
+              'pedestdev': 'pedesig',
+              'noisemean': 'noise',
+              'noisestdev': 'noisesig'}
 
     def __init__(self, starttime, uubnums, dbinfo):
         """Constructor.
@@ -169,11 +180,12 @@ dbinfo - dict with configuration for Grafana
     urlInit - URL to initialize TestRun
     urlSetStarttime - URL to set starttime
     urlWriteRec - URL to write record
-    fmtdatetime - datetime.strftime format for starttime
-stat - list of 'pede', 'noise', 'gain', 'fgain' where use *stat values"""
+    flabels - list of frequencies to log (as labels)
+    fmtdatetime - datetime.strftime format for starttime"""
         self.logger = logging.getLogger('LHGrafana')
         self.uubnums = uubnums
         self.dbinfo = dbinfo
+        self.flabels = self.dbinfo.pop('flabels', ())
         self.sslctx = ssl.create_default_context(
             ssl.Purpose.SERVER_AUTH, cafile=dbinfo['server_cert'])
         self.sslctx.load_cert_chain(certfile=dbinfo['client_cert'],
@@ -211,15 +223,14 @@ stat - list of 'pede', 'noise', 'gain', 'fgain' where use *stat values"""
         conn.close()
 
     def write_rec(self, d):
-        common = {'runid': self.runid,
-                  'timestamp': d['timestamp'].strftime(
+        common = {'timestamp': d['timestamp'].strftime(
                       self.dbinfo['fmtdatetime'])}
         if 'rel_time' in d:
             common['rel_time'] = d['rel_time']
         res = {}
         # Temperature
-        temper = {key: d[key] for key in self.TEMP_KEYS
-                  if key in d}
+        temper = {dbkey: d[esskey] for esskey, dbkey in self.TEMP_KEYS
+                  if esskey in d}
         if temper:
             res['temperature'] = temper
         # SlowValues
@@ -242,24 +253,13 @@ stat - list of 'pede', 'noise', 'gain', 'fgain' where use *stat values"""
         for uubnum in self.uubnums:
             if uubnum is None:
                 continue
-            for typ in ('pedemean', 'pede'):
+            for typ in ('pede', 'pedemean', 'pedestdev',
+                        'noise', 'noisemean', 'noisestdev', 'gain'):
                 vals = self._collect(d, uubnum, typ)
                 if vals is not None:
-                    uubdata.append({'uubnum': uubnum, 'typ': 'pede',
-                                    'values': vals})
-                    break
-            for typ in ('noisemean', 'noise'):
-                vals = self._collect(d, uubnum, typ)
-                if vals is not None:
-                    uubdata.append({'uubnum': uubnum, 'typ': 'noise',
-                                    'values': vals})
-                    break
-            for typ in ('pedestdev', 'noisestdev', 'gain'):
-                vals = self._collect(d, uubnum, typ)
-                if vals is not None:
-                    uubdata.append({'uubnum': uubnum, 'typ': typ,
-                                    'values': vals})
-            for flabel in ('71', '72', '73', '74', '75', '759', '77'):
+                    uubdata.append({'typ': self._keymap(typ),
+                                    'uubnum': uubnum, 'values': vals})
+            for flabel in self.flabels:
                 vals = self._collect(d, uubnum, 'freqgain', flabel)
                 if vals is not None:
                     uubdata.append({'uubnum': uubnum, 'typ': 'freqgain',
@@ -302,10 +302,16 @@ return list of 10 values (or None) or None if no data available"""
                 vals[chan] = d[label]
         if vals:
             res = [None] * 10
-            for chan, val in vals:
+            for chan, val in vals.items():
                 res[chan-1] = val
             return res
         return None
+
+    def _keymap(self, key):
+        return LogHandlerGrafana.KEYMAP.get(key, key)
+
+    def __del__(self):
+        pass
 
 
 class DataLogger(threading.Thread):
@@ -324,11 +330,14 @@ timeout - interval for collecting data
         self.stop = threading.Event()
 
     def add_handler(self, handler, filterlist=None):
-        """Add handler and filters to apply for it"""
+        """Add handler and filters to apply for it
+Ignore None filters"""
         if filterlist is None:
             key = None
         else:
-            key = tuple([id(filt) for filt in filterlist])
+            key = tuple([id(filt) for filt in filterlist if filt is  not None])
+            if key == ():
+                key = None
         if key not in self.filters:
             self.filters[key] = filterlist
         self.handlers.append((handler, key))

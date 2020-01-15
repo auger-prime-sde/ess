@@ -22,7 +22,8 @@ from serial import Serial, SerialException
 # ESS stuff
 from timer import Timer, periodic_ticker
 from modbus import Binder, Modbus, ModbusError
-from logger import LogHandlerRamp, LogHandlerPickle, DataLogger
+from logger import LogHandlerRamp, LogHandlerPickle, LogHandlerGrafana
+from logger import DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol
 from logger import makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
@@ -40,7 +41,7 @@ from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
 
-VERSION = '20190717'
+VERSION = '20200114'
 
 
 class DetectUSB(object):
@@ -218,6 +219,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.starttime = None
         self.essprog = None
         self.db = None
+        self.grafana = None
 
         if jsfn is not None:
             with open(jsfn, 'r') as fp:
@@ -330,6 +332,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.timer.timerstop = self.timerstop = threading.Event()
         self.timer.start()
 
+        self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
+        # DB connector
+        self.dbcon = DBconnector(self, d['dbinfo'])
+        self.internalSNs = self.dbcon.queryInternalSN()
+
         # power supply
         if 'power' in d and 'power' in d['ports']:
             port = d['ports']['power']
@@ -382,7 +389,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     "AFG as trigger required, but it does not exist"
                 self.trigger = self.afg.trigger
 
-        self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # PowerControl
         if 'powercontrol' in d['ports']:
             self.pc = PowerControl(
@@ -553,13 +559,12 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # database
         if 'db' in d['dataloggers']:
-            self.db = DBconnector(self, d['dataloggers']['db'])
             flabels = d['dataloggers']['db'].get('flabels', None)
             for item in d['dataloggers']['db']['logitems']:
                 if item == 'ramp':
                     if dpfilter_ramp is None:
                         dpfilter_ramp = make_DPfilter_ramp(self.uubnums)
-                    self.dl.add_handler(self.db.getLogHandler(item),
+                    self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_ramp, ))
                 elif item == 'cutoff':
                     if dpfilter_linear is None:
@@ -567,31 +572,39 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                             self.notcalc, self.splitgain)
                     if dpfilter_cutoff is None:
                         dpfilter_cutoff = make_DPfilter_cutoff()
-                    self.dl.add_handler(self.db.getLogHandler(item),
+                    self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_linear, dpfilter_cutoff))
                 elif item in ('gain', 'freqgain'):
                     if dpfilter_linear is None:
                         dpfilter_linear = make_DPfilter_linear(
                             self.notcalc, self.splitgain)
                     self.dl.add_handler(
-                        self.db.getLogHandler(item, flabels=flabels),
+                        self.dbcon.getLogHandler(item, flabels=flabels),
                         (dpfilter_linear, ))
                 elif item == 'noisestat':
                     if dpfilter_stat_pede is None:
                         dpfilter_stat_pede = make_DPfilter_stat('pede')
                     if dpfilter_stat_noise is None:
                         dpfilter_stat_noise = make_DPfilter_stat('noise')
-                    self.dl.add_handler(self.db.getLogHandler(item),
+                    self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_stat_pede,
                                          dpfilter_stat_noise))
                 else:
-                    self.dl.add_handler(self.db.getLogHandler(item))
+                    self.dl.add_handler(self.dbcon.getLogHandler(item))
 
-        # pickle
+        # grafana: filters must be already created before
+        if 'grafana' in d['dataloggers']:
+            lh = LogHandlerGrafana(
+                self.starttime, self.uubnums, d['dataloggers']['grafana'])
+            self.dl.add_handler(lh,
+                (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
+
+        # pickle: filters must be already created before
         if d['dataloggers'].get('pickle', False):
             fn = self.datadir + dt.strftime('pickle-%Y%m%d')
             lh = LogHandlerPickle(fn)
-            self.dl.add_handler(lh)
+            self.dl.add_handler(lh,
+                (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
 
         self.dl.start()
 
@@ -606,9 +619,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.timer.stop.set()
         self.timer.evt.set()
         self.dl.stop.set()
-        if self.db is not None:
-            self.db.close()
-            self.db = None
+        self.dbcon.close()
         self.ulisten.stop.set()
         for i in range(self.n_dp):
             self.q_ndata.put(None)
@@ -680,4 +691,6 @@ if __name__ == '__main__':
     ess.timerstop.wait()
     logger.info('Stopping everything.')
     ess.stop()
-    logger.info('Everything stopped.')
+    logger.info('Uploading to database')
+    ess.dbcon.commit(ess.q_att)
+    logger.info('Done. Everything stopped.')

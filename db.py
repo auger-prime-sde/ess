@@ -6,6 +6,7 @@
 import os
 import json
 import logging
+import queue
 import ssl
 import random
 import string
@@ -26,7 +27,8 @@ class DBconnector(object):
 
     def __init__(self, ctx, dbinfo):
         """Constructor
-ctx - context object, used keys: datadir, basetime, phase, tester, uubnums
+ctx - context object, used keys:
+         datadir, basetime, phase, tester, uubnums, q_att
 dbinfo - dict with DB info:
     host_addr - DNS name or IP address of a server to connect
     host_port - (HTTPS) port of the server to connect
@@ -34,14 +36,11 @@ dbinfo - dict with DB info:
     client_key - client's private key
     client_cert - client's certificate
     urlSN - URL to get UUB internal SN
-    urlCommit - URL to commit ESS results
-    logitems - list of items to log (must be in LOGITEMS)"""
+    urlCommit - URL to commit ESS results"""
         self.CHUNKSIZE = 50*1024  # size of file chunk for HTTP POST
         self.uubnums = ctx.uubnums
         assert ctx.phase in DBconnector.PHASES
         self.dbinfo = dbinfo
-        self.logitems = dbinfo['logitems']
-        assert all([item in DBconnector.LOGITEMS for item in self.logitems])
         self.logger = logging.getLogger('DBcon')
         dbfn = (ctx.datadir + 'db-%s' % ctx.phase +
                 ctx.basetime.strftime('-%Y%m%d%H%M.json'))
@@ -52,6 +51,7 @@ dbinfo - dict with DB info:
             % (ctx.phase, ctx.tester, ctx.basetime.strftime('%Y-%m-%d')))
         self.measpoint = DBconnector.EMPTY_MP.copy()
         self.measrecs = []
+        self.q_att = ctx.q_att
         self.sslctx = ssl.create_default_context(
             ssl.Purpose.SERVER_AUTH, cafile=dbinfo['server_cert'])
         self.sslctx.load_cert_chain(certfile=dbinfo['client_cert'],
@@ -137,6 +137,19 @@ return dict {uubnum: '0123456789ab'}"""
 
     def commit(self):
         """Commit logged records to DB"""
+        while True:
+            try:
+                rec = self.q_att.get(False)
+            except queue.Empty:
+                break
+            if 'name' not in rec or 'filename' not in rec:
+                self.logger.error('Missing name or filename in attachment %s',
+                                      repr(rec))
+            else:
+                self.logger.info('Attaching %s -> %s', name, filename)
+                name = rec.pop('name')
+                filename = rec.pop('filename')
+                self.attach(name, filename, **rec)
         self.logger.debug('Commiting')
         self.close()
         self._boundary()
@@ -199,7 +212,6 @@ return dict {uubnum: '0123456789ab'}"""
 
     def getLogHandler(self, logitem, **kwargs):
         """Return LogHandler for item"""
-        assert logitem in self.logitems
         flabels = kwargs.get('flabels', None)
         return LogHandlerDB(logitem, self, self.uubnums, flabels)
     

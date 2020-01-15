@@ -234,6 +234,7 @@ class UUBtsc(threading.Thread):
 ''', re.VERBOSE + re.DOTALL)
     re_scdata = re.compile(r'''
    .* Power .* Nominal .*
+   10V   \s+ (?P<u_10V>\d+(\.\d+)?) \s* \[mV\] \s*
    1V    \s+ (?P<u_1V>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_1V>\d+(\.\d+)?) \s* \[mA\] \s*
    1V2   \s+ (?P<u_1V2>\d+(\.\d+)?) \s* \[mV\] \s*
@@ -256,6 +257,10 @@ class UUBtsc(threading.Thread):
    24V\ EXT1/2 \s+ (?P<u_ext1>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
+   (.* Sensors \s+
+    T=\ (?P<temp>-?\d+(\.\d+)?)\ C \s*
+    P=\ (?P<press>\d+(\.\d+)?)\ mBar \s*
+    H=\ (?P<humid>\d+(\.\d+)?)\ \%)?
 ''', re.VERBOSE + re.DOTALL)
 
     def __init__(self, uubnum, timer, q_resp):
@@ -395,8 +400,8 @@ return dictionary: sc<uubnum>_<variable>: value
             prefix = 'sc%04d_' % self.uubnum
             res = {prefix+k: float(v) for k, v in m.groupdict().items()}
             # transform 0.1K -> deg.C
-            if prefix+'temp' in res:
-                res[prefix+'temp'] = 0.1 * res[prefix+'temp'] - 273.15
+            # if prefix+'temp' in res:
+            #     res[prefix+'temp'] = 0.1 * res[prefix+'temp'] - 273.15
         else:
             self.logger.warning('Resp to slowc -a does not match expected')
             res = {}

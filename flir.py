@@ -187,6 +187,7 @@ return the data block"""
                     attname = flags.get('attname', imagename)
                     rec = {'name': attname,
                            'uubs': (self.uubnum, ),
+                           'run': True,
                            'timestamp': timestamp}
                     if 'description' in flags:
                         rec['description'] = flags['description']
@@ -204,7 +205,7 @@ return the data block"""
                     fname = image + self.typ[1]
                     self.getfile('images/' + fname, self.datadir + fname)
                     rec = snapshots.pop(image)
-                    rec['filename'] = fname
+                    rec['filename'] = self.datadir + fname
                     self.q_att.put(rec)
                     downloaded.append(image)
             if flags.get('delete', False):
