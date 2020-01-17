@@ -334,7 +334,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # DB connector
-        self.dbcon = DBconnector(self, d['dbinfo'])
+        self.dbcon = DBconnector(self, d['dbinfo'], 'db' in d['dataloggers'])
         self.internalSNs = self.dbcon.queryInternalSN()
 
         # power supply
@@ -472,6 +472,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             if 'startprog' in d['tickers']:
                 self.essprog.startprog(int(d['tickers']['startprog']))
                 self.starttime = self.essprog.starttime
+                self.dbcon.starttime(self.starttime)
 
         #  ===== DataLogger & handlers =====
         self.dl = DataLogger(self.q_resp)
@@ -596,15 +597,15 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if 'grafana' in d['dataloggers']:
             lh = LogHandlerGrafana(
                 self.starttime, self.uubnums, d['dataloggers']['grafana'])
-            self.dl.add_handler(lh,
-                (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
+            self.dl.add_handler(
+                lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
 
         # pickle: filters must be already created before
         if d['dataloggers'].get('pickle', False):
             fn = self.datadir + dt.strftime('pickle-%Y%m%d')
             lh = LogHandlerPickle(fn)
-            self.dl.add_handler(lh,
-                (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
+            self.dl.add_handler(
+                lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
 
         self.dl.start()
 
@@ -691,6 +692,6 @@ if __name__ == '__main__':
     ess.timerstop.wait()
     logger.info('Stopping everything.')
     ess.stop()
-    logger.info('Uploading to database')
-    ess.dbcon.commit(ess.q_att)
+    if ess.dbcon.files is not None:
+        ess.dbcon.commit()
     logger.info('Done. Everything stopped.')

@@ -25,10 +25,10 @@ class DBconnector(object):
         'timestamp', 'meas_point', 'rel_time', 'set_temp', 'remark')}
     EMPTY_MP['typ'] = 'measpoint'
 
-    def __init__(self, ctx, dbinfo):
+    def __init__(self, ctx, dbinfo, log=True):
         """Constructor
-ctx - context object, used keys:
-         datadir, basetime, phase, tester, uubnums, q_att
+ctx - context object (i.e. ESS), used keys:
+    datadir, basetime, phase, tester, uubnums, q_att, starttime
 dbinfo - dict with DB info:
     host_addr - DNS name or IP address of a server to connect
     host_port - (HTTPS) port of the server to connect
@@ -36,26 +36,36 @@ dbinfo - dict with DB info:
     client_key - client's private key
     client_cert - client's certificate
     urlSN - URL to get UUB internal SN
-    urlCommit - URL to commit ESS results"""
+    urlCommit - URL to commit ESS results
+log - if True, write log recores"""
         self.CHUNKSIZE = 50*1024  # size of file chunk for HTTP POST
-        self.uubnums = ctx.uubnums
+        self.ctx = ctx
         assert ctx.phase in DBconnector.PHASES
         self.dbinfo = dbinfo
         self.logger = logging.getLogger('DBcon')
-        dbfn = (ctx.datadir + 'db-%s' % ctx.phase +
-                ctx.basetime.strftime('-%Y%m%d%H%M.json'))
-        self.files = [('dbjs', dbfn)]
-        self.fp = open(dbfn, 'w')
-        self.fp.write(
-            '{"typ": "run", "phase": "%s", "tester": "%s", "date": "%s"}\n'
-            % (ctx.phase, ctx.tester, ctx.basetime.strftime('%Y-%m-%d')))
-        self.measpoint = DBconnector.EMPTY_MP.copy()
-        self.measrecs = []
-        self.q_att = ctx.q_att
+        if log:
+            dbfn = (ctx.datadir + 'db-%s' % ctx.phase +
+                    ctx.basetime.strftime('-%Y%m%d%H%M.json'))
+            self.files = [('dbjs', dbfn)]
+            self.fp = open(dbfn, 'w')
+            self.measpoint = DBconnector.EMPTY_MP.copy()
+            self.measrecs = []
+        else:
+            self.fp = None
+            self.files = None
         self.sslctx = ssl.create_default_context(
             ssl.Purpose.SERVER_AUTH, cafile=dbinfo['server_cert'])
         self.sslctx.load_cert_chain(certfile=dbinfo['client_cert'],
                                     keyfile=dbinfo['client_key'])
+
+    def start(self):
+        if self.files is None:
+            return
+        """Write <run> record, ctx.starttime must be defined"""
+        self.fp.write('{"typ": "run", "phase": "%s", "tester": "%s", ' %
+                      (self.ctx.phase, self.ctx.tester))
+        self.fp.write('"starttime": "%s"}\n' %
+                      self.ctx.starttime.strftime('%Y-%m-%dT%H:%M:%S'))
 
     def __del__(self):
         self.close()
@@ -83,8 +93,8 @@ dbinfo - dict with DB info:
         self.measpoint = DBconnector.EMPTY_MP.copy()
         self.measrecs = []
 
-    def attach(self, name, filename, description=None, preview=False,
-               uubs=None, run=True, fieldname=None):
+    def attach(self, name, filename, description=None, uubs=None,
+               run=True, fieldname=None):
         """Attach a file to run/uub
 name - shortname of the attachment
 filename - file to attach
@@ -94,6 +104,8 @@ uubs - list of UUB numbers of UUBs in the run to link to
 run - if True, link to ESSrun
 fieldname - unique name for HTTP POST transport. Use name if None
 raise exception if something wrong"""
+        if self.files is None:
+            return
         with open(filename, 'r'):
             pass  # check that the filename is readable
         if fieldname is None:
@@ -102,13 +114,13 @@ raise exception if something wrong"""
         if uubs is None:
             uubs = ()
         else:
-            assert set(uubs) <= set(self.uubnums)
+            assert set(uubs) <= set(self.ctx.uubnums)
         self.files.append((fieldname, filename))
         d = {'typ': 'attach',
              'name': name,
              'description': description,
-             'preview': preview,
              'uubs': uubs,
+             'run': run,
              'fieldname': fieldname}
         json.dump(d, self.fp)
         self.fp.write('\n')
@@ -118,7 +130,9 @@ raise exception if something wrong"""
 uubnums - tuple/list of UUB numbers
 return dict {uubnum: '0123456789ab'}"""
         if uubnums is None:
-            uubnums = self.uubnums
+            uubnums = self.ctx.uubnums
+        if not uubnums:
+            return {}
         assert all([0 < uubnum < VIRGINUUBNUM for uubnum in uubnums])
         param = '&'.join(['uubnum=%d' % uubnum for uubnum in uubnums])
         self.logger.debug('Acquiring internal SN')
@@ -137,20 +151,22 @@ return dict {uubnum: '0123456789ab'}"""
 
     def commit(self):
         """Commit logged records to DB"""
+        if self.files is None:
+            return
         while True:
             try:
-                rec = self.q_att.get(False)
+                rec = self.ctx.q_att.get(False)
             except queue.Empty:
                 break
             if 'name' not in rec or 'filename' not in rec:
                 self.logger.error('Missing name or filename in attachment %s',
-                                      repr(rec))
+                                  repr(rec))
             else:
-                self.logger.info('Attaching %s -> %s', name, filename)
                 name = rec.pop('name')
                 filename = rec.pop('filename')
+                self.logger.info('Attaching %s -> %s', name, filename)
                 self.attach(name, filename, **rec)
-        self.logger.debug('Commiting')
+        self.logger.debug('Commiting to DB')
         self.close()
         self._boundary()
         conn = HTTPSConnection(self.dbinfo['host_addr'],
@@ -163,7 +179,7 @@ return dict {uubnum: '0123456789ab'}"""
                               'Content-Length': headerCL})
         resp = conn.getresponse()
         self.logger.debug('Received status %d', resp.status)
-        self.logger.debug("Received data %s", repr(resp.read()))
+        # self.logger.debug("Received data %s", repr(resp.read()))
         conn.close()
 
     def _boundary(self):
@@ -213,8 +229,8 @@ return dict {uubnum: '0123456789ab'}"""
     def getLogHandler(self, logitem, **kwargs):
         """Return LogHandler for item"""
         flabels = kwargs.get('flabels', None)
-        return LogHandlerDB(logitem, self, self.uubnums, flabels)
-    
+        return LogHandlerDB(logitem, self, self.ctx.uubnums, flabels)
+
 
 class LogHandlerDB(object):
     def __init__(self, logitem, dbcon, uubnums, flabels=None):
