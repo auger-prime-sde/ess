@@ -250,7 +250,7 @@ void printLimit1pin(uint8_t pin) {
 /*
   digital pin mappings:
   relay: PB0, PB2, PL0, PL2, PL4, PL6, PC4, PC6, PA7, PA5
-  splitter: PC0, PG2, PC2
+  splitter: PG2, PC0, PC2 (GPIO 39, 37, 35)
   of them PWM: PL4: OC5B
  */
 void initDigiPins() {
@@ -267,25 +267,25 @@ void initDigiPins() {
   sbi(DDRA, DDA7); cbi(PORTA, PA7);  /* 8: PA7 */
   sbi(DDRA, DDA5); cbi(PORTA, PA5);  /* 9: PA5 */
   // sp0, sp1 OUTPUT LOW; sp2 OUTPUT HIGH
-  sbi(DDRC, DDC0); cbi(PORTC, PC0);  /* spPin0: PC0 */
-  sbi(DDRG, DDG2); cbi(PORTG, PG2);  /* spPin1: PG2 */
+  sbi(DDRG, DDG2); cbi(PORTG, PG2);  /* spPin0: PG2 */
+  sbi(DDRC, DDC0); cbi(PORTC, PC0);  /* spPin1: PC0 */
   sbi(DDRC, DDC2); sbi(PORTC, PC2);  /* spPin2: PC2 */
 }
 #define spOff() cbi(PORTC, PC2)
 #define spOn() sbi(PORTC, PC2)
 static inline void spMode(uint8_t mode) {
-  __asm__ __volatile__ ( "sbrc %0, 0 \n\t"  // bit 0: PORTC, PC0
+  __asm__ __volatile__ ( "sbrc %0, 0 \n\t"  // bit 1: PORTG, PG2
 			 "sbi %1, %2 \n\t"
 			 "sbrs %0, 0 \n\t"
 			 "cbi %1, %2 \n\t"
-			 "sbrc %0, 1 \n\t"  // bit 1: PORTG, PG2
+			 "sbrc %0, 1 \n\t"  // bit 0: PORTC, PC0
 			 "sbi %3, %4 \n\t"
 			 "sbrs %0, 1 \n\t"
 			 "cbi %3, %4 \n\t"
 			 :
 			 : "r" (mode),
-			   "I" (_SFR_IO_ADDR(PORTC)), "M" (PC0),
-			   "I" (_SFR_IO_ADDR(PORTG)), "M" (PG2)
+			   "I" (_SFR_IO_ADDR(PORTG)), "M" (PG2),
+			   "I" (_SFR_IO_ADDR(PORTC)), "M" (PC0)
 			 );
 }
 
