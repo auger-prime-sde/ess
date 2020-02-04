@@ -55,8 +55,9 @@ q_resp - queue to send response"""
                                  'meas.ramp', 'meas.noise', 'meas.iv',
                                  'meas.thp', 'meas.pulse', 'meas.freq')]):
                 continue
-            self.logger.debug('Chamber event timestamp %s',
-                         datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
+            self.logger.debug(
+                'Chamber event timestamp %s',
+                datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'binder.state' in flags:
                 if flags['binder.state'] is None:
                     self.logger.info('Stopping program')
@@ -67,8 +68,9 @@ q_resp - queue to send response"""
                         self.logger.info('Starting program %d', progno)
                         self.binder.setState(Binder.STATE_PROG, progno)
                     except Exception:
-                        self.logger.error('Unknown detail for binder.state: %s',
-                                     repr(flags['binder.state']))
+                        self.logger.error(
+                            'Unknown detail for binder.state: %s',
+                            repr(flags['binder.state']))
             if any([name in flags
                     for name in ('meas.sc', 'meas.thp',
                                  'meas.ramp', 'meas.noise', 'meas.iv',
@@ -77,7 +79,7 @@ q_resp - queue to send response"""
                 temperature = self.binder.getActTemp()
                 humid = self.binder.getActHumid()
                 self.logger.debug('Done. t = %.2fdeg.C, h = %.2f%%',
-                             temperature, humid)
+                                  temperature, humid)
                 res = {'timestamp': timestamp,
                        'chamber_temp': temperature,
                        'chamber_humid': humid}
@@ -345,6 +347,14 @@ jsonobj - either json string or json file"""
                         args = self._macro(pp[chan])
                         if not all([v is None for v in args]):
                             kwargs[chan] = args
+                    # pcon, TBD: pcoff, ramp
+                    if 'pcon' in pp:
+                        log_timeout = pp['pcon']  # None or time in sec
+                        kwargs['pcon'] = log_timeout
+                        if log_timeout is not None and (
+                                ptime not in ap.lto or
+                                log_timeout > ap.lto[ptime]):
+                            ap.lto[ptime] = log_timeout
                     if kwargs:
                         ap.pps[ptime] = kwargs
             # telnet
@@ -376,7 +386,7 @@ jsonobj - either json string or json file"""
                                          "uubnums": uubnums}
                     if "dloads" in tp:
                         filelist = [str(self._macro(fn))
-                                   for fn in self._macro(tp["dloads"])]
+                                    for fn in self._macro(tp["dloads"])]
                         if "dloads.uubs" in tp:
                             uubnums = self._macro(tp["dloads.uubs"])
                         else:
@@ -494,8 +504,8 @@ return polyline approximation at the time t"""
                     if 'db' in flags[name]:
                         res['db_' + mname] = flags[name]['db']
             # modify db_noise -> db_noisestat if count in flags[meas.noise]
-            if 'meas.noise' in flags and 'count' in flags['meas.noise'] \
-              and 'db_noise' in res:
+            if 'meas.noise' in flags and 'count' in flags['meas.noise'] and \
+               'db_noise' in res:
                 res['db_noisestat'] = res.pop('db_noise')
             if dur in self.timepoints:
                 res['meas_point'] = self.timepoints[dur]

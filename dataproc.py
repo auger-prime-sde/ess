@@ -53,8 +53,7 @@ return (flabel, freq) or raise ValueError"""
         freq = item['freq']
         flabel = float2expo(freq)
     else:
-        raise ValueError('Neither flabel nor freq present in %s',
-                         repr(d))
+        raise ValueError('Neither flabel nor freq present in %s', repr(item))
     return flabel, freq
 
 
@@ -62,6 +61,7 @@ class DirectGain(object):
     """Gain if not splitter in chain"""
     def gainUUB(self, splitmode, uubnum, chan, flabel=""):
         return 1.0
+
 
 class SplitterGain(object):
     """Gain of Stastny's splitter"""
@@ -105,7 +105,7 @@ channels: [A-F][0-9] ... splitter, on AFG chan A
             if any([splitch[0] == 'R' for splitch in self.mdomap.values()]):
                 assert self.pregains[1] is not None
         if uubnums is not None:
-            assert len(uubnums) < 10 and \
+            assert len(uubnums) <= 10 and \
                 all([0 < uubnum < 4000
                      for uubnum in uubnums if uubnum is not None])
             self.uubnums = uubnums
@@ -173,6 +173,7 @@ pedestals - positions of pedestals [ADC]
     maxvolt[3] = maxvolt[None][:]
     maxvolt[3][9] /= 4
     maxvolt[3][10] /= 4
+
     def notcalc(functype, chan, splitmode=None, voltage=None):
         assert splitmode in (None, 0, 1, 3), "Wrong splitmode"
         assert chan in range(1, 11)

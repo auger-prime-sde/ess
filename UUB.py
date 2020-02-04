@@ -21,6 +21,7 @@ import numpy as np
 from dataproc import float2expo
 from threadid import syscall, SYS_gettid
 
+TELNETPORT = 23
 HTTPPORT = 80
 DATAPORT = 8888    # UDP port UUB send data to
 CTRLPORT = 8887    # UDP port UUB listen for commands
@@ -29,6 +30,7 @@ LADDR = "192.168.31.254"  # IP address of the computer
 VIRGINMAC = '00:0a:35:00:1e:53'
 VIRGINIP = '192.168.31.0'
 VIRGINUUBNUM = 0xF00
+
 
 def uubnum2mac(uubnum):
     """Calculate MAC address from UUB number"""
@@ -192,20 +194,9 @@ class UUBtsc(threading.Thread):
     """Thread managing read out Zynq temperature and SlowControl data
  from UUB"""
 
-    re_scdata_pmt = re.compile(r'''.*
-   PMT1 \s+ (?P<HV_PMT1>\d+(\.\d+)?)
-        \s+ (?P<I_PMT1>\d+(\.\d+)?)
-        \s+ (?P<T_PMT1>-?\d+(\.\d+)?) \s*
-   PMT2 \s+ (?P<HV_PMT2>\d+(\.\d+)?)
-        \s+ (?P<I_PMT2>\d+(\.\d+)?)
-        \s+ (?P<T_PMT2>-?\d+(\.\d+)?) \s*
-   PMT3 \s+ (?P<HV_PMT3>\d+(\.\d+)?)
-        \s+ (?P<I_PMT3>\d+(\.\d+)?)
-        \s+ (?P<T_PMT3>-?\d+(\.\d+)?) \s*
-   PMT4 \s+ (?P<HV_PMT4>\d+(\.\d+)?)
-        \s+ (?P<I_PMT4>\d+(\.\d+)?)
-        \s+ (?P<T_PMT4>-?\d+(\.\d+)?)  \s*
-   .* Power .* Nominal .*
+    re_scdata = re.compile(r'''
+   .* Power .* Nominal \s* Actual \s* Current \s*
+   (10V   \s+ (?P<u_10V>\d+(\.\d+)?) \s* \[mV\] \s*)?
    1V    \s+ (?P<u_1V>\d+(\.\d+)?) \s* \[mV\] \s*
              (?P<i_1V>\d+(\.\d+)?) \s* \[mA\] \s*
    1V2   \s+ (?P<u_1V2>\d+(\.\d+)?) \s* \[mV\] \s*
@@ -229,38 +220,11 @@ class UUBtsc(threading.Thread):
                    (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
                    (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
    .* Sensors \s+
-   T= \s+ (?P<temp>-?\d+) \s* \*0\.1K, \s*
-   P= \s+ (?P<press>\d+) \s* mBar
-''', re.VERBOSE + re.DOTALL)
-    re_scdata = re.compile(r'''
-   .* Power .* Nominal .*
-   10V   \s+ (?P<u_10V>\d+(\.\d+)?) \s* \[mV\] \s*
-   1V    \s+ (?P<u_1V>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_1V>\d+(\.\d+)?) \s* \[mA\] \s*
-   1V2   \s+ (?P<u_1V2>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_1V2>\d+(\.\d+)?) \s* \[mA\] \s*
-   1V8   \s+ (?P<u_1V8>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_1V8>\d+(\.\d+)?) \s* \[mA\] \s*
-   3V3   \s+ (?P<u_3V3>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_3V3>\d+(\.\d+)?) \s* \[mA\] \s*
-             (?P<i_3V3_sc>\d+(\.\d+)?) \s* \[mA\ SC\] \s*
-   P3V3  \s+ (?P<u_P3V3>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_P3V3>\d+(\.\d+)?) \s* \[mA\] \s*
-   N3V3  \s+ -?(?P<u_N3V3>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_N3V3>\d+(\.\d+)?) \s* \[mA\] \s*
-   5V    \s+ (?P<u_5V>\d+(\.\d+)?) \s* \[mV\] \s*
-             (?P<i_5V>\d+(\.\d+)?) \s* \[mA\] \s*
-   12V\ Radio \s+ (?P<u_radio>\d+(\.\d+)?) \s* \[mV\] \s*
-                  (?P<i_radio>\d+(\.\d+)?) \s* \[mA\] \s*
-   12V\ PMTs  \s+ (?P<u_PMTs>\d+(\.\d+)?) \s* \[mV\] \s*
-                  (?P<i_PMTs>\d+(\.\d+)?) \s* \[mA\] \s*
-   24V\ EXT1/2 \s+ (?P<u_ext1>\d+(\.\d+)?) \s* \[mV\] \s*
-                   (?P<u_ext2>\d+(\.\d+)?) \s* \[mV\] \s*
-                   (?P<i_ext>\d+(\.\d+)?) \s* \[mA\]
-   (.* Sensors \s+
-    T=\ (?P<temp>-?\d+(\.\d+)?)\ C \s*
+   (T=\ (?P<temp>-?\d+(\.\d+)?)\ C \s*
     P=\ (?P<press>\d+(\.\d+)?)\ mBar \s*
     H=\ (?P<humid>\d+(\.\d+)?)\ \%)?
+   (T= \s+ (?P<temp_dK>-?\d+) \s* \*0\.1K, \s*
+    P= \s+ (?P<press1>\d+) \s* mBar)?
 ''', re.VERBOSE + re.DOTALL)
 
     def __init__(self, uubnum, timer, q_resp):
@@ -320,7 +284,8 @@ q_resp - queue to send response
                     res['test_point'] = flags['test_point']
             if 'meas.thp' in flags or 'meas.sc' in flags:
                 self.logger.debug('Connecting UUB')
-                conn = http.client.HTTPConnection(self.ip, HTTPPORT, self.HTTP_TOUT)
+                conn = http.client.HTTPConnection(self.ip, HTTPPORT,
+                                                  self.HTTP_TOUT)
                 try:
                     # read Zynq temperature
                     if 'meas.thp' in flags:
@@ -347,10 +312,12 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
             return None
         self.logger.debug('Reading UUB serial number')
         while trials > 0:
-            conn = http.client.HTTPConnection(self.ip, HTTPPORT, self.HTTP_TOUT)
+            conn = http.client.HTTPConnection(self.ip, HTTPPORT,
+                                              self.HTTP_TOUT)
             try:
                 # self.logger.debug('sending conn.request')
-                conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
+                conn.request(
+                    'GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-s')
                 # self.logger.debug('conn.getresponse')
                 resp = conn.getresponse().read().decode('ascii')
                 # self.logger.debug('re_sernum')
@@ -362,7 +329,7 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
                 res = None
             finally:
                 conn.close()
-            if res is not None and res != False:
+            if res is not None and res is not False:
                 break
             trials -= 1
         return res
@@ -390,7 +357,7 @@ conn - HTTPConnection instance
 return dictionary: sc<uubnum>_<variable>: value
 """
         conn.request('GET', '/cgi-bin/getdata.cgi?action=slowc&arg1=-a')
-        self.logger.debug('req sent')   #### DEBUG
+        self.logger.debug('req sent')   # DEBUG
         # TO DO: check status
         resp = conn.getresponse().read().decode('ascii')
         self.logger.debug('slowc GET: "%s"', repr(resp))
@@ -398,10 +365,12 @@ return dictionary: sc<uubnum>_<variable>: value
         if m is not None:
             # prefix keys
             prefix = 'sc%04d_' % self.uubnum
-            res = {prefix+k: float(v) for k, v in m.groupdict().items()}
-            # transform 0.1K -> deg.C
-            # if prefix+'temp' in res:
-            #     res[prefix+'temp'] = 0.1 * res[prefix+'temp'] - 273.15
+            res = {prefix+k: float(v) for k, v in m.groupdict().items()
+                   if v is not None}
+            # transform 0.1K -> deg.C for UUB v1
+            if prefix+'temp_dK' in res:
+                res[prefix+'temp'] = 0.1 * res.pop(prefix+'temp_dK') - 273.15
+                res[prefix+'press'] = res.pop(prefix+'press1')
         else:
             self.logger.warning('Resp to slowc -a does not match expected')
             res = {}
@@ -796,7 +765,7 @@ return list of failed UUBs or None"""
                 tn.close()
             try:
                 self.logger.debug('logging to UUB %04d', uubnum)
-                tn = telnetlib.Telnet(uubnum2ip(uubnum))
+                tn = telnetlib.Telnet(uubnum2ip(uubnum), TELNETPORT, self.TOUT)
                 self._read_until(tn, b"login: ")
                 tn.write(bytes(self.LOGIN, 'ascii') + b"\n")
                 self._read_until(tn, b"Password: ")
@@ -883,13 +852,13 @@ return list of tuples with failed UUB/file or None"""
                     conn.request('GET', '/' + f)
                     resp = conn.getresponse()
                     if resp.status != 200:
-                        header = "=*= %suubnum=%04d filename=%s size=-1 =*=\n" % (
-                            ts, uubnum, f)
                         data = b''
+                        size = -1
                     else:
                         data = resp.read()
-                        header = "=*= %suubnum=%04d filename=%s size=%d =*=\n" % (
-                            ts, uubnum, f, len(data))
+                        size = len(data)
+                    header = "=*= %suubnum=%04d filename=%s size=%d =*=\n" % (
+                            ts, uubnum, f, size)
                     self.dloadfp.write(bytes(header, 'ascii'))
                     self.dloadfp.write(data)
                 except (http.client.CannotSendRequest, socket.error,
@@ -952,7 +921,7 @@ return list of tuples with failed UUB/file or None"""
                 filelist = flags['telnet.dloads']['filelist']
                 uubnums = flags['telnet.dloads'].get('uubnums', None)
                 self._downloads(filelist, uubnums=uubnums)
-                
+
 
 def ADCtup2c(tup):
     """Convert (adc, on/off, channelsel) tuple to char"""
@@ -970,6 +939,7 @@ def ADCtup2c(tup):
 class ADCramp(object):
     """Switch ADC to/from ramp test mode"""
     MSGLEN = 18   # length of UDP payload (minimal without padding)
+
     def __init__(self, uubnum):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(0.01)

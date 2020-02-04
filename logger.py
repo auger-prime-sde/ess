@@ -260,7 +260,7 @@ dbinfo - dict with configuration for Grafana
                     uubdata.append({'typ': self._keymap(typ),
                                     'uubnum': uubnum, 'values': vals})
             for flabel in self.flabels:
-                vals = self._collect(d, uubnum, 'freqgain', flabel)
+                vals = self._collect(d, uubnum, 'fgain', flabel)
                 if vals is not None:
                     uubdata.append({'uubnum': uubnum, 'typ': 'freqgain',
                                     'flabel': flabel, 'values': vals})
@@ -335,7 +335,7 @@ Ignore None filters"""
         if filterlist is None:
             key = None
         else:
-            key = tuple([id(filt) for filt in filterlist if filt is  not None])
+            key = tuple([id(filt) for filt in filterlist if filt is not None])
             if key == ():
                 key = None
         if key not in self.filters:
@@ -675,7 +675,7 @@ keys - voltages and/or splitmodes and/or count"""
     prolog = """\
 # Amplitudes of halfsines
 # UUB #%04d, date %s
-""" % ( uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+""" % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     if 'comment' in keys:
         prolog += "# %s\n" % keys['comment']
     prolog += "# columns: timestamp | meas_point | "

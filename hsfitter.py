@@ -25,6 +25,7 @@ except ImportError:
 class HalfSineFitter(object):
     """Fit a train of half sine pulses using FFT"""
     (AMPLI, PEDE, PHASE, YVAL, CHI) = range(5)
+    (SHARP, SMOOTH) = range(2)
 
     def __init__(self, w, N=2048, FREQ=120., Npeak=5, zInvert=False):
         self.w = w             # half period of sine in us
@@ -37,6 +38,7 @@ class HalfSineFitter(object):
         self.binstart = 600
         self.Nampli = 200      # cut on fft coefs for calculation of amplitudes
         self.Nphase = 100      # cut on fft coefs for calculation of phases
+        self.TYP = HalfSineFitter.SMOOTH  # if changed, reinit model
         # init model
         self._calc_model()
         self.recurent = False
@@ -56,8 +58,12 @@ Calculate train of half sine pulses of width w, separated by 3*w pedestal
             np.linspace(0, self.N, self.N, endpoint=False) - binstart)
         mask = (argsine % (4*pi) < pi) & (argsine > 0) & \
                (argsine < self.Npeak*4*pi)
-        res = np.zeros(self.N) + pede
-        res[mask] += ampli * np.sin(argsine[mask])
+        res = np.full(self.N, pede, dtype='float64')
+        sinmask = np.sin(argsine[mask])
+        if self.TYP == HalfSineFitter.SHARP:
+            res[mask] += ampli * sinmask
+        elif self.TYP == HalfSineFitter.SMOOTH:
+            res[mask] += ampli * sinmask * sinmask
         return res
 
     def _calc_model(self):
@@ -98,8 +104,8 @@ stage - what to calculate: AMPLI, PEDE, PHASE, YVAL"""
         mphase = np.outer(self.mphase, np.ones(Ncol))
         phasedif = np.unwrap(np.angle(yfft[1:self.Nphase, :]) - mphase, axis=0)
         slope = np.dot(self.abs2[1:self.Nphase], phasedif) / self.normphase
-        if abs(slope) > pi / 20 and not self.recurent:
-            self.binstart -= N/2/pi * slope
+        if any(abs(slope) > pi / 20) and not self.recurent:
+            self.binstart -= N/2/pi * np.mean(slope)
             self._calc_model()
             self.recurent = True
             return self.fit(yall, stage)

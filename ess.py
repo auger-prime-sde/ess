@@ -20,7 +20,7 @@ import shutil
 from serial import Serial, SerialException
 
 # ESS stuff
-from timer import Timer, periodic_ticker
+from timer import Timer, periodic_ticker, EvtDisp
 from modbus import Binder, Modbus, ModbusError
 from logger import LogHandlerRamp, LogHandlerPickle, LogHandlerGrafana
 from logger import DataLogger
@@ -41,7 +41,7 @@ from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
 
-VERSION = '20200114'
+VERSION = '20200204'
 
 
 class DetectUSB(object):
@@ -52,7 +52,7 @@ class DetectUSB(object):
     SERIALS = {
         "BME": ('ttyUSB', 115200, None, BME.re_bmeinit),
         "trigdelay": ('ttyUSB', 115200, None, TrigDelay.re_init),
-        "powercontrol": ('ttyUSB', 115200, None, PowerControl.re_init),
+        "powercontrol": ('ttyACM', 115200, None, PowerControl.re_init),
         "power_cpx": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_cpx),
         "power_hmp": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_hmp)}
     TMCS = {
@@ -220,6 +220,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.essprog = None
         self.db = None
         self.grafana = None
+        self.ed = None
 
         if jsfn is not None:
             with open(jsfn, 'r') as fp:
@@ -331,6 +332,9 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # event to stop
         self.timer.timerstop = self.timerstop = threading.Event()
         self.timer.start()
+        if d.get('evtdisp', False):
+            self.ed = EvtDisp(self.timer)
+            self.ed.start()
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # DB connector
@@ -395,23 +399,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 d['ports']['powercontrol'], self.timer,
                 self.q_resp, self.uubnums, dp_ctx['splitmode'])
             self.splitmode = self.pc.splitterMode
-            ### dirty hack: power on/off splitter by HMP4040
-            ### 10.1V/2A on ch2, 2.1V/2A on ch3
-            def makeSpliton(port_hmp):
-                rs = PowerSupply(
-                    port_hmp, ch2=(10.1, 2.0, True), ch3=(2.1, 2.0, True))
-                def spliton(stat):
-                    """Power splitter on/off"""
-                    if stat is None:
-                        rs.stop()
-                    elif stat:
-                        rs.config(ch2=(None, None, True),
-                                  ch3=(None, None, True))
-                    else:
-                        rs.config(ch2=(None, None, None, True),
-                                  ch3=(None, None, None, True))
-                return spliton
-            self.spliton = makeSpliton(d['ports']['power_hmp'])
+            self.spliton = self.pc.splitterOn
+            self.pc.start()
 
         # SplitterGain & notcalc
         if self.afg is not None:
@@ -472,7 +461,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             if 'startprog' in d['tickers']:
                 self.essprog.startprog(int(d['tickers']['startprog']))
                 self.starttime = self.essprog.starttime
-                self.dbcon.starttime(self.starttime)
+                self.dbcon.start()
 
         #  ===== DataLogger & handlers =====
         self.dl = DataLogger(self.q_resp)
@@ -632,9 +621,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.td.stop()
         if self.pc is not None:
             self.pc.stop()
-        if self.spliton is not None:
-            self.spliton(False)
-            self.spliton(None)           ### to be corrected
         # stop RPiTrigger
         if (self.trigger is not None and
             isinstance(self.trigger.__self__, RPiTrigger)):

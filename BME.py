@@ -107,7 +107,7 @@ timesync - sync Arduino time
 
     def run(self):
         if self.timer is None or self.q_resp is None:
-            self.logger.error('timer and q_resp instance not provided, exiting')
+            self.logger.error('timer or q_resp instance not provided, exiting')
             return
         tid = syscall(SYS_gettid)
         self.logger.debug('run start, name %s, tid %d', self.name, tid)
@@ -153,7 +153,7 @@ predefined - dict functype: delay with predefined values """
         try:
             s = Serial(port, baudrate=115200)
             self.logger.info('Opening serial %s', repr(s))
-            sleep(0.5)  # ad hoc constant to avoid timeout
+            sleep(1.0)  # ad hoc constant to avoid timeout
             # s.write(b'?\r')
             resp = readSerRE(s, TrigDelay.re_init, timeout=1,
                              logger=self.logger)
@@ -206,7 +206,8 @@ predefined - dict functype: delay with predefined values """
 class PowerControl(threading.Thread):
     """Class managing power control module and splitter mode"""
     SPLITMODE_DEFAULT = 1
-    re_init = re.compile(rb'.*PowerControl (?P<version>[-0-9]+)\r\n', re.DOTALL)
+    re_init = re.compile(rb'.*PowerControl (?P<version>[-0-9]+)\r\n',
+                         re.DOTALL)
     re_set = re.compile(rb'.*OK', re.DOTALL)
     # ten floats separated by whitespaces + OK
     re_readcurr = re.compile(rb'.*?' + (rb'(-?\d+\.?\d*)\s+' * 10) +
@@ -223,6 +224,7 @@ timer - instance of timer
 q_resp - queue to send response
 uubnums - list of UUBnums in order of connections.  None if port skipped"""
         self.logger = logging.getLogger('PowerControl')
+        self.timer, self.q_resp = timer, q_resp
         s = None               # avoid NameError on isinstance(s, Serial) check
         try:
             s = Serial(port, baudrate=115200)
@@ -260,6 +262,16 @@ return current setting without parameters"""
         self.logger.debug('splitter mode set')
         self.splitmode = mode
 
+    def splitterOn(self, state=None):
+        """Switch splitter on/off"""
+        if state is None:
+            return
+        self.logger.info('switching splitter %s', 'on' if state else 'off')
+        cmd = b'1\r' if state else b'0\r'
+        self.ser.write(cmd)
+        readSerRE(self.ser, PowerControl.re_set, timeout=1, logger=self.logger)
+        self.logger.debug('splitter switched')
+
     def switch(self, state, uubs=None):
         """Switch on/off relays
 state - True to switch ON, False to OFF
@@ -296,7 +308,7 @@ return tuple of two list: (uubsOn, uubsOff)"""
 
     def run(self):
         if self.timer is None or self.q_resp is None:
-            self.logger.error('timer and q_resp instance not provided, exiting')
+            self.logger.error('timer or q_resp instance not provided, exiting')
             return
         tid = syscall(SYS_gettid)
         self.logger.debug('run start, name %s, tid %d', self.name, tid)
@@ -312,6 +324,10 @@ return tuple of two list: (uubsOn, uubsOff)"""
                        for uubnum, port in self.uubnums.items()}
                 res['timestamp'] = timestamp
                 self.q_resp.put(res)
+            if 'power' in flags:
+                if 'pcon' in flags['power']:
+                    self.switch(True, self.uubnums)
+                # check TBD
         self.logger.info('run finished')
 
     def stop(self):

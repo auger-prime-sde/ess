@@ -23,6 +23,7 @@ class AFG(object):
     PARAM = {'functype': 'P',
              'gains': (1.0, None),  # gain for channels, off if None
              'offsets': (0.0, 0.0),    # offset for channels
+             'hstype': 'SMOOTH',
              'usernum': 4,
              'hswidth': 0.625,  # us
              'Pvoltage': 1.6,   # pulse amplitude in V
@@ -57,6 +58,7 @@ kwargs - parameters:
   functype - type of signal P (5 half-sine pulses), F (sinusoid), default P
   gains - 2-tuple of voltage gain (float) or None (if the channel is off)
   offsets - 2-tuple of voltage offsets for channels (float, volt)
+  hstype - SHARP | SMOOTH: halfsine or halfsine2, default halfsine2
 for functype P:
   usernum - user function number (default 4)
   hswidth - width of half sine in microseconds (default 0.625 us ~ 80kHz)
@@ -95,7 +97,13 @@ for functype F:
         self.setParams(**params)
         # takes about 15s
         if zLoadUserfun:
-            self.writeUserfun(halfsine, params['usernum'],
+            if self.param['hstype'] == 'SHARP':
+                fun = halfsine
+            elif self.param['hstype'] == 'SMOOTH':
+                fun = halfsine2
+            else:
+                raise ValueError('Unknown hstype %s' % self.param['hstype'])
+            self.writeUserfun(fun, params['usernum'],
                               5000, 5000/(20*math.pi))
 
     def stop(self):
@@ -259,6 +267,14 @@ def halfsine(x):
     return val
 
 
+def halfsine2(x):
+    """ 1 - sin^2(x) on <0,pi> + 4*pi*n; 1 otherwise
+- implemented as 1 - sin^2(x) = 0.5*(1 + cos(2x))"""
+    xx = x % (4*math.pi)
+    val = 0.5 + 0.5*math.cos(2*xx) if xx < math.pi else 1.0
+    return val
+
+
 def writeTFW(func, filename, npoint=5000, scale=None):
     """ Write function values in TFW format
 func     - function [0:npoint/Tscale] -> [0:1]
@@ -316,3 +332,4 @@ class RPiTrigger(object):
 
 if __name__ == '__main__':
     writeTFW(halfsine, 'halfsine', 5000, 5000/(2*math.pi * 10))
+    writeTFW(halfsine2, 'halfsine2', 5000, 5000/(2*math.pi * 10))
