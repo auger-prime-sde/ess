@@ -49,6 +49,7 @@ class MyFormatter(string.Formatter):
 class LogHandlerFile(object):
     def __init__(self, filename, formatstr, prolog='', skiprec=None,
                  missing='~', missing_keys=None):
+        self.f = None
         self.f = open(filename, 'a')
         self.f.write(prolog)
         self.f.flush()
@@ -76,8 +77,13 @@ d - dictionary key: value"""
         self.f.write(record)
         self.f.flush()
 
+    def stop(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+
     def __del__(self):
-        self.f.close()
+        self.stop()
 
 
 class LogHandlerRamp(object):
@@ -91,6 +97,7 @@ class LogHandlerRamp(object):
 """
 
     def __init__(self, filename, dt, uubnums):
+        self.f = None
         self.f = open(filename, 'a')
         uubs = ', '.join(['%04d' % uubnum for uubnum in uubnums])
         self.f.write(LogHandlerRamp.prolog % (dt.strftime('%Y-%m-%d'), uubs))
@@ -113,15 +120,21 @@ class LogHandlerRamp(object):
             self.f.write(recprefix + 'OK\n')
         self.f.flush()
 
+    def stop(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+
     def __del__(self):
-        self.f.close()
+        self.stop()
 
 
 class LogHandlerPickle(object):
     """LogHandler saving all records as pickles to file."""
     def __init__(self, filename=None):
+        self.fp = None
         if filename is None:
-            filename = datetime.now().strftime('data/loghandler-%Y%m%d%H%M')
+            filename = datetime.now().strftime('data/pickle-%Y%m%d%H%M')
         self.fp = open(filename, 'ab')
         logging.getLogger('LogHandlerPickle').info('saving to pickle file %s',
                                                    filename)
@@ -129,8 +142,13 @@ class LogHandlerPickle(object):
     def write_rec(self, d):
         pickle.dump(d, self.fp)
 
+    def stop(self):
+        if self.fp is not None:
+            self.fp.close()
+            self.fp = None
+
     def __del__(self):
-        self.fp.close()
+        self.stop()
 
 
 class LogHandlerGrafana(object):
@@ -310,7 +328,7 @@ return list of 10 values (or None) or None if no data available"""
     def _keymap(self, key):
         return LogHandlerGrafana.KEYMAP.get(key, key)
 
-    def __del__(self):
+    def stop(self):
         pass
 
 
@@ -328,10 +346,12 @@ timeout - interval for collecting data
         self.filters = {None: None}
         self.records = {}
         self.stop = threading.Event()
+        self.uubnums2del = []
 
-    def add_handler(self, handler, filterlist=None):
+    def add_handler(self, handler, filterlist=None, uubnum=None):
         """Add handler and filters to apply for it
-Ignore None filters"""
+Ignore None filters
+if uubnum provided, the handler is removed when uubnum is removed"""
         if filterlist is None:
             key = None
         else:
@@ -340,7 +360,7 @@ Ignore None filters"""
                 key = None
         if key not in self.filters:
             self.filters[key] = filterlist
-        self.handlers.append((handler, key))
+        self.handlers.append((handler, key, uubnum))
 
     def run(self):
         logger = logging.getLogger('logger')
@@ -349,6 +369,19 @@ Ignore None filters"""
         last_ts = datetime(2016, 1, 1)  # minus infinity
         logger.info('starting run()')
         while not self.stop.is_set() or self.records:
+            while self.uubnums2del:
+                uubnum = self.uubnums2del.pop()
+                nhandlers = []
+                for rec in self.handlers:
+                    if rec[2] == uubnum:  # remove uub
+                        rec[0].stop()     # stop the handler
+                    else:
+                        nhandlers.append(rec)
+                self.handlers = nhandlers
+                # remove unused filters
+                nfilterkeys = [rec[1] for rec in self.handlers] + [None]
+                self.filters = {k: v for k, v in self.filters.items()
+                                if k in nfilterkeys}
             if self.records:
                 qtend = min([rec['tend'] for rec in self.records.values()])
             else:
@@ -432,11 +465,11 @@ Ignore None filters"""
                         nrec = filt(nrec)
                     recs[key] = nrec
                 # logger.debug('Rec written to handlers: %s', repr(recs))
-                for h, key in self.handlers:
+                for h, key, uubnum in self.handlers:
                     h.write_rec(recs[key])
         logger.info('run() finished, deleting handlers')
-        for h, key in self.handlers:
-            h.__del__()
+        for h, key, uubnum in self.handlers:
+            h.stop()
         self.handlers = None
 
     def join(self, timeout=None):

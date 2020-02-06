@@ -118,9 +118,7 @@ timesync - sync Arduino time
                 break
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if any([name in flags
-                    for name in ('meas.thp', 'meas.ramp', 'meas.noise',
-                                 'meas.iv', 'meas.pulse', 'meas.freq')]):
+            if 'meas.thp' in flags:
                 self.logger.debug('BME read')
                 self.ser.write(b'm')
                 resp = readSerRE(self.ser, BME.re_bmemeas, logger=self.logger)
@@ -216,7 +214,7 @@ class PowerControl(threading.Thread):
     re_readrelay = re.compile(rb'.*?([01]{10})\s*OK', re.DOTALL)
     NCHANS = 10   # number of channel
 
-    def __init__(self, port, timer=None, q_resp=None, uubnums=[None]*10,
+    def __init__(self, port, timer=None, q_resp=None, uubnums=None,
                  splitmode=None):
         """Constructor
 port - serial port to connect
@@ -243,9 +241,12 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
             raise SerialReadTimeout
         self.ser = s
         super(PowerControl, self).__init__()
-        assert len(uubnums) <= 10
-        self.uubnums = {uubnum: port for port, uubnum in enumerate(uubnums)
-                        if uubnum is not None}
+        if uubnums is None:
+            self.uubnums = {}
+        else:
+            assert len(uubnums) <= 10
+            self.uubnums = {uubnum: port for port, uubnum in enumerate(uubnums)
+                            if uubnum is not None}
         if splitmode is None:
             splitmode = PowerControl.SPLITMODE_DEFAULT
         self.splitterMode(splitmode)
@@ -275,11 +276,14 @@ return current setting without parameters"""
     def switch(self, state, uubs=None):
         """Switch on/off relays
 state - True to switch ON, False to OFF
-uubs - list of uubnums to switch or None to switch all"""
-        if uubs is not None:
-            chans = sum([1 << self.uubnums[uubnum] for uubnum in uubs])
-        else:
+uubs - list of uubnums to switch or True to switch all
+     - if None, switch only ports in self.uubnums"""
+        if uubs is True:
             chans = (1 << self.NCHANS) - 1  # all chans
+        elif uubs is None:
+            chans = sum([1 << port for port in self.uubnums.values()])
+        else:
+            chans = sum([1 << self.uubnums[uubnum] for uubnum in uubs])
         cmd = 'n' if state else 'f'
         self.ser.write(bytes('%c %o\r' % (cmd, chans), 'ascii'))
         readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
@@ -326,7 +330,9 @@ return tuple of two list: (uubsOn, uubsOff)"""
                 self.q_resp.put(res)
             if 'power' in flags:
                 if 'pcon' in flags['power']:
-                    self.switch(True, self.uubnums)
+                    # valid uubs: list, True, None
+                    uubs = flags['power']['pcon']
+                    self.switch(True, uubs)
                 # check TBD
         self.logger.info('run finished')
 

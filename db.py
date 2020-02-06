@@ -59,9 +59,9 @@ log - if True, write log recores"""
                                     keyfile=dbinfo['client_key'])
 
     def start(self):
-        if self.files is None:
-            return
         """Write <run> record, ctx.starttime must be defined"""
+        if self.fp is None:
+            return
         self.fp.write('{"typ": "run", "phase": "%s", "tester": "%s", ' %
                       (self.ctx.phase, self.ctx.tester))
         self.fp.write('"starttime": "%s"}\n' %
@@ -130,7 +130,8 @@ raise exception if something wrong"""
 uubnums - tuple/list of UUB numbers
 return dict {uubnum: '0123456789ab'}"""
         if uubnums is None:
-            uubnums = self.ctx.uubnums
+            uubnums = [uubnum for uubnum in self.ctx.uubnums
+                       if uubnum is not None]
         if not uubnums:
             return {}
         assert all([0 < uubnum < VIRGINUUBNUM for uubnum in uubnums])
@@ -266,9 +267,6 @@ flabels - list of frequencies to log for freqgain
         else:
             self.item2key = lambda item: item['uubnum']
 
-    def __del__(self):
-        pass
-
     def write_rec(self, d):
         if self.skiprec(d):
             return
@@ -278,16 +276,17 @@ flabels - list of frequencies to log for freqgain
             {key: d[key] for key in DBconnector.EMPTY_MP
              if d.get(key, None) is not None and
              self.dbcon.measpoint[key] is None})
+        uubnums = [uubnum for uubnum in self.uubnums if uubnum is not None]
         if self.logitem in ('gain', 'cutoff'):
             values = {uubnum: [None] * 11
-                      for uubnum in self.uubnums}
+                      for uubnum in uubnums}
         elif self.logitem in ('noise', 'noisestat'):
             values = {(uubnum, typ): [None] * 11
-                      for uubnum in self.uubnums
+                      for uubnum in uubnums
                       for typ in self.typs}
         elif self.logitem == 'freqgain':
             values = {(uubnum, flabel): [None] * 11
-                      for uubnum in self.uubnums
+                      for uubnum in uubnums
                       for flabel in self.flabels}
         for label, value in d.items():
             item = label2item(label)
@@ -297,7 +296,7 @@ flabels - list of frequencies to log for freqgain
             if key in values:
                 values[key][item['chan']] = value
         if self.logitem in ('noise', 'noisestat'):
-            for uubnum in self.uubnums:
+            for uubnum in uubnums:
                 for typ in self.typs:
                     if not all([value is None
                                 for value in values[(uubnum, typ)]]):
@@ -307,7 +306,7 @@ flabels - list of frequencies to log for freqgain
                                'values': values[(uubnum, typ)][1:]}
                         self.dbcon.measrecs.append(rec)
         elif self.logitem == 'freqgain':
-            for uubnum in self.uubnums:
+            for uubnum in uubnums:
                 for flabel in self.flabels:
                     if not all([value is None
                                 for value in values[(uubnum, flabel)]]):
@@ -318,10 +317,13 @@ flabels - list of frequencies to log for freqgain
                                'values': values[(uubnum, flabel)][1:]}
                         self.dbcon.measrecs.append(rec)
         else:
-            for uubnum in self.uubnums:
+            for uubnum in uubnums:
                 if not all([value is None for value in values[uubnum]]):
                     rec = {'typ': self.typs[0],
                            'mp': d['meas_point'],
                            'uubnum': uubnum,
                            'values': values[uubnum][1:]}
                     self.dbcon.measrecs.append(rec)
+
+    def stop(self):
+        pass

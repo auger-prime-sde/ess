@@ -31,7 +31,7 @@ from logger import makeDLfreqgain  # , makeDLcutoff
 from logger import QueDispatch, QLogHandler
 from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
-from UUB import uubnum2mac
+from UUB import uubnum2mac, VIRGINUUBNUM
 from chamber import Chamber, ESSprogram
 from dataproc import DataProcessor, DirectGain, SplitterGain, make_notcalc
 from dataproc import make_DPfilter_linear, make_DPfilter_ramp
@@ -336,7 +336,13 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.ed = EvtDisp(self.timer)
             self.ed.start()
 
-        self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
+        assert len(d['uubnums']) <= 10 and \
+            all([isinstance(uubnum, int) and 0 <= uubnum <= VIRGINUUBNUM
+                 for uubnum in d['uubnums'] if uubnum is not None])
+        self.uubnums = d['uubnums']
+        # None filtered out
+        luubnums = [uubnum for uubnum in self.uubnums if uubnum is not None]
+
         # DB connector
         self.dbcon = DBconnector(self, d['dbinfo'], 'db' in d['dataloggers'])
         self.internalSNs = self.dbcon.queryInternalSN()
@@ -419,18 +425,18 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                            self.afg, self.splitmode, self.spliton,
                            self.td, self.trigger)
         self.udaq.start()
-        self.udaq.uubnums2add.extend(self.uubnums)
+        self.udaq.uubnums2add.extend(luubnums)
 
         # UUBs - UUBtelnet
         dloadfn = d.get('download_fn', None)
         if dloadfn is not None and dloadfn[0] not in ('.', os.sep):
             dloadfn = self.datadir + dloadfn
-        self.telnet = UUBtelnet(self.timer, self.uubnums, dloadfn)
+        self.telnet = UUBtelnet(self.timer, luubnums, dloadfn)
         self.telnet.start()
 
         # UUBs - Zync temperature & SlowControl
         self.uubtsc = {uubnum: UUBtsc(uubnum, self.timer, self.q_resp)
-                       for uubnum in self.uubnums}
+                       for uubnum in luubnums}
         for uub in self.uubtsc.values():
             uub.start()
 
@@ -473,50 +479,51 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # temperature
         if d['dataloggers'].get('temperature', False):
             self.dl.add_handler(
-                makeDLtemperature(self, self.uubnums,
-                                  'meas.sc' in d['tickers']))
+                makeDLtemperature(self, luubnums, 'meas.sc' in d['tickers']))
 
         # slow control measured values
         if d['dataloggers'].get('slowcontrol', False):
-            for uubnum in self.uubnums:
-                self.dl.add_handler(makeDLslowcontrol(self, uubnum))
+            for uubnum in luubnums:
+                self.dl.add_handler(makeDLslowcontrol(self, uubnum),
+                                    uubnum=uubnum)
 
         # pedestals & their std
         if d['dataloggers'].get('pede', False):
             count = d['dataloggers'].get('pedestatcount', None)
-            for uubnum in self.uubnums:
-                self.dl.add_handler(makeDLpedenoise(self, uubnum, count))
+            for uubnum in luubnums:
+                self.dl.add_handler(makeDLpedenoise(self, uubnum, count),
+                                    uubnum=uubnum)
             if count is not None:
                 if dpfilter_stat_pede is None:
                     dpfilter_stat_pede = make_DPfilter_stat('pede')
                 if dpfilter_stat_noise is None:
                     dpfilter_stat_noise = make_DPfilter_stat('noise')
-                for uubnum in self.uubnums:
+                for uubnum in luubnums:
                     self.dl.add_handler(makeDLstat(self, uubnum, 'pede'),
-                                        (dpfilter_stat_pede, ))
+                                        (dpfilter_stat_pede, ), uubnum)
                     self.dl.add_handler(makeDLstat(self, uubnum, 'noise'),
-                                        (dpfilter_stat_noise, ))
+                                        (dpfilter_stat_noise, ), uubnum)
 
         # amplitudes of halfsines
         if 'ampli' in d['dataloggers']:
-            for uubnum in self.uubnums:
+            for uubnum in luubnums:
                 self.dl.add_handler(makeDLhsampli(
-                    self, uubnum, d['dataloggers']['ampli']))
+                    self, uubnum, d['dataloggers']['ampli']), uubnum=uubnum)
 
         # amplitudes of sines vs freq
         if 'fampli' in d['dataloggers']:
-            for uubnum in self.uubnums:
+            for uubnum in luubnums:
                 self.dl.add_handler(makeDLfampli(
-                    self, uubnum, d['dataloggers']['fampli']))
+                    self, uubnum, d['dataloggers']['fampli']), uubnum=uubnum)
 
         # gain/linearity
         if d['dataloggers'].get('linearity', False):
             if dpfilter_linear is None:
                 dpfilter_linear = make_DPfilter_linear(
                     self.notcalc, self.splitgain)
-            for uubnum in self.uubnums:
+            for uubnum in luubnums:
                 self.dl.add_handler(makeDLlinear(self, uubnum),
-                                    (dpfilter_linear, ))
+                                    (dpfilter_linear, ), uubnum)
 
         # freqgain
         if 'freqgain' in d['dataloggers']:
@@ -524,9 +531,9 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 dpfilter_linear = make_DPfilter_linear(
                     self.notcalc, self.splitgain)
             freqs = d['dataloggers']['freqgain']
-            for uubnum in self.uubnums:
+            for uubnum in luubnums:
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
-                                    (dpfilter_linear, ))
+                                    (dpfilter_linear, ), uubnum)
 
         # cut-off
         if d['dataloggers'].get('cutoff', False):
@@ -535,16 +542,16 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     self.notcalc, self.splitgain)
             if dpfilter_cutoff is None:
                 dpfilter_cutoff = make_DPfilter_cutoff()
-            for uubnum in self.uubnums:
+            for uubnum in luubnums:
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, ),
-                                    (dpfilter_linear, dpfilter_cutoff))
+                                    (dpfilter_linear, dpfilter_cutoff), uubnum)
 
         # ramp
         if d['dataloggers'].get('ramp', False):
             if dpfilter_ramp is None:
-                dpfilter_ramp = make_DPfilter_ramp(self.uubnums)
+                dpfilter_ramp = make_DPfilter_ramp(luubnums)
             fn = self.datadir + self.basetime.strftime('ramp-%Y%m%d.log')
-            lh = LogHandlerRamp(fn, self.basetime, self.uubnums)
+            lh = LogHandlerRamp(fn, self.basetime, luubnums)
             self.dl.add_handler(lh, (dpfilter_ramp, ))
 
         # database
@@ -553,7 +560,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             for item in d['dataloggers']['db']['logitems']:
                 if item == 'ramp':
                     if dpfilter_ramp is None:
-                        dpfilter_ramp = make_DPfilter_ramp(self.uubnums)
+                        dpfilter_ramp = make_DPfilter_ramp(luubnums)
                     self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_ramp, ))
                 elif item == 'cutoff':
@@ -585,7 +592,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # grafana: filters must be already created before
         if 'grafana' in d['dataloggers']:
             lh = LogHandlerGrafana(
-                self.starttime, self.uubnums, d['dataloggers']['grafana'])
+                self.starttime, luubnums, d['dataloggers']['grafana'])
             self.dl.add_handler(
                 lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
 
@@ -597,6 +604,21 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
 
         self.dl.start()
+
+    def removeUUB(self, uubnum):
+        """Remove UUB from running system"""
+        # self.logger.debug('Removing UUB #%04d', uubnum)
+        self.uubnums.remove(uubnum)
+        if self.pc is not None:
+            del self.pc.uubnums[uubnum]
+        self.udaq.uubnums2del.append(uubnum)
+        self.telnet.uubnums2del.append(uubnum)
+        self.dl.uubnums2del.append(uubnum)
+        uub = self.uubtsc.pop(uubnum)
+        uub.stopme = True
+        # self.logger.debug('Joining UUBtsc #%04d', uubnum)
+        uub.join()
+        # self.logger.debug('UUB #%04d removed', uubnum)
 
     def __del__(self):
         self.stop()
@@ -620,6 +642,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if self.td is not None:
             self.td.stop()
         if self.pc is not None:
+            self.pc.switch(False, True)  # switch off all relays
             self.pc.stop()
         # stop RPiTrigger
         if (self.trigger is not None and

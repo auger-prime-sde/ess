@@ -104,13 +104,7 @@ channels: [A-F][0-9] ... splitter, on AFG chan A
                 assert self.pregains[0] is not None
             if any([splitch[0] == 'R' for splitch in self.mdomap.values()]):
                 assert self.pregains[1] is not None
-        if uubnums is not None:
-            assert len(uubnums) <= 10 and \
-                all([0 < uubnum < 4000
-                     for uubnum in uubnums if uubnum is not None])
-            self.uubnums = uubnums
-        else:
-            self.uubnums = [None] * 10
+        self.uubnums = uubnums if uubnums is not None else [None]
         if calibration is not None:
             self.calibration = json.load(open(calibration, 'r'))
         else:

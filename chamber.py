@@ -50,14 +50,6 @@ q_resp - queue to send response"""
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if all([name not in flags
-                    for name in ('binder.state', 'binder.prog', 'meas.sc',
-                                 'meas.ramp', 'meas.noise', 'meas.iv',
-                                 'meas.thp', 'meas.pulse', 'meas.freq')]):
-                continue
-            self.logger.debug(
-                'Chamber event timestamp %s',
-                datetime.strftime(timestamp, "%Y-%m-%d %H:%M:%S"))
             if 'binder.state' in flags:
                 if flags['binder.state'] is None:
                     self.logger.info('Stopping program')
@@ -71,10 +63,7 @@ q_resp - queue to send response"""
                         self.logger.error(
                             'Unknown detail for binder.state: %s',
                             repr(flags['binder.state']))
-            if any([name in flags
-                    for name in ('meas.sc', 'meas.thp',
-                                 'meas.ramp', 'meas.noise', 'meas.iv',
-                                 'meas.pulse', 'meas.freq')]):
+            if 'meas.thp' in flags:
                 self.logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
                 humid = self.binder.getActHumid()

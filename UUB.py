@@ -242,6 +242,7 @@ q_resp - queue to send response
         self.TIMEOUT = 5
         self.TRIALS = 3  # number of trials to read internal SN
         self.HTTP_TOUT = 3  # timeout for HTTP connections
+        self.stopme = False
         self.logger = logging.getLogger('UUB-%04d' % uubnum)
         self.logger.info('UUBtsc created, IP %s.', self.ip)
 
@@ -261,7 +262,7 @@ q_resp - queue to send response
                 dt = datetime.now().replace(microsecond=0)
                 self.q_resp.put({'timestamp': dt,
                                  'internalSN_u%04d' % self.uubnum: s})
-            if self.timer.stop.is_set():
+            if self.timer.stop.is_set() or self.stopme:
                 self.logger.info('UUBtsc stopped')
                 return
         # self.logger.info('added immediate telnet.login')
@@ -269,7 +270,7 @@ q_resp - queue to send response
         self.logger.debug('UUB live, entering while loop')
         while True:
             self.timer.evt.wait()
-            if self.timer.stop.is_set():
+            if self.timer.stop.is_set() or self.stopme:
                 self.logger.info('UUBtsc stopped')
                 return
             timestamp = self.timer.timestamp   # store info from timer
