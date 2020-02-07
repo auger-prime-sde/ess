@@ -188,6 +188,8 @@ def DataProcessor(dp_ctx):
     """Data processor, a function to run in a separate process
 dp_ctx - context with configuration (dict)
 """
+    MINFTY = datetime(2016, 1, 1)  # minus infinity
+    CHS = range(10)  # all chans -1
     LOG_CONFIG = {
         'version': 1,
         'disable_existing_loggers': True,
@@ -204,8 +206,9 @@ dp_ctx - context with configuration (dict)
     }
     logging.config.dictConfig(LOG_CONFIG)
     logger = logging.getLogger(multiprocessing.current_process().name)
+    temp_invalid_chs = []  # for DP_ramp to report failed chs
     workhorses = [DP_store(dp_ctx['datadir']),
-                  DP_ramp(dp_ctx['q_resp']),
+                  DP_ramp(dp_ctx['q_resp'], temp_invalid_chs),
                   DP_pede(dp_ctx['q_resp'])]
     if 'hswidth' in dp_ctx:
         notcalc = make_notcalc(dp_ctx)
@@ -217,6 +220,10 @@ dp_ctx - context with configuration (dict)
             splitmode=dp_ctx['splitmode'], voltage=dp_ctx['Fvoltage'],
             freq=dp_ctx['freq']))
     q_ndata = dp_ctx['q_ndata']
+    # shared dict with invalid channels per (ts, uubnum)
+    invalid_chs_dict = dp_ctx['inv_chs_dict']
+    chs = {}   # valid channels
+    last_ts = MINFTY
     logger.debug('init done')
     while True:
         try:
@@ -224,11 +231,29 @@ dp_ctx - context with configuration (dict)
         except SystemExit:
             break
         if nd is None:  # sentinel
+            q_ndata.task_done()
             break
         logger.debug('converting UUB %04d, id %08x start',
                      nd.uubnum, nd.id)
         item = nd.details.copy() if nd.details is not None else {}
-        item['uubnum'] = nd.uubnum
+        uubnum = nd.uubnum
+        if 'functype' in item:
+            if item['functype'] == 'R':
+                del temp_invalid_chs[:]  # clear so DP_ramp may set failed chs
+            else:  # only set chs if functype defined and not ramp
+                timestamp = item.get('timestamp', MINFTY)
+                if timestamp > last_ts:  # new measurement point
+                    chs = {}
+                    last_ts = timestamp
+                if uubnum not in chs:  # retrieve from ess
+                    ichs = invalid_chs_dict.get((timestamp, uubnum), None)
+                    if ichs is None:
+                        chs[uubnum] = None
+                    else:
+                        chs[uubnum] = [ch for ch in CHS if ch not in ichs]
+                if chs[uubnum] is not None:
+                    item['chs'] = chs[uubnum]
+        item['uubnum'] = uubnum
         item['yall'] = nd.convertData()
         label = item2label(item)
         logger.debug('conversion UUB %04d, id %08x done, processing %s',
@@ -240,7 +265,13 @@ dp_ctx - context with configuration (dict)
                 logger.error('Workhorse %s with item = %s failed',
                              repr(wh), repr(item))
                 logger.exception(e)
+        if temp_invalid_chs:
+            logger.debug('reporting invalid channels (%s, %04d): %s',
+                         timestamp.strftime('%Y-%m-%d %H:%M:%S'), uubnum,
+                         repr(temp_invalid_chs))
+            invalid_chs_dict[(timestamp, uubnum)] = temp_invalid_chs
         logger.debug('Item %s done', label)
+        q_ndata.task_done()
     logger.debug('finished')
 
 
@@ -385,6 +416,7 @@ class DP_pede(object):
     # parameters
     BINSTART = 0
     BINEND = 2047
+    CHS = tuple(range(10))
 
     def __init__(self, q_resp):
         """Constructor.
@@ -398,14 +430,15 @@ q_resp - a logger queue
         if item.get('functype', None) != 'N':
             return
         self.logger.debug('Processing %s', item2label(item))
-        array = item['yall'][self.BINSTART:self.BINEND, :]
+        chs = item.get('chs', self.CHS)
+        array = item['yall'][self.BINSTART:self.BINEND, chs]
         mean = array.mean(axis=0)
         stdev = array.std(axis=0, ddof=1)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
                  for key in ('uubnum', 'functype', 'index')
                  if key in item}
-        for ch, (m, s) in enumerate(zip(mean, stdev)):
+        for ch, m, s in zip(chs, mean, stdev):
             for typ, val in (('pede', m), ('noise', s)):
                 label = item2label(itemr, typ=typ, chan=ch+1)
                 res[label] = val
@@ -427,13 +460,13 @@ kwargs: splitmode, voltage (fixed paramters)"""
         logname = multiprocessing.current_process().name + '.hsampli'
         self.logger = logging.getLogger(logname)
         self.sf = SineFitter()
-        self.notcalc, self.chans = notcalc, chans
+        self.notcalc = notcalc
+        self.chs = [chan-1 for chan in chans]
         self.keys = {key: kwargs[key]
                      for key in ('splitmode', 'voltage')
                      if key in kwargs}
         self.q_resp = q_resp
         self.hsf = HalfSineFitter(hswidth)
-        self.notcalc, self.chans = notcalc, chans
 
     def calculate(self, item):
         if item.get('functype', None) != 'P':
@@ -441,9 +474,9 @@ kwargs: splitmode, voltage (fixed paramters)"""
         self.logger.debug('Processing %s', item2label(item))
         splitmode = item.get('splitmode', self.keys['splitmode'])
         voltage = item.get('voltage', self.keys['voltage'])
-        chans = [chan for chan in self.chans
-                 if not self.notcalc('P', chan, splitmode, voltage)]
-        yall = item['yall'][:, [chan-1 for chan in chans]]
+        chs = [ch for ch in item.get('chs', self.chs)
+               if not self.notcalc('P', ch+1, splitmode, voltage)]
+        yall = item['yall'][:, chs]
         hsfres = self.hsf.fit(yall, HalfSineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
@@ -451,8 +484,8 @@ kwargs: splitmode, voltage (fixed paramters)"""
                              'index')
                  if key in item}
         itemr['typ'] = 'ampli'
-        for chan, ampli in zip(chans, hsfres['ampli']):
-            label = item2label(itemr, chan=chan)
+        for ch, ampli in zip(chs, hsfres['ampli']):
+            label = item2label(itemr, chan=ch+1)
             res[label] = ampli
         self.q_resp.put(res)
 
@@ -489,7 +522,8 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
         logname = multiprocessing.current_process().name + '.freq'
         self.logger = logging.getLogger(logname)
         self.sf = SineFitter()
-        self.notcalc, self.chans = notcalc, chans
+        self.notcalc = notcalc
+        self.chs = [chan-1 for chan in chans]
         self.keys = {key: kwargs[key]
                      for key in ('splitmode', 'voltage', 'flabel', 'freq')
                      if key in kwargs}
@@ -504,9 +538,9 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
             flabel, freq = freqlabel(item)
         except ValueError:
             flabel, freq = freqlabel(self.keys)
-        chans = [chan for chan in self.chans
-                 if not self.notcalc('F', chan, splitmode, voltage)]
-        yall = item['yall'][:, [chan-1 for chan in chans]]
+        chs = [ch for ch in item.get('chs', self.chs)
+               if not self.notcalc('F', ch+1, splitmode, voltage)]
+        yall = item['yall'][:, chs]
         sfres = self.sf.fit(yall, flabel, freq, stage=SineFitter.AMPLI)
         res = {'timestamp': item['timestamp']}
         itemr = {key: item[key]
@@ -514,20 +548,23 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
                              'freq', 'splitmode', 'voltage', 'index')
                  if key in item}
         itemr['typ'] = 'fampli'
-        for chan, ampli in zip(chans, sfres['ampli']):
-            label = item2label(itemr, chan=chan)
+        for ch, ampli in zip(chs, sfres['ampli']):
+            label = item2label(itemr, chan=ch+1)
             res[label] = ampli
         self.q_resp.put(res)
 
 
 class DP_ramp(object):
     """Data processor workhorse to checking test ramp"""
+    CHS = tuple(range(10))
 
-    def __init__(self, q_resp):
+    def __init__(self, q_resp, invalid_chs=None):
         """Constructor.
 q_resp - a logger queue
+invalid_chs - if not None, store there list of failed channels (-1)
 """
         self.q_resp = q_resp
+        self.invalid_chs = invalid_chs
         logname = multiprocessing.current_process().name + '.ramp'
         self.logger = logging.getLogger(logname)
         self.aramp = np.arange(2048, dtype='int16')
@@ -538,11 +575,14 @@ q_resp - a logger queue
         self.logger.debug('Processing %s', item2label(item))
         itemr = {key: item[key] for key in ('uubnum', 'functype')}
         res = {'timestamp': item['timestamp']}
-        for ch in range(10):
+        for ch in self.CHS:
             label = item2label(itemr, chan=ch+1)
             yr = np.array(item['yall'][:, ch], dtype='int16') + self.aramp
             yr %= 4096
-            res[label] = bool(np.amin(yr) == np.amax(yr))
+            rampOK = bool(np.amin(yr) == np.amax(yr))
+            if self.invalid_chs is not None and not rampOK:
+                self.invalid_chs.append(ch)
+            res[label] = rampOK
         self.q_resp.put(res)
 
 

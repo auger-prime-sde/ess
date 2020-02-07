@@ -384,13 +384,14 @@ class UUBdaq(threading.Thread):
     TOUT_RAMP = 0.05  # delay between setting ADC ramp and trigger in s
     TOUT_DAQ = 0.1    # timeout between trigger and UUBlisten cancel
 
-    def __init__(self, timer, ulisten, q_resp,
+    def __init__(self, timer, ulisten, q_resp, q_ndata,
                  afg, splitmode, spliton, trigdelay, trigger,
                  gener_param=gener_funcparams()):
         """Constructor
 timer - instance of timer
 ulisten - instance of UUBlistener
 q_resp - queue for responses (for meas_point/meas_<name>/db_<name>
+q_ndata - queue to DataProcessors
 afg - instance of AFG
 splitmode - bound method PowerControl.splitterMode
 spliton - bound method to power on/off splitter
@@ -399,7 +400,8 @@ trigger - bound method for trigger
 gener_param - generator of measurement paramters (see gener_funcparams)
 """
         super(UUBdaq, self).__init__()
-        self.timer, self.ulisten, self.q_resp = timer, ulisten, q_resp
+        self.timer, self.ulisten = timer, ulisten
+        self.q_resp, self.q_ndata = q_resp, q_ndata
         self.afg, self.splitmode, self.spliton = afg, splitmode, spliton
         self.trigger, self.trigdelay = trigger, trigdelay
         self.tnames = [rec[0] for rec in gener_param]  # timer names
@@ -481,11 +483,14 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     # stop daq at ulisten
                     self.ulisten.uubnums = set()
                     self.ulisten.clear = True
+                    self.ulisten.cleared.wait()
                     logger.debug('DAQ completed')
                 if tname == 'meas.ramp':
                     for adcr in self.adcramp.values():
                         adcr.switchOff()
                     sleep(UUBdaq.TOUT_RAMP)
+                    # wait until all ramp traces are processed
+                    self.q_ndata.join()
                 elif tname == 'meas.noise':
                     if self.spliton is not None:
                         logger.info('splitter power on after meas.noise')
@@ -506,6 +511,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
         self.q_ndata = q_ndata
         self.stop = threading.Event()
         self.done = threading.Event()
+        self.cleared = threading.Event()
         # adjust before run
         self.port = DATAPORT
         self.laddr = LADDR
@@ -547,6 +553,7 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
                         self.logrecords = False
                     self.records = {}
                     self.clear = False
+                    self.cleared.set()
             nsid = unpack('<L', data[:4])[0]
             uubnum = ip2uubnum(addr[0])
             # (UUBnum, port, id)

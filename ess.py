@@ -268,11 +268,15 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             logging.basicConfig(**kwargs)
 
         # queues
-        self.q_ndata = multiprocessing.Queue()
+        self.q_ndata = multiprocessing.JoinableQueue()
         self.q_dpres = multiprocessing.Queue()
         self.q_log = multiprocessing.Queue()
         self.q_resp = queue.Queue()
         self.q_att = queue.Queue()
+        # manager for shared dict for invalid channels
+        self.mgr = multiprocessing.Manager()
+        self.mgr.start()
+        self.invalid_chs_dict = self.mgr.dict()
 
         self.qlistener = logging.handlers.QueueListener(
             self.q_log, QLogHandler())
@@ -286,6 +290,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         dp_ctx = {'q_ndata': self.q_ndata,
                   'q_resp': self.q_dpres,
                   'q_log': self.q_log,
+                  'inv_chs_dict': self.invalid_chs_dict,
                   'datadir': self.datadir,
                   'splitmode': d.get('splitmode', None),
                   'chans': self.chans}
@@ -645,8 +650,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.pc.switch(False, True)  # switch off all relays
             self.pc.stop()
         # stop RPiTrigger
-        if (self.trigger is not None and
-            isinstance(self.trigger.__self__, RPiTrigger)):
+        if self.trigger is not None and \
+           isinstance(self.trigger.__self__, RPiTrigger):
             self.trigger.__self__.stop()
         # join all threads
         self.timer.join()
@@ -672,6 +677,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # join DP processes
         for dp in self.dataprocs:
             dp.join()
+        self.mgr.shutdown()
         self.stop = self._noaction
         print("ESS.stop() finished")
 
