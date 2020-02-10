@@ -237,22 +237,20 @@ dp_ctx - context with configuration (dict)
                      nd.uubnum, nd.id)
         item = nd.details.copy() if nd.details is not None else {}
         uubnum = nd.uubnum
-        if 'functype' in item:
-            if item['functype'] == 'R':
-                del temp_invalid_chs[:]  # clear so DP_ramp may set failed chs
-            else:  # only set chs if functype defined and not ramp
-                timestamp = item.get('timestamp', MINFTY)
-                if timestamp > last_ts:  # new measurement point
-                    chs = {}
-                    last_ts = timestamp
-                if uubnum not in chs:  # retrieve from ess
-                    ichs = invalid_chs_dict.get((timestamp, uubnum), None)
-                    if ichs is None:
-                        chs[uubnum] = None
-                    else:
-                        chs[uubnum] = [ch for ch in CHS if ch not in ichs]
-                if chs[uubnum] is not None:
-                    item['chs'] = chs[uubnum]
+        timestamp = item.get('timestamp', MINFTY)
+        if item.get('functype', 'R') != 'R':
+            # only set chs if functype defined and not ramp
+            if timestamp > last_ts:  # new measurement point
+                chs = {}
+                last_ts = timestamp
+            if uubnum not in chs:  # retrieve from ess
+                ichs = invalid_chs_dict.get((timestamp, uubnum), None)
+                if ichs is None:
+                    chs[uubnum] = None
+                else:
+                    chs[uubnum] = [ch for ch in CHS if ch not in ichs]
+            if chs[uubnum] is not None:
+                item['chs'] = chs[uubnum]
         item['uubnum'] = uubnum
         item['yall'] = nd.convertData()
         label = item2label(item)
@@ -270,6 +268,7 @@ dp_ctx - context with configuration (dict)
                          timestamp.strftime('%Y-%m-%d %H:%M:%S'), uubnum,
                          repr(temp_invalid_chs))
             invalid_chs_dict[(timestamp, uubnum)] = temp_invalid_chs
+            del temp_invalid_chs[:]  # clear so DP_ramp may set failed chs
         logger.debug('Item %s done', label)
         q_ndata.task_done()
     logger.debug('finished')

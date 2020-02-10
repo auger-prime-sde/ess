@@ -275,7 +275,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.q_att = queue.Queue()
         # manager for shared dict for invalid channels
         self.mgr = multiprocessing.Manager()
-        self.mgr.start()
         self.invalid_chs_dict = self.mgr.dict()
 
         self.qlistener = logging.handlers.QueueListener(
@@ -426,7 +425,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # UUBs - UUBdaq and UUBlisten
         self.ulisten = UUBlisten(self.q_ndata)
         self.ulisten.start()
-        self.udaq = UUBdaq(self.timer, self.ulisten, self.q_resp,
+        self.udaq = UUBdaq(self.timer, self.ulisten, self.q_resp, self.q_ndata,
                            self.afg, self.splitmode, self.spliton,
                            self.td, self.trigger)
         self.udaq.start()
