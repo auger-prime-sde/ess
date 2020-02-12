@@ -1,24 +1,29 @@
 /*
- * Trigger generator and trigger
+ * Trigger delay & fan-out
  * Petr Tobiska <tobiska@fzu.cz>
  * 2018-08-17
 
-Send trigger (TRIG) and optionally delayed to output
+Send TRIG and two (optionally delayed) OUTPUT pulses
 
  pins: 
- - trigger   PD2 - D2
- - outputs   PB0 - D8
+ - TRIG      PB2 - D10  inverted
+ - OUTPUT    PB0 - D8
              PB3 - D11
+ 	     
+ on output pins are drivers TC 4427A ~ 40ns delay and are fan-outed to 11 SMA with 50 Ohm
+ trigger - to AFG
+ pulse length: 3 clocks ~ 180ns
  */
 
-#define VERSION "20190709"
+#define VERSION "20200212"
 
 #include<avr/io.h>
 #include<Arduino.h>
 
-#define PIN_TRIG  2    // port D, bit 2
-#define PIN_OUT1  8    // port B, bit 0
-#define PIN_OUT2  11   // port B, bit 3
+#define PORT      PORTB
+#define DDR       DDRB
+#define B_TRIG    _BV(PB2)
+#define B_OUT     _BV(PB0) | _BV(PB3)
 
 #define BUFSIZE 10
 char buffer[BUFSIZE];
@@ -57,13 +62,8 @@ void printIdent() {
 }
 
 void setup() {
-  // configure pins
-  pinMode(PIN_TRIG, OUTPUT);
-  pinMode(PIN_OUT1, OUTPUT);
-  pinMode(PIN_OUT2, OUTPUT);
-  digitalWrite(PIN_TRIG, LOW);
-  digitalWrite(PIN_OUT1, LOW);
-  digitalWrite(PIN_OUT2, LOW);
+  DDR = B_TRIG | B_OUT;    // configure pins output
+  PORT = B_TRIG;           // out low, trigger high
 
   Serial.begin(115200);
   printIdent();
@@ -71,7 +71,7 @@ void setup() {
 
 void loop() {
   char c, *ptr;
-  uint8_t tmp;
+  uint8_t tmp, oldSREG;
 
   ptr = readline();
   /* skip optional spaces */
@@ -94,37 +94,42 @@ void loop() {
     break;
   case 't':   // make trigger pulse
     if(qus == 0) {
+      oldSREG = SREG;
       cli();
-      PORTD = _BV(2);
-      PORTB = _BV(0) | _BV(3);
+      PORT = B_OUT;
       _NOP();
-      PORTD = 0;
-      PORTB = 0;
-      sei(); }
+      _NOP();
+      PORT = B_TRIG;
+      SREG = oldSREG; }
     else if(qus == 1) {
-      PORTD = _BV(2);
+      oldSREG = SREG;
+      cli();
+      PORT = 0;
       _NOP();
       _NOP();
-      PORTD = 0;
-      PORTB = _BV(0) | _BV(3);
+      PORT = B_OUT | B_TRIG;
       _NOP();
       _NOP();
-      PORTB = 0; }
+      PORT = B_TRIG;
+      SREG = oldSREG; }
     else {
+      oldSREG = SREG;
+      cli();
       tmp = qus - 1;
-      PORTD = _BV(2);
+      PORT = 0;
       _NOP();
       _NOP();
-      PORTD = 0;
+      PORT = B_TRIG;
       // busy wait
       __asm__ __volatile__ (
 			    "loop: subi %0,1" "\n\t" // 1 cycle
 			    "brne loop" : "=r" (tmp) : "0" (tmp) // 2 cycles
 			    );
-      PORTB = _BV(0) | _BV(3);
+      PORT = B_OUT | B_TRIG;
       _NOP();
       _NOP();
-      PORTB = 0; }
+      PORT = B_TRIG;
+      SREG = oldSREG;}
     Serial.println("OK");
     break;
   case '?':
