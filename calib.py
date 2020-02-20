@@ -55,7 +55,7 @@ return dict {splitch: offset value}"""
                for splitmode in (0, 1, 3)}
     logger.info('Offset calibration, coarse estimation LSB: %f V', INITSCALE)
     for splitmode in (0, 1, 3):
-        pc.splitterMode(splitmode)
+        pc.splitterMode = splitmode
         for mdoch in mdomap.keys():
             mdo.send('CH%d:OFFSET 0.0' % mdoch)
             mdo.send('CH%d:SCALE %f' % (mdoch, INITSCALE))
@@ -264,10 +264,10 @@ if 'P' in d['daqparams'] and any(hsf):
             afg.setParams(**afg_dict)
             if 'splitmode' in item_dict:
                 splitmode = item_dict['splitmode']
-                pc.splitterMode(splitmode)
+                pc.splitterMode = splitmode
             else:
                 splitmode = None
-            mdoSetVert(pc.splitterMode(), item_dict['voltage'], mdo, splitgain,
+            mdoSetVert(pc.splitterMode, item_dict['voltage'], mdo, splitgain,
                        offsets, logger)
             sleep(TOUT_PREP)
         trigger()
@@ -309,10 +309,10 @@ if 'F' in d['daqparams'] and any(sf):
             if afg_dict is not None:
                 if 'splitmode' in item_dict:
                     splitmode = item_dict['splitmode']
-                    pc.splitterMode(splitmode)
+                    pc.splitterMode = splitmode
                 else:
                     splitmode = None
-                mdoSetVert(pc.splitterMode(), 2*item_dict['voltage'], mdo,
+                mdoSetVert(pc.splitterMode, 2*item_dict['voltage'], mdo,
                            splitgain, offsets, logger)
                 sleep(TOUT_PREP)
         trigger()
