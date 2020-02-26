@@ -7,8 +7,11 @@ import logging
 import re
 import threading
 from serial import Serial, SerialException
+from time import sleep
+from datetime import datetime, timedelta
 
 from threadid import syscall, SYS_gettid
+from BME import readSerRE, SerialReadTimeout
 POWER_OPER = ('voltage', 'currLim', 'on', 'off')
 
 
@@ -17,6 +20,11 @@ class PowerSupply(threading.Thread):
 Developed for Rohde & Schwarz MHP4040 and for TTi CPX400SP."""
     re_cpx = re.compile(rb'.*CPX400')
     re_hmp = re.compile(rb'.*HMP4040')
+    RE_FLOAT = rb'(-?[0-9]+(\.[0-9]*)?)'
+    re_hmp_val = re.compile(RE_FLOAT)
+    re_cpx_volt = re.compile(RE_FLOAT + rb'V')
+    re_cpx_curr = re.compile(RE_FLOAT + rb'A')
+    EPS = 1e-3  # epsilon to mitigate rounding errors in nstep calculation
 
     def __init__(self, port, timer=None, q_resp=None, **kwargs):
         """Constructor.
@@ -30,7 +38,7 @@ kwargs - parameters for output voltage/current limit configuration
         s = None
         try:
             s = Serial(port, baudrate=9600, xonxoff=True,
-                       bytesize=8, parity='N', stopbits=1, timeout=0.5)
+                       bytesize=8, parity='N', stopbits=1, timeout=2.0)
             s.write(b'*IDN?\n')
             resp = s.read(100)
             logger.info('Connected, %s', resp)
@@ -73,6 +81,8 @@ kwargs - parameters for output voltage/current limit configuration
             logger.error('Unknown power supply')
             raise ValueError
         self.config(**kwargs)
+        self._lock = threading.Lock()
+        self.vramps = []  # list of (ts_end, thread)
 
     def run(self):
         tid = syscall(SYS_gettid)
@@ -83,13 +93,44 @@ kwargs - parameters for output voltage/current limit configuration
                 break
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
+
+            # join old volt_ramp threads
+            if self.vramps:
+                vramps = []  # new list for unfinished ramps
+                for ts, thr in self.vramps:
+                    if ts is None or ts < timestamp:
+                        thr.join(0.001)
+                        if thr.is_alive():
+                            self.logger.warning('Join %s timeouted', thr.name)
+                            vramps.append((None, thr))
+                    else:
+                        vramps.append((ts, thr))
+                self.vramps = vramps
+
             if 'power' in flags:
+                # interpret uubch, ch%d
                 self.config(**flags['power'])
-            if 'meas.iv' in flags and self.q_resp is not None:
+
+            if 'meas.sc' in flags and self.q_resp is not None:
                 voltage, current = self.readVoltCurr()
                 self.q_resp.put({'timestamp': timestamp,
+                                 'meas_sc': True,
                                  'ps_u': voltage,
                                  'ps_i': current})
+
+            if 'power' in flags and 'volt_ramp' in flags['power']:
+                live_vr = [thr for ts, thr in self.vramps
+                           if ts is not None]
+                if live_vr:
+                    self.logger.error('Still running voltage ramps: %s',
+                                      ', '.join([thr.name for thr in live_vr]))
+                volt_ramp = self._voltRamp_validate(
+                    flags['power']['volt_ramp'], ts_start=timestamp)
+                thr = threading.Thread(target=self.voltageRamp,
+                                       args=(volt_ramp, ))
+                self.vramps.append((ts, thr))
+                thr.start()
+
         self.logger.info('run finished')
 
     def config(self, **kwargs):
@@ -134,6 +175,52 @@ ch<n>: (voltage, curr. limit, on, off) - set on/off, voltage, curr.limit
         chans = [i for i in args if args[i]['on']]
         self.output(chans, 1)
 
+    def _voltRamp_validate(self, volt_ramp, ts_start):
+        """Validate voltage ramp parameters
+params as in voltageRamp
+adjust volt_step
+add ts_start, ts_end, tdelta, duration, nstep to volt_ramp"""
+        if ts_start is None:
+            ts_start = datetime.now()
+        vstep = abs(volt_ramp['volt_step'])
+        nstep = int((abs(volt_ramp['volt_end'] - volt_ramp['volt_start'])
+                     + self.EPS) / vstep)
+        if volt_ramp['volt_end'] < volt_ramp['volt_start']:
+            vstep = -vstep
+        volt_ramp['nstep'] = nstep
+        volt_ramp['volt_step'] = vstep
+        volt_ramp['tdelta'] = timedelta(seconds=volt_ramp['time_step'])
+        volt_ramp['ts_start'] = ts_start
+        volt_ramp['ts_end'] = ts_start + volt_ramp['tdelta'] * nstep
+        volt_ramp['duration'] = volt_ramp['time_step'] * nstep
+        return volt_ramp
+
+    def voltageRamp(self, volt_ramp, ts_start=None):
+        """Perform voltage ramp
+volt_ramp - dict with keys: volt_start, volt_end, volt_step, time_step
+ts_start - start time (now() if None)"""
+        tid = syscall(SYS_gettid)
+        self.logger.debug('voltageRamp: name %s, tid %d', self.name, tid)
+        assert self.uubch is not None, "Channel for voltage ramp not provided"
+        ch = self.uubch
+        if any([key not in volt_ramp
+                for key in ('nstep', 'ts_start', 'ts_end', 'tdelta')]):
+            self._voltRamp_validate(volt_ramp, ts_start)
+        MSG = 'voltage ramp [{volt_start:.1f}:{volt_step:.1f}:' + \
+              '{volt_end:.1f}] V, duration {duration:.1f}s'
+        self.logger.info(MSG.format(**volt_ramp))
+        volt = volt_ramp['volt_start']
+        timestamp = volt_ramp['ts_start']
+        self.setVoltage(ch, volt)
+        for _ in range(volt_ramp['nstep']):
+            volt += volt_ramp['vstep']
+            timestamp += volt_ramp['tdelta']
+            delta = timestamp - datetime.now()
+            sec = delta.seconds + 0.000001 * delta.microseconds
+            if sec > 0.0:
+                sleep(sec)
+            self.setVoltage(ch, volt)
+
     # HMP4040 methods
     def _output_hmp(self, chans, state):
         """Set channels in chans to state
@@ -145,44 +232,53 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
         assert state in ('ON', 'OFF')
         for ch in chans:
             self.logger.debug('Switch ch%d %s', ch, state)
-            self.ser.write(b'INST OUT%d\n' % ch)
-            self.ser.write(b'OUTP:STATE %s\n' % bytes(state, 'ascii'))
+            with self._lock:
+                self.ser.write(b'INST OUT%d\n' % ch)
+                self.ser.write(b'OUTP:STATE %s\n' % bytes(state, 'ascii'))
 
     def _setVoltage_hmp(self, ch, value):
         self.logger.debug('Set voltage ch%d: %fV', ch, value)
-        self.ser.write(b'INST OUT%d\n' % ch)
-        self.ser.write(b'VOLT %f\n' % value)
+        with self._lock:
+            self.ser.write(b'INST OUT%d\n' % ch)
+            self.ser.write(b'VOLT %f\n' % value)
 
     def _setCurrLim_hmp(self, ch, value):
         self.logger.debug('Set current limit ch%d: %fA', ch, value)
-        self.ser.write(b'INST OUT%d\n' % ch)
-        self.ser.write(b'CURR %f\n' % value)
+        with self._lock:
+            self.ser.write(b'INST OUT%d\n' % ch)
+            self.ser.write(b'CURR %f\n' % value)
 
     def _setVoltCurrLim_hmp(self, ch, voltage, currLim):
         self.logger.debug('Set voltage and current limit ch%d: %fV %fA',
                           ch, voltage, currLim)
-        self.ser.write(b'INST OUT%d\n' % ch)
-        self.ser.write(b'APPL %f, %f\n' % (voltage, currLim))
+        with self._lock:
+            self.ser.write(b'INST OUT%d\n' % ch)
+            self.ser.write(b'APPL %f, %f\n' % (voltage, currLim))
 
     def _readVoltCurr_hmp(self, chans=None):
         rchans = (self.uubch, ) if chans is None else chans
         res = {}
         for ch in rchans:
-            self.ser.write(b'INST OUT%d\n' % ch)
-            self.ser.write(b'MEAS:VOLT?\n')
-            respv = self.ser.read(10)
-            self.ser.write(b'MEAS:CURR?\n')
-            respi = self.ser.read(10)
+            self.logger.info('Reading voltage & current for ch%d', ch)
+            respv = respi = ''
             try:
-                m = re.match(rb'(-?[0-9]+(\.[0-9]*))', respv)
-                voltage = float(m.groups()[0])
-                m = re.match(rb'(-?[0-9]+(\.[0-9]*))', respi)
-                current = float(m.groups()[0])
-            except AttributeError:
+                with self._lock:
+                    self.ser.write(b'INST OUT%d\n' % ch)
+                    self.ser.write(b'MEAS:VOLT?\n')
+                    respv = readSerRE(self.ser, PowerSupply.re_hmp_val,
+                                      timeout=0.1, logger=self.logger)
+                    self.ser.write(b'MEAS:CURR?\n')
+                    respi = readSerRE(self.ser, PowerSupply.re_hmp_val,
+                                      timeout=0.1, logger=self.logger)
+            except (SerialReadTimeout, AttributeError):
                 self.logger.error(
                     'Error reading HMP voltage/current at ch%d :' +
                     'respv "%s", respi "%s"', ch, repr(respv), repr(respi))
                 return None
+            m = re.match(PowerSupply.re_hmp_val, respv)
+            voltage = float(m.groups()[0])
+            m = re.match(PowerSupply.re_hmp_val, respi)
+            current = float(m.groups()[0])
             self.logger.debug('Read voltage %.3fV, current %.3fA',
                               voltage, current)
             res[ch] = (voltage, current)
@@ -199,43 +295,54 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
             state = 1 if state in (1, True, 'ON') else 0
             pstate = 'ON' if state else 'OFF'
             self.logger.debug('Switch ch1 %s', pstate)
-            self.ser.write(b'OP1 %d\n' % state)
+            with self._lock:
+                self.ser.write(b'OP1 %d\n' % state)
 
     def _setVoltage_cpx(self, ch, value):
         self.logger.debug('Set voltage ch1: %fV', value)
-        self.ser.write(b'V1 %f\n' % value)
+        with self._lock:
+            self.ser.write(b'V1 %f\n' % value)
 
     def _setCurrLim_cpx(self, ch, value):
         self.logger.debug('Set current limit ch: %fA', value)
-        self.ser.write(b'I1 %f\n' % value)
+        with self._lock:
+            self.ser.write(b'I1 %f\n' % value)
 
     def _setVoltCurrLim_cpx(self, ch, voltage, currLim):
         self.logger.debug('Set voltage and current limit: %fV %fA',
                           voltage, currLim)
-        self.ser.write(b'V1 %f\n' % voltage)
-        self.ser.write(b'I1 %f\n' % currLim)
+        with self._lock:
+            self.ser.write(b'V1 %f\n' % voltage)
+            self.ser.write(b'I1 %f\n' % currLim)
 
     def _readVoltCurr_cpx(self, ch=None):
-        self.ser.write(b'V1O?\n')
-        respv = self.ser.read(10)
-        self.ser.write(b'I1O?\n')
-        respi = self.ser.read(10)
+        self.logger.info('Reading voltage & current')
+        respv = respi = ''
         try:
-            m = re.match(rb'(-?[0-9]+(\.[0-9]*))V', respv)
-            voltage = float(m.groups()[0])
-            m = re.match(rb'(-?[0-9]+(\.[0-9]*))A', respi)
-            current = float(m.groups()[0])
-        except AttributeError:
+            with self._lock:
+                self.ser.write(b'V1O?\n')
+                respv = readSerRE(self.ser, PowerSupply.re_cpx_volt,
+                                  timeout=0.1, logger=self.logger)
+                self.ser.write(b'I1O?\n')
+                respi = readSerRE(self.ser, PowerSupply.re_cpx_curr,
+                                  timeout=0.1, logger=self.logger)
+        except (SerialReadTimeout, AttributeError):
             self.logger.error(
                 'Error reading CPX voltage/current: respv "%s", respi "%s"',
                 repr(respv), repr(respi))
             return (None, None)
+        m = re.match(PowerSupply.re_cpx_volt, respv)
+        voltage = float(m.groups()[0])
+        m = re.match(PowerSupply.re_cpx_curr, respi)
+        current = float(m.groups()[0])
         self.logger.debug('Read voltage %.3fV, current %.3fA',
                           voltage, current)
         return (voltage, current)
 
     def stop(self):
         try:
+            for ts, thr in self.vramps:
+                thr.join()
             self.ser.close()
         except Exception:
             pass

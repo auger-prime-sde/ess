@@ -23,8 +23,8 @@ from serial import Serial, SerialException
 from timer import Timer, periodic_ticker, EvtDisp
 from modbus import Binder, Modbus, ModbusError
 from logger import LogHandlerRamp, LogHandlerPickle, LogHandlerGrafana
-from logger import DataLogger
-from logger import makeDLtemperature, makeDLslowcontrol
+from logger import LogHandlerVoltramp, DataLogger
+from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
 from logger import makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain  # , makeDLcutoff
@@ -405,10 +405,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # PowerControl
         if 'powercontrol' in d['ports']:
-            self.pc = PowerControl(
-                d['ports']['powercontrol'], self.timer,
-                self.q_resp, self.uubnums, dp_ctx['splitmode'])
-            self.splitmode = self.pc.splitterMode
+            self.pc = PowerControl(d['ports']['powercontrol'], self,
+                                   dp_ctx['splitmode'])
+            if 'pc_limits' in d:
+                self.pc.setCurrLimits(d['pc_limits'], True)
+            self.splitmode = self.pc._set_splitterMode
             self.spliton = self.pc.splitterOn
             self.pc.start()
 
@@ -451,9 +452,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if 'meas.sc' in d['tickers']:
             sc_period = d['tickers'].get('meas.sc', 30)
             self.timer.add_ticker('meas.sc', periodic_ticker(sc_period))
-        if 'meas.iv' in d['tickers']:
-            iv_period = d['tickers'].get('meas.iv', 30)
-            self.timer.add_ticker('meas.iv', periodic_ticker(iv_period))
 
         # ESS program
         if 'essprogram' in d['tickers']:
@@ -490,6 +488,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             for uubnum in luubnums:
                 self.dl.add_handler(makeDLslowcontrol(self, uubnum),
                                     uubnum=uubnum)
+
+        # currents measured by power supply and power control
+        if d['dataloggers'].get('currents', False):
+            self.dl.add_handler(makeDLcurrents(self, luubnums))
 
         # pedestals & their std
         if d['dataloggers'].get('pede', False):
@@ -558,6 +560,12 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             lh = LogHandlerRamp(fn, self.basetime, luubnums)
             self.dl.add_handler(lh, (dpfilter_ramp, ))
 
+        # power on/off - voltage ramp
+        if d['dataloggers'].get('voltramp', False):
+            fn = self.datadir + self.basetime.strftime('voltramp-%Y%m%d.log')
+            self.dl.add_handler(LogHandlerVoltramp(fn, self.basetime,
+                                                   luubnums))
+
         # database
         if 'db' in d['dataloggers']:
             flabels = d['dataloggers']['db'].get('flabels', None)
@@ -612,9 +620,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
     def removeUUB(self, uubnum):
         """Remove UUB from running system"""
         # self.logger.debug('Removing UUB #%04d', uubnum)
-        self.uubnums.remove(uubnum)
+        ind = self.uubnums.index(uubnum)
+        self.uubnums[ind] = None
         if self.pc is not None:
-            del self.pc.uubnums[uubnum]
+            self.pc.uubnums2del.append(uubnum)
         self.udaq.uubnums2del.append(uubnum)
         self.telnet.uubnums2del.append(uubnum)
         self.dl.uubnums2del.append(uubnum)

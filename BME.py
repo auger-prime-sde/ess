@@ -83,7 +83,7 @@ timesync - sync Arduino time
                     "t %Y-%m-%dT%H:%M:%S\r")
                 s.write(bytes(ts, 'ascii'))
                 readSerRE(s, BME.re_bmetimeset, timeout=3, logger=self.logger)
-                self.logger.info('synced to ' + ts)
+                self.logger.info('synced to %s', ts)
         except Exception:
             self.logger.exception("Init serial with BME failed")
             if isinstance(s, Serial):
@@ -128,7 +128,7 @@ timesync - sync Arduino time
                 bmetimestamp = datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S')
                 self.logger.debug('BME vs event time diff: %f s',
                                   (bmetimestamp - timestamp).total_seconds())
-                res = {'timestamp': timestamp}
+                res = {'timestamp': timestamp, 'meas_thp': True}
                 # prefix keys from re_bme with 'bme.'
                 for k, v in d.items():
                     res['bme_'+k] = float(v)
@@ -212,17 +212,53 @@ class PowerControl(threading.Thread):
                              rb'OK', re.DOTALL)
     # ten 0/1 symbols + OK
     re_readrelay = re.compile(rb'.*?([01]{10})\s*OK', re.DOTALL)
+    # (<pin>[+-]<final zone>:<mtime> )*
+    re_zones = re.compile(rb'.*?(([0-9][+-][0-7]:\d+\s)*)\s*OK', re.DOTALL)
+    re_zone = re.compile(rb'(?P<port>[0-9])(?P<dir>[+-])(?P<zone>[0-7]):' +
+                         rb'(?P<atics>\d+)')
+    RZ_TOUT = 30.  # [s] default timeout for rz_tout
+    TICK = 0.0004  # [s] Arduino time tick
     NCHANS = 10   # number of channel
+    NZONES = 3  # number of current zones; recompile Arduino fw if modified
+    ZONEOVER = 7  # zone for overcurrent
+    CURLIMS = (50.0, 250.0, 750.0)  # current limits in mA; recompile dtto
+    ZONEFMT = '{ts:%Y-%m-%dT%H:%M:%S.%f} {uubnum:04d} {dir:1s} {zone:d}\n'
 
-    def __init__(self, port, timer=None, q_resp=None, uubnums=None,
-                 splitmode=None):
+    def __init__(self, port, ctx=None, splitmode=None):
         """Constructor
 port - serial port to connect
+ctx - context object, used keys: timer, q_resp, datadir, basetime, uubnums
+
 timer - instance of timer
 q_resp - queue to send response
 uubnums - list of UUBnums in order of connections.  None if port skipped"""
         self.logger = logging.getLogger('PowerControl')
-        self.timer, self.q_resp = timer, q_resp
+        if ctx is None:
+            self.timer, self.q_resp, self.fp = None, None, None
+            self.uubnums = {}
+        else:
+            self.timer, self.q_resp = ctx.timer, ctx.q_resp
+            assert len(ctx.uubnums) <= 10
+            self.uubnums = {uubnum: port
+                            for port, uubnum in enumerate(ctx.uubnums)
+                            if uubnum is not None}
+            luubnums = ' '.join(['%1d:%04d' % (port, uubnum)
+                                 for port, uubnum in enumerate(ctx.uubnums)
+                                 if uubnum is not None])
+            self.port2uubnum = {port: uubnum
+                                for uubnum, port in self.uubnums.items()}
+            self.zones = {uubnum: 0 for uubnum in ctx.uubnums
+                          if uubnum is not None}
+            self.curlims = {uubnum: PowerControl.CURLIMS
+                            for uubnum in ctx.uubnums if uubnum is not None}
+            fn = ctx.datadir + ctx.basetime.strftime('zones-%Y%m%d.log')
+            self.fp = open(fn, 'a')
+            self.fp.write("""\
+# Current zone transition
+# date %s
+# port/UUBs: %s
+# columns: time | UUB | direction <+/-> | final zone
+""" % (ctx.basetime.strftime('%Y-%m-%d'), luubnums))
         s = None               # avoid NameError on isinstance(s, Serial) check
         try:
             s = Serial(port, baudrate=115200)
@@ -241,27 +277,74 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
             raise SerialReadTimeout
         self.ser = s
         super(PowerControl, self).__init__()
-        if uubnums is None:
-            self.uubnums = {}
-        else:
-            assert len(uubnums) <= 10
-            self.uubnums = {uubnum: port for port, uubnum in enumerate(uubnums)
-                            if uubnum is not None}
-        if splitmode is None:
-            splitmode = PowerControl.SPLITMODE_DEFAULT
-        self.splitterMode(splitmode)
+        self.uubnums2del = []
+        self.splitterMode = splitmode
+        self.atimestamp = None  # time of the last zeroTime
+        self.curzones = []
+        self.bootvolt = self.boottime = self.pendingLimits = self.chk_ts = None
+        self._lock = threading.Lock()
+        self.rz_thread = None
+        self.zeroTime()
 
-    def splitterMode(self, mode=None):
-        """Set splitter mode (0: attenuated, 1: frequency, 3: amplified)
-return current setting without parameters"""
+    def _removeUUB(self, uubnum):
+        port = self.uubnums.pop(uubnum)
+        del self.port2uubnum[port]
+        del self.zones[uubnum]
+        del self.curlims[uubnum]
+
+    def setCurrLimits(self, limits, applynow=False):
+        """Set current limits in Arduino
+limits - list of (uubnum, limit_1, .. limit_NZONES)
+       - if uubnum is None, set for all ports"""
+        for limit in limits:
+            assert len(limit) == PowerControl.NZONES + 1
+            assert limit[0] is None or limit[0] in self.uubnums
+            assert all([isinstance(curr, float) for curr in limit[1:]])
+        self.pendingLimits = {limit[0]: tuple(limit[1:]) for limit in limits}
+        if applynow:
+            self._applyCurrLimits()
+
+    def _applyCurrLimits(self):
+        """Apply pending current limits to Arduino"""
+        # thread safe poping + setting None
+        pendingLimits = self.__dict__.pop('pendingLimits')
+        self.__dict__.setdefault('pendingLimits')
+        if pendingLimits is None:
+            return
+        for uubnum, currents in pendingLimits.items():
+            port = '*' if uubnum is None else "%d" % self.uubnums[uubnum]
+            pcurrents = ' '.join(['%d' % int(10*c + 0.5) for c in currents])
+            self.logger.info('Setting current limits %c %s',
+                             port, pcurrents)
+            with self._lock:
+                self.ser.write(bytes('l %c %s\r' % (port, pcurrents), 'ascii'))
+                readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
+            if uubnum is None:
+                for uubnum in self.uubnums:
+                    self.curlims[uubnum] = currents
+            else:
+                self.curlims[uubnum] = currents
+        self._readZones()  # discard old current zone transitions
+        self.curzones = []
+
+    def _get_splitterMode(self):
+        """Return current setting of splitmode"""
+        self._splitmode
+
+    def _set_splitterMode(self, mode=None):
+        """Set splitter mode (0: attenuated, 1: frequency, 3: amplified)"""
         if mode is None:
-            return self.splitmode
+            mode = PowerControl.SPLITMODE_DEFAULT
         assert mode in (0, 1, 3)  # allowed values
         self.logger.info('setting splitter mode %d', mode)
-        self.ser.write(b'm %d\r' % mode)
-        readSerRE(self.ser, PowerControl.re_set, timeout=1, logger=self.logger)
+        with self._lock:
+            self.ser.write(b'm %d\r' % mode)
+            readSerRE(self.ser, PowerControl.re_set, timeout=1,
+                      logger=self.logger)
         self.logger.debug('splitter mode set')
-        self.splitmode = mode
+        self._splitmode = mode
+
+    splitterMode = property(_get_splitterMode, _set_splitterMode)
 
     def splitterOn(self, state=None):
         """Switch splitter on/off"""
@@ -269,8 +352,10 @@ return current setting without parameters"""
             return
         self.logger.info('switching splitter %s', 'on' if state else 'off')
         cmd = b'1\r' if state else b'0\r'
-        self.ser.write(cmd)
-        readSerRE(self.ser, PowerControl.re_set, timeout=1, logger=self.logger)
+        with self._lock:
+            self.ser.write(cmd)
+            readSerRE(self.ser, PowerControl.re_set, timeout=1,
+                      logger=self.logger)
         self.logger.debug('splitter switched')
 
     def switch(self, state, uubs=None):
@@ -285,15 +370,18 @@ uubs - list of uubnums to switch or True to switch all
         else:
             chans = sum([1 << self.uubnums[uubnum] for uubnum in uubs])
         cmd = 'n' if state else 'f'
-        self.ser.write(bytes('%c %o\r' % (cmd, chans), 'ascii'))
-        readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
+        self.logger.info('switch: %c uubs=%s chans=%o', cmd, repr(uubs), chans)
+        with self._lock:
+            self.ser.write(bytes('%c %o\r' % (cmd, chans), 'ascii'))
+            readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
 
     def relays(self):
         """Read status of relays
 return tuple of two list: (uubsOn, uubsOff)"""
-        self.ser.write(b'd\r')
-        resp = readSerRE(self.ser, PowerControl.re_readrelay,
-                         logger=self.logger)
+        with self._lock:
+            self.ser.write(b'd\r')
+            resp = readSerRE(self.ser, PowerControl.re_readrelay,
+                             logger=self.logger)
         states = PowerControl.re_readrelay.match(resp).groups()[0]
         uubsOn = [uubnum for uubnum, port in self.uubnums.items()
                   if states[port] == ord('1')]
@@ -301,14 +389,128 @@ return tuple of two list: (uubsOn, uubsOff)"""
                    if states[port] == ord('0')]
         return uubsOn, uubsOff
 
+    def zeroTime(self):
+        """Zero PowerControl internal time"""
+        self.logger.info('Zero Arduino time')
+        with self._lock:
+            ts1 = datetime.now()
+            self.ser.write(b't\r')
+            readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
+            ts2 = datetime.now()
+            self.atimestamp = ts1 + 0.5*(ts2 - ts1)
+
+    def atics2ts(self, atics):
+        """Convert PowerControl internal time to timestamp"""
+        return self.atimestamp + timedelta(seconds=PowerControl.TICK * atics)
+
     def _readCurrents(self):
         """Read currents [mA]. Return as tuple of ten floats"""
         self.logger.info('reading currents')
-        self.ser.write(b'r\r')
-        resp = readSerRE(self.ser, PowerControl.re_readcurr,
-                         timeout=8, logger=self.logger)
+        with self._lock:
+            self.ser.write(b'r\r')
+            resp = readSerRE(self.ser, PowerControl.re_readcurr,
+                             logger=self.logger)
         return [float(s)
                 for s in PowerControl.re_readcurr.match(resp).groups()]
+
+    def _readZones(self):
+        """Read zone transition and log them.
+Return list of dict with keys: ts, uubnum, dir, zone"""
+        self.logger.info('reading current zone transitions')
+        with self._lock:
+            self.ser.write(b'z\r')
+            resp = readSerRE(self.ser, PowerControl.re_zones,
+                             logger=self.logger)
+        recs = []
+        for rec in PowerControl.re_zones.match(resp).groups()[0].split(b' '):
+            if not rec:
+                continue
+            d = PowerControl.re_zone.match(rec).groupdict()
+            for key in ('port', 'zone', 'atics'):
+                d[key] = int(d[key])
+            d['dir'] = d['dir'].decode('ascii')
+            try:
+                d['uubnum'] = self.port2uubnum[d['port']]
+            except KeyError:
+                self.logger.warning('Transition in unassigned port: %s', rec)
+                continue
+            d['ts'] = self.atics2ts(d.pop('atics'))
+            if self.fp is not None:
+                self.fp.write(PowerControl.ZONEFMT.format(**d))
+            if d['zone'] == PowerControl.ZONEOVER:
+                self.logger.error(
+                    'OverCurrent on UUB %04d at %s', d['uubnum'],
+                    d['ts'].strftime('%Y-%m-%d %H:%M:%S.%f'))
+            recs.append(d)
+        return recs
+
+    def _voltres(self, uubnum):
+        """Determine voltage when UUB either switched on or off
+return voltage set when transition occurs
+May raise IndexError if appropriate record does not exist"""
+        bv = self.bootvolt  # shortcut
+        if bv['start']:  # last 0->1 transition before first 1->N-1 trans
+            self.logger.debug(   # ###
+                'vres start %s',
+                repr([rec for rec in self.curzones
+                      if rec['uubnum'] == uubnum and rec['dir'] == '+' and
+                      rec['zone'] == 1]))
+            ztime = [rec['ts'] for rec in self.curzones
+                     if rec['uubnum'] == uubnum and rec['dir'] == '+' and
+                     rec['zone'] == PowerControl.NZONES-1][0]
+            atime = [rec['ts'] for rec in self.curzones
+                     if rec['uubnum'] == uubnum and rec['dir'] == '+' and
+                     rec['zone'] == 1 and rec['ts'] < ztime][-1]
+        else:  # the last 1->0 transition
+            self.logger.debug(   # ###
+                'vres stop %s',
+                repr([rec for rec in self.curzones
+                      if rec['uubnum'] == uubnum and rec['dir'] == '-' and
+                      rec['zone'] == 0]))
+            atime = [rec['ts'] for rec in self.curzones
+                     if rec['uubnum'] == uubnum and rec['dir'] == '-' and
+                     rec['zone'] == 0][-1]
+        istep = int((atime - self.chk_ts).total_seconds() /
+                    bv['time_step'])
+        self.logger.debug('bootvolt = %s, istep = %d', repr(bv), istep)
+        volt = bv['volt_start'] + istep * bv['volt_step']
+        voltmin = min(bv['volt_start'], bv['volt_end'])
+        if volt < voltmin:
+            self.logger.warning(
+                'ramp voltage for UUB %04d less than minimal voltage',
+                uubnum)
+            volt = voltmin
+        voltmax = max(bv['volt_start'], bv['volt_end'])
+        if volt > voltmax:
+            self.logger.warning(
+                'ramp voltage for UUB %04d bigger than maximal voltage',
+                uubnum)
+            volt = voltmax
+        return volt
+
+    def _boottime(self, uubnum):
+        """Calculate time for boot (between 0->1 and 1->2 transition)
+May raise IndexError if appropriate record does not exist"""
+        # the first 0->1 transition
+        a1 = [rec['ts'] for rec in self.curzones
+              if rec['uubnum'] == uubnum and rec['dir'] == '+' and
+              rec['zone'] == 1][0]
+        a2 = [rec['ts'] for rec in self.curzones
+              if rec['uubnum'] == uubnum and rec['dir'] == '+' and
+              rec['zone'] == PowerControl.NZONES-1][-1]
+        return (a2 - a1).total_seconds()
+
+    def readZone(self):
+        """Function running in a separate thread to read current zone
+ transitions periodically"""
+        tid = syscall(SYS_gettid)
+        self.logger.debug('readZone: name %s, tid %d', self.name, tid)
+        tout = self.rz_out
+        while tout:
+            self.curzones.extend(self._readZones())
+            sleep(tout)
+            tout = self.rz_out
+        self.logger.debug('readZone finished')
 
     def run(self):
         if self.timer is None or self.q_resp is None:
@@ -316,28 +518,88 @@ return tuple of two list: (uubsOn, uubsOff)"""
             return
         tid = syscall(SYS_gettid)
         self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.rz_thread = threading.Thread(target=self.readZone)
+        self.rz_thread.start()
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
                 break
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if 'meas.iv' in flags:
+            while self.uubnums2del:
+                self._removeUUB(self.uubnums2del.pop())
+
+            if 'meas.sc' in flags:
                 currents = self._readCurrents()
                 res = {item2label(typ='itot', uubnum=uubnum): currents[port]
                        for uubnum, port in self.uubnums.items()}
                 res['timestamp'] = timestamp
+                res['meas_sc'] = True
                 self.q_resp.put(res)
+
             if 'power' in flags:
+                if 'rz_tout' in flags['power']:
+                    self.rz_tout = flags['power']
+                # valid uubs for pcon/pcoff: <list>, True, None
+                if 'pcoff' in flags['power']:
+                    self.switch(False, flags['power']['pcoff'])
                 if 'pcon' in flags['power']:
-                    # valid uubs: list, True, None
                     uubs = flags['power']['pcon']
+                    del self.curzones[:]
                     self.switch(True, uubs)
-                # check TBD
+                    if 'check' in flags['power']:
+                        if self.boottime or self.bootvolt:
+                            self.logger.warning('pcon: already under check')
+                            self.bootvolt = None
+                        self.boottime = True
+                        self.chk_ts = timestamp
+                if 'volt_ramp' in flags['power']:
+                    if self.boottime or self.bootvolt:
+                        self.logger.warning('voltramp: already under check')
+                    del self.curzones[:]
+                    bv = flags['power']['volt_ramp']
+                    bv['up'] = bv['volt_start'] < bv['volt_end']
+                    self.bootvolt = bv
+                    self.boottime = self.bootvolt['start']
+                    self.chk_ts = timestamp
+
+            if 'power.pccheck' in flags:
+                if not self.bootvolt and not self.boottime:
+                    self.logger.error('not after pcon or volt_ramp')
+                    continue
+                res = {'timestamp': self.chk_ts}
+                if self.bootvolt:
+                    direction = 'up' if self.bootvolt['up'] else 'down'
+                    state = 'on' if self.bootvolt['start'] else 'off'
+                    res['volt_ramp'] = (direction, state)
+                    typ = 'voltramp' + direction + state
+                    for uubnum in self.uubnums:
+                        label = item2label(typ=typ, uubnum=uubnum)
+                        try:
+                            res[label] = self._voltres(uubnum)
+                        except IndexError:
+                            self.logger.warning('voltage for %s not available',
+                                                label)
+                    self.bootvolt = None
+                if self.boottime:
+                    for uubnum in self.uubnums:
+                        label = item2label(typ='boottime', uubnum=uubnum)
+                        try:
+                            res[label] = self._boottime(uubnum)
+                        except IndexError:
+                            self.logger.warning(
+                                'boottime for %04d not available', uubnum)
+                    self.boottime = None
+                self.q_resp.put(res)
         self.logger.info('run finished')
 
     def stop(self):
         try:
+            if self.fp is not None:
+                self.fp.close()
+            if self.rz_thread:
+                self.rz_tout = None
+                self.rz_thread.join()
             self.ser.close()
         except Exception:
             pass

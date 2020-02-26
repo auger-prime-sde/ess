@@ -30,6 +30,7 @@ LADDR = "192.168.31.254"  # IP address of the computer
 VIRGINMAC = '00:0a:35:00:1e:53'
 VIRGINIP = '192.168.31.0'
 VIRGINUUBNUM = 0xF00
+re_mac = re.compile(r'^00:0[aA]:35:00:([0-9]{2}):([0-9]{2})$')
 
 
 def uubnum2mac(uubnum):
@@ -40,7 +41,6 @@ def uubnum2mac(uubnum):
     return '00:0a:35:00:%02d:%02d' % (uubnum // 100, uubnum % 100)
 
 
-re_mac = re.compile(r'^00:0[aA]:35:00:([0-9]{2}):([0-9]{2})$')
 def mac2uubnum(mac):
     """ Calculate UUB number from MAC address"""
     if mac == VIRGINMAC:
@@ -291,9 +291,11 @@ q_resp - queue to send response
                     # read Zynq temperature
                     if 'meas.thp' in flags:
                         res.update(self.readZynqTemp(conn))
+                        res['meas_thp'] = True
                     # read SlowControl data
                     if 'meas.sc' in flags:
                         res.update(self.readSlowControl(conn))
+                        res['meas_sc'] = True
                 except (http.client.CannotSendRequest, socket.error,
                         AttributeError) as e:
                     self.logger.error('HTTP request failed, %s', e.__str__())

@@ -70,6 +70,7 @@ q_resp - queue to send response"""
                 self.logger.debug('Done. t = %.2fdeg.C, h = %.2f%%',
                                   temperature, humid)
                 res = {'timestamp': timestamp,
+                       'meas_thp': True,
                        'chamber_temp': temperature,
                        'chamber_humid': humid}
                 self.q_resp.put(res)
@@ -90,8 +91,8 @@ class ESSprogram(threading.Thread):
             self.mns = {}   # measurement noise: {time: flags}
             self.mps = {}   # measurement pulses, {time: flags}
             self.mfs = {}   # measurement freqs, {time: flags}
-            self.ivs = {}   # measurement power supply voltage/current: [time]
             self.tps = []   # test points: [time]
+            self.pcs = []   # PowerControl check [time]
             self.pps = {}   # power operations: {time: kwargs}
             # flags for lis/los/cms: None or list of UUBnums
             self.lis = {}   # logins {time: flags}
@@ -112,17 +113,18 @@ class ESSprogram(threading.Thread):
                     [(t + self.t, val)
                      for t, val in otherpoints.__dict__[timelist]])
             # { time: flags } dictionaries
-            for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
+            for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps',
                           'lis', 'los', 'cms', 'dls', 'fls', 'lto'):
                 self.__dict__[dname].update(
                     {t + self.t: val
                      for t, val in otherpoints.__dict__[dname].items()})
             self.tps.extend([t + self.t for t in otherpoints.tps])
+            self.pcs.extend([t + self.t for t in otherpoints.pcs])
 
         def keys(self):
             """Return all time points"""
             keys = self.tps
-            for dname in ('mrs', 'mns', 'mps', 'mfs', 'ivs', 'pps',
+            for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps',
                           'lis', 'los', 'cms', 'dls', 'fls', 'lto'):
                 keys.extend(list(self.__dict__[dname].keys()))
             return sorted(set(keys))
@@ -301,21 +303,6 @@ jsonobj - either json string or json file"""
                                              'freqs', 'count')
                                  if key in mp}
                     ap.mfs[mptime] = flags
-            if "meas.iv" in segment:
-                meas = self._macro(segment["meas.iv"])
-                for mp in meas:
-                    mp = self._macro(mp)
-                    offset = self._macro(mp["offset"])
-                    flags = self._macro(mp["flags"])
-                    mptime = ap.t + offset
-                    if offset < 0:
-                        mptime += dur
-                    if 'log_timeout' in mp:
-                        log_timeout = int(self._macro(mp['log_timeout']))
-                        if mptime not in ap.lto or \
-                           log_timeout > ap.lto[mptime]:
-                            ap.lto[mptime] = log_timeout
-                    ap.ivs[mptime] = flags
             # power and test
             if "power" in segment:
                 power = self._macro(segment["power"])
@@ -327,23 +314,39 @@ jsonobj - either json string or json file"""
                         ptime += dur
                     if "test" in pp:
                         ap.tps.append(ptime)
+                    kwargs = {}
+                    if pp.get('pccheck', None):
+                        kwargs['check'] = True
+                        check_time = self._macro(pp['pccheck'])
+                        ap.pcs.append(ptime + check_time)
+                        log_timeout = check_time + 2
+                        if ptime not in ap.lto or log_timeout > ap.lto[ptime]:
+                            ap.lto[ptime] = log_timeout
                     # kwargs for PowerSupply.config()
                     # e.g. {'ch1': (12.0, None, True, False)}
-                    kwargs = {}
                     for chan in pp:
                         if re.match(r'^ch\d$', chan) is None:
                             continue
                         args = self._macro(pp[chan])
                         if not all([v is None for v in args]):
                             kwargs[chan] = args
-                    # pcon, TBD: pcoff, ramp
-                    if 'pcon' in pp:
-                        log_timeout = pp['pcon']  # None or time in sec
-                        kwargs['pcon'] = log_timeout
-                        if log_timeout is not None and (
-                                ptime not in ap.lto or
-                                log_timeout > ap.lto[ptime]):
-                            ap.lto[ptime] = log_timeout
+                    # PowerControl
+                    # pcon, pcoff parameter: list of UUBs, True or None
+                    # rz_tout parameter: wait time [s] for readZone, float
+                    for key in ('pcon', 'pcoff', 'rz_tout'):
+                        if key in pp:
+                            kwargs[key] = self._macro(pp[key])
+                    if 'volt_ramp' in pp:
+                        volt_ramp = self._macro(pp['volt_ramp'])
+                        kwargs['volt_ramp'] = {
+                            key: self._macro(volt_ramp[key])
+                            for key in ('volt_start', 'volt_end', 'volt_step',
+                                        'time_step', 'start')}
+                        vstep = abs(kwargs['volt_ramp']['volt_step'])
+                        if kwargs['volt_ramp']['volt_end'] < \
+                           kwargs['volt_ramp']['volt_start']:
+                            vstep = -vstep
+                        kwargs['volt_ramp']['volt_step'] = vstep
                     if kwargs:
                         ap.pps[ptime] = kwargs
             # telnet
@@ -422,10 +425,10 @@ jsonobj - either json string or json file"""
                             for mptime in sorted(gp.mps)]
         self.meas_freqs = [(mptime, gp.mfs[mptime])
                            for mptime in sorted(gp.mfs)]
-        self.meas_ivs = [(mptime, gp.ivs[mptime]) for mptime in sorted(gp.ivs)]
         self.power_points = [(ptime, gp.pps[ptime])
                              for ptime in sorted(gp.pps)]
         self.test_points = sorted(gp.tps)
+        self.pcc_points = sorted(gp.pcs)
         self.logins = [(ttime, gp.lis[ttime]) for ttime in sorted(gp.lis)]
         self.logouts = [(ttime, gp.los[ttime]) for ttime in sorted(gp.los)]
         self.cmds = [(ttime, gp.cms[ttime]) for ttime in sorted(gp.cms)]
@@ -471,11 +474,6 @@ return polyline approximation at the time t"""
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if self.starttime is None or self.stoptime < timestamp:
-                # or all(
-                #     [name not in flags
-                #      for name in ('meas.sc', 'meas.thp',
-                #                   'meas.ramp', 'meas.noise', 'meas.iv',
-                #                   'meas.pulse', 'meas.freq')]):
                 dur = None
             else:
                 dur = (timestamp - self.starttime).total_seconds()
@@ -539,11 +537,6 @@ and add them to timer"""
                                   point_ticker(self.meas_freqs, offset,
                                                'meas_point',
                                                self.timepoints))
-        if self.meas_ivs:
-            self.timer.add_ticker('meas.iv',
-                                  point_ticker(self.meas_ivs, offset,
-                                               'meas_point',
-                                               self.timepoints))
         if self.power_points:
             self.timer.add_ticker('power',
                                   point_ticker(self.power_points, offset))
@@ -567,6 +560,9 @@ and add them to timer"""
                                   list_ticker(self.test_points, offset,
                                               'test_point',
                                               self.timepoints))
+        if self.pcc_points:
+            self.timer.add_ticker('power.pccheck',
+                                  list_ticker(self.pcc_points, offset))
         if self.timerstop is not None:
             self.timer.add_ticker(
                 'stop', one_tick(None, delay=offset+self.timerstop))

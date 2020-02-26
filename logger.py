@@ -242,7 +242,7 @@ dbinfo - dict with configuration for Grafana
 
     def write_rec(self, d):
         common = {'timestamp': d['timestamp'].strftime(
-                      self.dbinfo['fmtdatetime'])}
+            self.dbinfo['fmtdatetime'])}
         if 'rel_time' in d:
             common['rel_time'] = d['rel_time']
         res = {}
@@ -330,6 +330,53 @@ return list of 10 values (or None) or None if no data available"""
 
     def stop(self):
         pass
+
+
+class LogHandlerVoltramp(object):
+    """LogHandler for voltage ramp power on/off checks"""
+    prolog = """\
+# Power on/off test with voltage ramp up/down with expected state at end on/off
+# date %s
+# tested UUBs: %s
+# columns: timestamp | meas_point | <up/down> | <on/off> | """
+    fmtprefix = '{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:4d} ' + \
+                '{direction:4s} {state:3s}'
+
+    def __init__(self, filename, dt, uubnums):
+        self.fp = None
+        self.fp = open(filename, 'a')
+        self.uubnums = uubnums
+        self.fp.write(LogHandlerVoltramp.prolog % (
+            dt.strftime('%Y-%m-%d'),
+            ', '.join(["%04d" % uubnum for uubnum in uubnums])))
+        self.fp.write('| '.join(['volt #%04d' % uubnum for uubnum in uubnums]))
+        self.fp.write('\n')
+        self.fp.flush()
+
+    def write_rec(self, d):
+        if 'volt_ramp' not in d:
+            return
+        direction, state = d['volt_ramp']
+        prefix = LogHandlerVoltramp.fmtprefix.format(
+            timestamp=d['timestamp'], meas_point=d['meas_point'],
+            direction=direction, state=state)
+        labeltemplate = 'voltramp' + direction + state + '_u%04d'
+        values = []
+        for uubnum in self.uubnums:
+            label = labeltemplate % uubnum
+            if label in d:
+                values.append(' %4.1f' % d[label])
+            else:
+                values.append('  ~  ')
+        self.fp.write(prefix + ''.join(values) + '\n')
+
+    def stop(self):
+        if self.fp is not None:
+            self.fp.close()
+            self.fp = None
+
+    def __del__(self):
+        self.stop()
 
 
 class DataLogger(threading.Thread):
@@ -581,7 +628,8 @@ sc - if True, log also temperatures from SlowControl"""
         logdata += ['{sc%04d_temp:5.1f}' % uubnum for uubnum in uubnums]
     formatstr = ' '.join(logdata) + '\n'
     fn = ctx.datadir + ctx.basetime.strftime('thp-%Y%m%d.log')
-    return LogHandlerFile(fn, formatstr, prolog=prolog)
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_thp' not in d)
 
 
 def makeDLslowcontrol(ctx, uubnum):
@@ -608,7 +656,30 @@ uubnum - UUB number to log"""
                     for label in labels_U])
     prolog += '\n'
     formatstr = ' '.join(logdata) + '\n'
-    return LogHandlerFile(fn, formatstr, prolog=prolog)
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_sc' not in d)
+
+
+def makeDLcurrents(ctx, uubnums):
+    """Create LogHandlerFile for currents drawn by UUBNSTR
+ctx - context object, used keys: datadir + basetime"""
+    prolog = """\
+# Currents drawn by UUBs [mA]
+# date %s
+# columns: timestamp | PowerSup voltage [V] | PowerSup current [A]\
+""" % (ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | UUB-%04d.itot' % uubnum
+                       for uubnum in uubnums])
+    prolog += "\n"
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{ps_u:6.3f}', '{ps_i:6.3f}']
+    logdata += ['{itot_u%04d:5.1f}' % uubnum for uubnum in uubnums]
+    formatstr = ' '.join(logdata) + '\n'
+    fn = ctx.datadir + ctx.basetime.strftime('currents-%Y%m%d.log')
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          missing_keys={'ps_u': '  ~   ',
+                                        'ps_i': '  ~   '},
+                          skiprec=lambda d: 'meas_sc' not in d)
 
 
 def makeDLpedenoise(ctx, uubnum, count=None):
