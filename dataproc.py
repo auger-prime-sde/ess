@@ -378,7 +378,7 @@ def label2item(label):
               for key in ('uubnum', 'chan', 'splitmode', 'index') if key in d})
     if 'chan' in d and d['chan'] == 0:
         d['chan'] = 10
-    # convert voltage back to float and chan 0 -> 10
+    # convert voltage back to float
     if 'voltage' in d:
         svolt = d['voltage']
         d['voltage'] = float('%c.%s' % (svolt[0], svolt[1:]))

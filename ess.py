@@ -36,12 +36,15 @@ from chamber import Chamber, ESSprogram
 from dataproc import DataProcessor, DirectGain, SplitterGain, make_notcalc
 from dataproc import make_DPfilter_linear, make_DPfilter_ramp
 from dataproc import make_DPfilter_cutoff, make_DPfilter_stat
+from dataproc import label2item
 from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
+from evaluator import Evaluator
+from threadid import syscall, SYS_gettid
 
-VERSION = '20200204'
+VERSION = '20200227'
 
 
 class DetectUSB(object):
@@ -221,6 +224,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.db = None
         self.grafana = None
         self.ed = None
+        self.abort = False
 
         if jsfn is not None:
             with open(jsfn, 'r') as fp:
@@ -349,7 +353,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # DB connector
         self.dbcon = DBconnector(self, d['dbinfo'], 'db' in d['dataloggers'])
-        self.internalSNs = self.dbcon.queryInternalSN()
+        isns = self.dbcon.queryInternalSN()
+        self.internalSNs = {label2item(label)['uubnum']: value
+                            for label, value in isns.items()
+                            if value is not None}
 
         # power supply
         if 'power' in d and 'power' in d['ports']:
@@ -444,6 +451,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                        for uubnum in luubnums}
         for uub in self.uubtsc.values():
             uub.start()
+
+        # evaluator
+        self.evaluator = Evaluator(self, sys.stdout)
+        self.evaluator.start()
 
         # tickers
         if 'meas.thp' in d['tickers']:
@@ -617,9 +628,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         self.dl.start()
 
-    def removeUUB(self, uubnum):
-        """Remove UUB from running system"""
-        # self.logger.debug('Removing UUB #%04d', uubnum)
+    def removeUUB(self, uubnum, logger=None):
+        """Remove UUB from running system, might run in a separate thread"""
+        if logger is not None:
+            tid = syscall(SYS_gettid)
+            logger.debug('Removing UUB #%04d, thread id %d', uubnum, tid)
         ind = self.uubnums.index(uubnum)
         self.uubnums[ind] = None
         if self.pc is not None:
@@ -629,9 +642,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.dl.uubnums2del.append(uubnum)
         uub = self.uubtsc.pop(uubnum)
         uub.stopme = True
-        # self.logger.debug('Joining UUBtsc #%04d', uubnum)
+        if logger is not None:
+            logger.debug('Joining UUBtsc #%04d', uubnum)
         uub.join()
-        # self.logger.debug('UUB #%04d removed', uubnum)
+        if logger is not None:
+            logger.debug('UUB #%04d removed', uubnum)
 
     def __del__(self):
         self.stop()
@@ -686,8 +701,18 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         for dp in self.dataprocs:
             dp.join()
         self.mgr.shutdown()
+        self.evaluator.join()
         self.stop = self._noaction
         print("ESS.stop() finished")
+
+    def critical_error(self, logger=None):
+        """Stop immediately system and set abort"""
+        if logger is not None:
+            logger.error('Aborting ESS testrun')
+        self.abort = True
+        self.timer.stop.set()
+        self.timer.evt.set()
+        self.timerstop.set()
 
 
 def Pretest(jsfn, uubnum):
@@ -715,6 +740,6 @@ if __name__ == '__main__':
     ess.timerstop.wait()
     logger.info('Stopping everything.')
     ess.stop()
-    if ess.dbcon.files is not None:
+    if not ess.abort and ess.dbcon.files is not None:
         ess.dbcon.commit()
     logger.info('Done. Everything stopped.')

@@ -80,9 +80,9 @@ kwargs - parameters for output voltage/current limit configuration
         else:
             logger.error('Unknown power supply')
             raise ValueError
-        self.config(**kwargs)
         self._lock = threading.Lock()
         self.vramps = []  # list of (ts_end, thread)
+        self.config(**kwargs)
 
     def run(self):
         tid = syscall(SYS_gettid)
@@ -128,7 +128,7 @@ kwargs - parameters for output voltage/current limit configuration
                     flags['power']['volt_ramp'], ts_start=timestamp)
                 thr = threading.Thread(target=self.voltageRamp,
                                        args=(volt_ramp, ))
-                self.vramps.append((ts, thr))
+                self.vramps.append((volt_ramp['ts_end'], thr))
                 thr.start()
 
         self.logger.info('run finished')
@@ -213,7 +213,7 @@ ts_start - start time (now() if None)"""
         timestamp = volt_ramp['ts_start']
         self.setVoltage(ch, volt)
         for _ in range(volt_ramp['nstep']):
-            volt += volt_ramp['vstep']
+            volt += volt_ramp['volt_step']
             timestamp += volt_ramp['tdelta']
             delta = timestamp - datetime.now()
             sec = delta.seconds + 0.000001 * delta.microseconds

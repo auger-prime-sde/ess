@@ -100,6 +100,7 @@ class ESSprogram(threading.Thread):
             self.cms = {}   # telnet cmds {time: flags}
             self.dls = {}   # telnet downloads {time: flags}
             self.fls = {}   # flir operations {time: flags}
+            self.els = {}   # evaluator operations {time: flags}
             self.lto = {}   # log_timeout: {time: log_timeout value}
             self.t = 0      # time
             self.time_temp = []
@@ -114,7 +115,7 @@ class ESSprogram(threading.Thread):
                      for t, val in otherpoints.__dict__[timelist]])
             # { time: flags } dictionaries
             for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps',
-                          'lis', 'los', 'cms', 'dls', 'fls', 'lto'):
+                          'lis', 'los', 'cms', 'dls', 'fls', 'els', 'lto'):
                 self.__dict__[dname].update(
                     {t + self.t: val
                      for t, val in otherpoints.__dict__[dname].items()})
@@ -125,7 +126,7 @@ class ESSprogram(threading.Thread):
             """Return all time points"""
             keys = self.tps
             for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps',
-                          'lis', 'los', 'cms', 'dls', 'fls', 'lto'):
+                          'lis', 'los', 'cms', 'dls', 'fls', 'els', 'lto'):
                 keys.extend(list(self.__dict__[dname].keys()))
             return sorted(set(keys))
 
@@ -407,6 +408,19 @@ jsonobj - either json string or json file"""
                         assert 'imagename' in flags, \
                             "Imagename mandatory for snapshot"
                     ap.fls[ftime] = flags
+            # Evaluator
+            if 'eval' in segment:
+                eval = self._macro(segment["eval"])
+                for ep in eval:
+                    ep = self._macro(ep)
+                    offset = self._macro(ep["offset"])
+                    etime = ap.t + offset
+                    if offset < 0:
+                        etime += dur
+                    flags = {key: self._macro(ep[key])
+                             for key in ('checkISN', 'removeUUB', 'message')
+                             if key in ep}
+                    ap.els[etime] = flags
             ap.t += dur
         assert cp is None, "Unfinished cycle"
         self.progdur = gp.t
@@ -434,6 +448,7 @@ jsonobj - either json string or json file"""
         self.cmds = [(ttime, gp.cms[ttime]) for ttime in sorted(gp.cms)]
         self.dloads = [(ttime, gp.dls[ttime]) for ttime in sorted(gp.dls)]
         self.flirs = [(ftime, gp.fls[ftime]) for ftime in sorted(gp.fls)]
+        self.evals = [(etime, gp.els[etime]) for etime in sorted(gp.els)]
         self.lto_touts = [(ltime, gp.lto[ltime]) for ltime in sorted(gp.lto)]
         self.lto_touts.append((None, None))  # sentinel
         self.timepoints = {ptime: pind for pind, ptime in enumerate(gp.keys())}
@@ -555,6 +570,9 @@ and add them to timer"""
         if self.flirs:
             self.timer.add_ticker('flir',
                                   point_ticker(self.flirs, offset))
+        if self.evals:
+            self.timer.add_ticker('eval',
+                                  point_ticker(self.evals, offset))
         if self.test_points:
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,

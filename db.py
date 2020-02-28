@@ -20,7 +20,7 @@ from UUB import VIRGINUUBNUM
 class DBconnector(object):
     """Connector to SDEU DB"""
     LOGITEMS = ('noise', 'noisestat', 'gain', 'freqgain', 'cutoff')
-    PHASES = ('pretest', 'ess', 'burnin', 'final')
+    PHASES = ('pretest', 'ess', 'burnin')
     EMPTY_MP = {key: None for key in (
         'timestamp', 'meas_point', 'rel_time', 'set_temp', 'remark')}
     EMPTY_MP['typ'] = 'measpoint'
@@ -73,6 +73,7 @@ log - if True, write log recores"""
     def close(self):
         if self.fp is not None:
             self._write_measrecords()
+            self.process_qatt()
             self.fp.close()
             self.fp = None
 
@@ -131,7 +132,7 @@ uubnums - tuple/list of UUB numbers
 return dict {uubnum: '0123456789ab'}"""
         if uubnums is None:
             uubnums = [uubnum for uubnum in self.ctx.uubnums
-                       if uubnum is not None]
+                       if uubnum is not None and uubnum != VIRGINUUBNUM]
         if not uubnums:
             return {}
         assert all([0 < uubnum < VIRGINUUBNUM for uubnum in uubnums])
@@ -150,10 +151,10 @@ return dict {uubnum: '0123456789ab'}"""
         self.logger.info('Received data: %s', repr(d))
         return d
 
-    def commit(self):
-        """Commit logged records to DB"""
-        if self.files is None:
-            return
+    def process_qatt(self):
+        """Process attachment records from q_att"""
+        assert self.ctx.q_att.empty() or self.fp is not None, \
+            'q_att not empty but fp already closed'
         while True:
             try:
                 rec = self.ctx.q_att.get(False)
@@ -167,8 +168,20 @@ return dict {uubnum: '0123456789ab'}"""
                 filename = rec.pop('filename')
                 self.logger.info('Attaching %s -> %s', name, filename)
                 self.attach(name, filename, **rec)
+
+    def commit(self):
+        """Commit logged records to DB
+return True/False if successful or failure"""
+        if self.files is None:
+            return
+        if not self.ctx.q_att.empty():
+            if self.fp is not None:
+                self.process_qatt()
+            else:
+                self.logger.error(
+                    'Pre-commit: q_att not empty but fp already closed')
+        self.close()  # in case not closed yet
         self.logger.debug('Commiting to DB')
-        self.close()
         self._boundary()
         conn = HTTPSConnection(self.dbinfo['host_addr'],
                                port=self.dbinfo['host_port'],
@@ -182,6 +195,7 @@ return dict {uubnum: '0123456789ab'}"""
         self.logger.debug('Received status %d', resp.status)
         # self.logger.debug("Received data %s", repr(resp.read()))
         conn.close()
+        return resp.status == 204
 
     def _boundary(self):
         """Generate boundary suitable for db.js and attachments"""

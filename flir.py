@@ -165,7 +165,7 @@ return the data block"""
             if self.timer.stop.is_set():
                 self.logger.info('Timer stopped, ending run()')
                 return
-            timestamp = self.timer.timestamp   # store info from timer
+            # timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags.get('flir', None)
             # flags = { imagename: <str>,
             #           attname: <str> - optional, use imagename if not present
@@ -187,8 +187,7 @@ return the data block"""
                     attname = flags.get('attname', imagename)
                     rec = {'name': attname,
                            'uubs': (self.uubnum, ),
-                           'run': True,
-                           'timestamp': timestamp}
+                           'run': True}
                     if 'description' in flags:
                         rec['description'] = flags['description']
                     snapshots[imagename] = rec

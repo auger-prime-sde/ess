@@ -238,7 +238,7 @@ q_resp - queue to send response
         self.timer = timer
         self.q_resp = q_resp
         self.ip = uubnum2ip(uubnum)
-        self.serial = None
+        self.internalSN = None
         self.TIMEOUT = 5
         self.TRIALS = 3  # number of trials to read internal SN
         self.HTTP_TOUT = 3  # timeout for HTTP connections
@@ -250,15 +250,15 @@ q_resp - queue to send response
         tid = syscall(SYS_gettid)
         self.logger.debug('run start, name %s, tid %d', self.name, tid)
         self.logger.debug('Waiting for UUB being live')
-        while self.serial is None:
+        while self.internalSN is None:
             s = self.readSerialNum(self.TIMEOUT, self.TRIALS)
             if s is None:
                 self.logger.debug('UUB not live yet, next try')
             elif s is False:
                 self.logger.error('Cannot read internal SN')
-                break
+                self.internalSN = False
             else:
-                self.serial = s
+                self.internalSN = s
                 dt = datetime.now().replace(microsecond=0)
                 self.q_resp.put({'timestamp': dt,
                                  'internalSN_u%04d' % self.uubnum: s})
@@ -306,7 +306,7 @@ q_resp - queue to send response
 
     def readSerialNum(self, timeout=None, trials=1):
         """Read UUB serial number
-Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
+Return as 'abcdef010000' or None if UUB is not live"""
         re_sernum = re.compile(r'.*SN: (?P<sernum>' +
                                r'([a-fA-F0-9]{2}-){5}[a-fA-F0-9]{2})',
                                re.DOTALL)
@@ -325,6 +325,8 @@ Return as 'ab-cd-ef-01-00-00' or None if UUB is not live"""
                 resp = conn.getresponse().read().decode('ascii')
                 # self.logger.debug('re_sernum')
                 res = re_sernum.match(resp).groupdict()['sernum']
+                # normalize: remove dash + lowercase
+                res = res.replace('-', '').lower()
                 # self.logger.debug('breaking')
             except AttributeError:
                 res = False

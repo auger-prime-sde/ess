@@ -276,13 +276,14 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
                 s.close()
             raise SerialReadTimeout
         self.ser = s
+        self._lock = threading.Lock()
         super(PowerControl, self).__init__()
         self.uubnums2del = []
         self.splitterMode = splitmode
         self.atimestamp = None  # time of the last zeroTime
         self.curzones = []
         self.bootvolt = self.boottime = self.pendingLimits = self.chk_ts = None
-        self._lock = threading.Lock()
+        self.rz_tout = PowerControl.RZ_TOUT
         self.rz_thread = None
         self.zeroTime()
 
@@ -505,11 +506,11 @@ May raise IndexError if appropriate record does not exist"""
  transitions periodically"""
         tid = syscall(SYS_gettid)
         self.logger.debug('readZone: name %s, tid %d', self.name, tid)
-        tout = self.rz_out
+        tout = self.rz_tout
         while tout:
             self.curzones.extend(self._readZones())
             sleep(tout)
-            tout = self.rz_out
+            tout = self.rz_tout
         self.logger.debug('readZone finished')
 
     def run(self):
@@ -539,7 +540,8 @@ May raise IndexError if appropriate record does not exist"""
 
             if 'power' in flags:
                 if 'rz_tout' in flags['power']:
-                    self.rz_tout = flags['power']
+                    tout = flags['power']['rz_tout']
+                    self.rz_tout = tout if tout is not None else self.RZ_TOUT
                 # valid uubs for pcon/pcoff: <list>, True, None
                 if 'pcoff' in flags['power']:
                     self.switch(False, flags['power']['pcoff'])
