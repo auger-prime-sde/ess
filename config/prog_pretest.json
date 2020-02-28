@@ -1,0 +1,61 @@
+{
+ "macros": {
+    "uubinit_cmds": [
+      "tftp -g -r uubprog_00.tgz -l uubprog.tgz 192.168.31.254",
+      "tar zxf uubprog.tgz",
+      "source ./run.sh" ],
+    "meas_ramp_params": [{
+      "offset": -60,
+      "db": true }],
+    "meas_noisestat_params": [{
+      "offset": -60,
+      "log_timeout": 25,
+      "db": true,
+      "count": 100 }]
+ },
+ "program": [
+    { "duration": 120,
+      "power": [{ "offset": 5, "ch0": [ null, null, true ]},
+		{ "offset": -1, "ch0": [ null, null, null, true ]}],
+      "eval": [{ "offset": 0,
+		 "message": "Taking background FLIR image"},
+	       { "offset": 5,
+		 "message": "Powering UUB on"},
+	       { "offset": 90, "checkISN": null },
+	       { "offset": 100,
+		 "message": "Changing MAC address if not changed yet"},
+	       { "offset": -1, "removeUUB": [ 3840 ],
+		 "message": "Rebooting UUB"}],
+      "telnet": [{ "offset": 100, "cmds.uubs": [ 3840 ],
+		   "cmds": [ "chmac",
+			     "chmac" ]}],
+      "flir": [{ "offset": 0,
+		 "imagename": "imstart",
+		 "description": "FLIR image taken before power on",
+		 "snapshot": true,
+                 "download": true,
+                 "delete": true}]
+    },
+    { "duration": 180,
+      "power": [{ "offset": 5, "ch0": [ null, null, true ]},
+		{ "offset": -1, "ch0": [ null, null, null, true ]}],
+      "telnet": [{ "offset": 100,
+		   "cmds": "uubinit_cmds"},
+		 { "offset": -10, "cmds":
+		   [ "fw_setenv ethaddr 00:0a:35:00:1e:53",
+		     "fw_setenv ethaddr 00:0a:35:00:1e:53" ]}],
+      "eval": [{ "offset": 90, "checkISN": null },
+	       { "offset": -60, "message": "Measuring ramp and pede/noise"},
+	       { "offset": -10, "message": "Taking FLIR image"}],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noisestat_params",
+      "flir": [{ "offset": -10,
+		 "imagename": "imfinal",
+		 "description": "FLIR image taken after warm up",
+		 "snapshot": true,
+	         "download": true,
+		 "delete": true }]
+    },
+    { "stop": 10 }
+  ]
+}
