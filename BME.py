@@ -376,6 +376,17 @@ uubs - list of uubnums to switch or True to switch all
             self.ser.write(bytes('%c %o\r' % (cmd, chans), 'ascii'))
             readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
 
+    def switchRaw(self, state, chans):
+        """Switch on/off relays
+state - True to switch ON, False to OFF
+chans - bitmask of ports to switch"""
+        assert 0 < chans < 2**self.NCHANS
+        cmd = 'n' if state else 'f'
+        self.logger.info('switchRaw: %c %o', cmd, chans)
+        with self._lock:
+            self.ser.write(bytes('%c %o\r' % (cmd, chans), 'ascii'))
+            readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
+
     def relays(self):
         """Read status of relays
 return tuple of two list: (uubsOn, uubsOff)"""

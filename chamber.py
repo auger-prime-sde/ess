@@ -418,7 +418,8 @@ jsonobj - either json string or json file"""
                     if offset < 0:
                         etime += dur
                     flags = {key: self._macro(ep[key])
-                             for key in ('checkISN', 'removeUUB', 'message')
+                             for key in ('checkISN', 'orderUUB', 'removeUUB',
+                                         'message')
                              if key in ep}
                     ap.els[etime] = flags
             ap.t += dur

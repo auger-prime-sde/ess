@@ -6,9 +6,10 @@
 import threading
 import logging
 from datetime import datetime
+from time import sleep
 
 from threadid import syscall, SYS_gettid
-from UUB import VIRGINUUBNUM
+from UUB import VIRGINUUBNUM, uubnum2ip, isLive
 
 
 class Evaluator(threading.Thread):
@@ -18,6 +19,7 @@ class Evaluator(threading.Thread):
     ISN_SEVERITY_NOTLIVE = 2  # allow UUB not live
     ISN_SEVERITY_NODB = 4     # allow ISN not in DB
     ISN_SEVERITY_REPORT = 8   # no action, just report status
+    TOUT_ORD = 0.5            # timeout for UUB order check
 
     def __init__(self, ctx, fp):
         """Constructor.
@@ -34,6 +36,7 @@ fp - file/stream for output
         self.uubnums = ctx.uubnums
         self.dbISN = ctx.internalSNs
         self.uubtsc = ctx.uubtsc
+        self.pc = ctx.pc
         self.critical_error = ctx.critical_error
         self.removeUUB = ctx.removeUUB
         self.fp = fp
@@ -69,13 +72,20 @@ fp - file/stream for output
             if 'checkISN' in flags:
                 self.checkISN(flags['checkISN'], timestamp)
 
+            if 'orderUUB' in flags:
+                thr = threading.Thread(
+                    target=self.orderUUB,
+                    args=(flags['orderUUB'], timestamp))
+                self.thrs.append(thr)
+                thr.start()
+
             if 'removeUUB' in flags:
                 for uubnum in flags['removeUUB']:
                     thr = threading.Thread(
                         target=self.removeUUB,
                         args=(uubnum, self.logger))
-                self.thrs.append(thr)
-                thr.start()
+                    thr.start()
+                    self.thrs.append(thr)
 
             if 'message' in flags:
                 msglines = flags['message'].splitlines()
@@ -165,6 +175,50 @@ fp - file/stream for output
         self.logger.info(' '.join(msglines))
         if zAbort:
             self.critical_error()
+
+    def orderUUB(self, abort=True, timestamp=None):
+        """Find order of UUBs connected to powercontrol.
+Suppose all UUBs are booted, switch them one by one to determine their order
+Return their order
+Raise AssertionError in a non-allowed situation"""
+        tid = syscall(SYS_gettid)
+        self.logger.debug('Checkin UUB order, thread id %d', tid)
+        uubset_all = set([uubnum for uubnum in self.uubnums
+                          if uubnum is not None])
+        uub2ip = {uubnum: uubnum2ip(uubnum) for uubnum in uubset_all}
+        uubset_exp = set([uubnum for uubnum in uubset_all
+                          if isLive(uub2ip[uubnum], self.logger)])
+        uubnums = []  # tested order of UUBs
+        portmask = 1  # raw ports to switch off
+        for n in range(9, -1, -1):  # expected max number of live UUBs
+            self.pc.switchRaw(False, portmask)
+            portmask <<= 1
+            sleep(Evaluator.TOUT_ORD)
+            uubset_real = set([uubnum for uubnum in uubset_all
+                               if isLive(uub2ip[uubnum], self.logger)])
+            self.logger.debug(
+                'n = %d, UUBs still live = %s', n,
+                ', '.join(['%04d' % uubnum for uubnum in uubset_real]))
+            assert(len(uubset_real) <= n), 'Too much UUBs still live'
+            assert(uubset_real <= uubset_exp), 'UUB reincarnation?'
+            diflist = list(uubset_exp - uubset_real)
+            assert len(diflist) <= 1, 'More than 1 UUB died'
+            uubnums.append(diflist[0] if diflist else None)
+            uubset_exp = uubset_real
+
+        if uubnums != self.uubnums:
+            uubs = ['%04d' % uubnum if uubnum else 'null'
+                    for uubnum in uubnums]
+            msglines = ['Incorrect UUB numbers.',
+                        'Detected UUBs: [ %s ].' % ', '.join(uubs)]
+            if abort:
+                msglines.append('Aborting.')
+            self.writeMsg(msglines, timestamp)
+            self.logger.info(' '.join(msglines))
+        if abort and uubnums != self.uubnums:
+            self.critical_error()
+
+        return uubnums
 
     def writeMsg(self, msglines, timestamp=None):
         if timestamp is None:

@@ -27,7 +27,7 @@ from logger import LogHandlerVoltramp, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
 from logger import makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
-from logger import makeDLfreqgain  # , makeDLcutoff
+from logger import makeDLfreqgain, makeDLcutoff
 from logger import QueDispatch, QLogHandler
 from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
@@ -102,7 +102,7 @@ class DetectUSB(object):
                     if self._check_serial(port, baudrate, cmd_id, re_resp):
                         self.found[dev] = port
                         self.devices[devclass].remove(port)
-                        self.logger.debug('%s found at %s', dev, port)
+                        self.logger.info('%s found at %s', dev, port)
                         break
                     else:
                         self.logger.debug('%s not at %s', dev, port)
@@ -119,7 +119,7 @@ class DetectUSB(object):
                     if tmcid is not None:
                         self.found[dev] = tmcid
                         self.devices['usbtmc'].remove(fn)
-                        self.logger.debug('%s found as %s', dev, fn)
+                        self.logger.info('%s found as %s', dev, fn)
                         break
                     else:
                         self.logger.debug('%s not %s', dev, fn)
@@ -141,7 +141,7 @@ class DetectUSB(object):
                         modbus.__del__()
                 self.found['chamber'] = port
                 self.devices['ttyUSB'].remove(port)
-                self.logger.debug('chamber found at %s', port)
+                self.logger.info('chamber found at %s', port)
                 break
 
         if 'flir' in devlist:  # detect FLIR
@@ -152,7 +152,7 @@ class DetectUSB(object):
                     flir = FLIR(port, None, None, None)
                     self.found['flir'] = port
                     self.devices['ttyUSB'].remove(port)
-                    self.logger.debug('flir found at %s', port)
+                    self.logger.info('flir found at %s', port)
                     flir.__del__()
                     break
                 except SerialReadTimeout:
@@ -560,7 +560,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             if dpfilter_cutoff is None:
                 dpfilter_cutoff = make_DPfilter_cutoff()
             for uubnum in luubnums:
-                self.dl.add_handler(makeDLfreqgain(self, uubnum, ),
+                self.dl.add_handler(makeDLcutoff(self, uubnum),
                                     (dpfilter_linear, dpfilter_cutoff), uubnum)
 
         # ramp

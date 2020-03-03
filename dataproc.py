@@ -7,6 +7,7 @@ import re
 import multiprocessing
 import logging
 import json
+import math
 from datetime import datetime
 import numpy as np
 
@@ -692,20 +693,32 @@ input items:
     fgain_u<uubnum>_c<uub channel>_f<freq> - frequency gain: ADC counts / mV
 output items:
     cutoff_u<uubnum>_c<uub channel> - cut-off frequency [MHz]"""
+    label_ref = '71'  # 10 MHz
+    label_line = ('75', '759', '77')  # 50, 59 and 70 MHz
+    freq_scale = 60.e6                # frequency to scale other frequencies
+    X = np.ones((len(label_line), 2))
+    X[:, 0] = [expo2float(lab) / freq_scale for lab in label_line]
+    M = np.matmul(np.linalg.inv(np.matmul(X.T, X)), X.T)
+
     def filter_cutoff(res_in):
         data = {}
         for label, value in res_in.items():
             d = label2item(label)
-            if d is None or 'typ' != 'fgain':
+            if d is None or d.get('typ', None) != 'fgain':
                 continue
-            key = (d['uubnum'], d['chan'], d['flabel'])
-            data[key] = value
-        # process data TBD
-        nkeys = set([(key[0], key[1]) for key in data.keys()])
-        res_out = {item2label(typ='cutoff', uubnum=key[0], chan=key[1]): 56.78
-                   for key in nkeys}
-        res_out['timestamp'] = res_in['timestamp']
-        res_out['meas_point'] = res_in['meas_point']
+            key = (d['uubnum'], d['chan'])
+            if key not in data:
+                data[key] = {d['flabel']: value}
+            else:
+                data[key][d['flabel']] = value
+        res_out = res_in.copy()
+        for key, fd in data.items():
+            cutoff_val = fd[label_ref] / math.sqrt(2.)
+            y = np.array([fd[lab] for lab in label_line])
+            a, b = np.matmul(M, y)
+            freq_co = (cutoff_val - b)/a * freq_scale
+            label = item2label(typ='cutoff', uubnum=key[0], chan=key[1])
+            res_out[label] = freq_co
         return res_out
     return filter_cutoff
 

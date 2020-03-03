@@ -157,21 +157,23 @@ return afg_dict, item_dict"""
             ('meas.noise', 'N', generN))
 
 
-def isLive(uub, timeout=0):
+def isLive(ip, logger=None, timeout=0):
     """Try open TCP to UUB:80, eventually repeat until timeout expires.
 Return True if UUB answers, False if timeout occurs.
-uub - UUBmeas or UUBtsc (must have ip and logger attributes)
+ip - IP address of UUB to connect
+timeout - total timeout of connection
+logger - if not None, log result
 """
     # uub.logger.debug('isLive(%f)', timeout)
     exptime = datetime.now() + timedelta(seconds=timeout)
     # uub.logger.debug('exptime = %s',
     #                  exptime.strftime("%Y-%m-%d %H:%M:%S,%f"))
-    addr = (uub.ip, HTTPPORT)
+    addr = (ip, HTTPPORT)
     while True:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.settimeout(0.2)
+            s.settimeout(0.002)
             # uub.logger.debug('s.connect')
             s.connect(addr)
             # uub.logger.debug('s.close')
@@ -186,7 +188,8 @@ uub - UUBmeas or UUBtsc (must have ip and logger attributes)
             if datetime.now() > exptime:
                 res = False
                 break
-    uub.logger.debug('isLive: %s', res)
+    if logger is not None:
+        logger.debug('%s isLive: %s', ip, res)
     return res
 
 
@@ -280,7 +283,8 @@ q_resp - queue to send response
                 continue
             res = {'timestamp': timestamp}
             if 'power.test' in flags:
-                res['live%04d' % self.uubnum] = isLive(self)
+                res['live%04d' % self.uubnum] = isLive(
+                    self.ip, self.logger)
                 if 'test_point' in flags:
                     res['test_point'] = flags['test_point']
             if 'meas.thp' in flags or 'meas.sc' in flags:
@@ -311,7 +315,7 @@ Return as 'abcdef010000' or None if UUB is not live"""
                                r'([a-fA-F0-9]{2}-){5}[a-fA-F0-9]{2})',
                                re.DOTALL)
 
-        if timeout is not None and not isLive(self, timeout):
+        if timeout is not None and not isLive(self.ip, self.logger, timeout):
             return None
         self.logger.debug('Reading UUB serial number')
         while trials > 0:
