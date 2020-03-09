@@ -271,7 +271,7 @@ dbinfo - dict with configuration for Grafana
         for uubnum in self.uubnums:
             if uubnum is None:
                 continue
-            for typ in ('pede', 'pedemean', 'pedestdev',
+            for typ in ('pede', 'pedemean', 'pedestdev', 'cutoff',
                         'noise', 'noisemean', 'noisestdev', 'gain'):
                 vals = self._collect(d, uubnum, typ)
                 if vals is not None:

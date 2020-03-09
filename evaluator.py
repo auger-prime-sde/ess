@@ -128,6 +128,7 @@ fp - file/stream for output
         notlive = [uubnum for uubnum in luubnums
                    if uubISN[uubnum] is None]
         if zVirgin:
+            virginLive = None
             if len(notlive) == 0:
                 self.logger.error('Seems both UUB and virgin live')
             elif len(notlive) == 2:
@@ -164,7 +165,7 @@ fp - file/stream for output
 
         msglines = ['Check of internal serial number(s) %s.'
                     % ('passed' if testres else 'failed')]
-        if zVirgin:
+        if zVirgin and virginLive is not None:
             msglines.append('UUB running under %s MAC address.'
                             % ('original' if virginLive else 'changed'))
         zAbort = not testres and (

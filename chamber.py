@@ -160,7 +160,7 @@ jsonobj - either json string or json file"""
             if 'num_repeat' in segment:  # start cycle
                 assert cp is None, "Nested cycle"
                 numrepeat = segment['num_repeat']
-                assert isinstance(numrepeat, int) and numrepeat > 1
+                assert isinstance(numrepeat, int) and numrepeat >= 1
                 if temp_prev is not None:
                     temp_seg = len(self.prog.seg_temp)
                 if humid_prev is not None:
@@ -334,7 +334,7 @@ jsonobj - either json string or json file"""
                     # PowerControl
                     # pcon, pcoff parameter: list of UUBs, True or None
                     # rz_tout parameter: wait time [s] for readZone, float
-                    for key in ('pcon', 'pcoff', 'rz_tout'):
+                    for key in ('pcon', 'pcoff', 'rz_tout', 'pczero'):
                         if key in pp:
                             kwargs[key] = self._macro(pp[key])
                     if 'volt_ramp' in pp:

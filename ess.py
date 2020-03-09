@@ -615,7 +615,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # grafana: filters must be already created before
         if 'grafana' in d['dataloggers']:
             lh = LogHandlerGrafana(
-                self.starttime, luubnums, d['dataloggers']['grafana'])
+                self.starttime, self.uubnums, d['dataloggers']['grafana'])
             self.dl.add_handler(
                 lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
 

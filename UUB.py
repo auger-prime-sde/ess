@@ -743,6 +743,7 @@ class UUBtelnet(threading.Thread):
         self.timestamp = None
         # parameters
         self.TOUT = 1  # timeout for read_until
+        self.TOUT_DEAD = 0.003 # timeout in _isdead
         self.TOUT_CMD = 0.1  # timeout between cmds and downloads
         self.LOGIN = "root"
         self.PASSWD = "root"
@@ -761,10 +762,11 @@ tn - instance of Telnet"""
         try:
             # the first sendall() causes socket closing
             tn.sock.sendall(telnetlib.IAC + telnetlib.NOP)
+            sleep(self.TOUT_DEAD)
             # the second sendall() raises exception because of closed socket
             tn.sock.sendall(telnetlib.IAC + telnetlib.NOP)
             return False
-        except ConnectionResetError:
+        except (ConnectionResetError, BrokenPipeError):
             return True
 
     def _login(self, uubnums=None):

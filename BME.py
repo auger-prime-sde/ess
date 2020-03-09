@@ -410,6 +410,9 @@ return tuple of two list: (uubsOn, uubsOff)"""
             readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
             ts2 = datetime.now()
             self.atimestamp = ts1 + 0.5*(ts2 - ts1)
+        self.logger.debug('ts1 = %s, ts2 = %s, atimestamp = %s',
+                          ts1.strftime("%M:%S.%f"), ts2.strftime("%M:%S.%f"),
+                          self.atimestamp.strftime("%M:%S.%f"))
 
     def atics2ts(self, atics):
         """Convert PowerControl internal time to timestamp"""
@@ -553,6 +556,8 @@ May raise IndexError if appropriate record does not exist"""
                 if 'rz_tout' in flags['power']:
                     tout = flags['power']['rz_tout']
                     self.rz_tout = tout if tout is not None else self.RZ_TOUT
+                if flags['power'].get('pczero', False):
+                    self.zeroTime()
                 # valid uubs for pcon/pcoff: <list>, True, None
                 if 'pcoff' in flags['power']:
                     self.switch(False, flags['power']['pcoff'])

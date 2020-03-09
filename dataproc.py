@@ -716,7 +716,7 @@ output items:
             cutoff_val = fd[label_ref] / math.sqrt(2.)
             y = np.array([fd[lab] for lab in label_line])
             a, b = np.matmul(M, y)
-            freq_co = (cutoff_val - b)/a * freq_scale
+            freq_co = (cutoff_val - b)/a * freq_scale / 1.0e6
             label = item2label(typ='cutoff', uubnum=key[0], chan=key[1])
             res_out[label] = freq_co
         return res_out
