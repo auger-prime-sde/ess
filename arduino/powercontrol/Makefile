@@ -8,4 +8,8 @@ MONITOR_PORT = /dev/ttyACM0
 CXXFLAGS = -fdump-class-hierarchy
 # DEBUG = 1
 # OPTIMIZATION_LEVEL = s
+ifdef DEVICE
+CXXFLAGS += -DDEVICE=$(DEVICE)
+endif
+
 include /usr/share/arduino/Arduino.mk

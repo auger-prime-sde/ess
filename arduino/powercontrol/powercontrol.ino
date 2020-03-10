@@ -5,7 +5,13 @@
  *
  */
 
-#define VERSION "2019-12-20"
+#ifndef DEVICE
+  #define DEVICE 0  /* 0: VIRGIN, 1: PowerCtrl1, 2: PowerCtrl2 */
+#endif
+
+#define STR(s) _STR(s)
+#define _STR(s) #s
+#define VERSION "dev:" STR(DEVICE) " 2020-03-10"
 
 /* constants for voltage reference */
 #define AVCC 1
@@ -25,8 +31,6 @@ int readDecimal(char **_ptr);
 #ifndef cbi
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
 #endif
-#define STR(s) _STR(s)
-#define _STR(s) #s
 
 #if VREF == AVCC
   #define ANALOG_REF ((0<<REFS1) | (1<<REFS0))  /* 01 AVCC, 10 1.1V, 11 2.56V */
@@ -124,10 +128,22 @@ float offs[NCHAN] = {-2.5, -2.3, -2.7, -2.4, -2.4,
 float slopes[NCHAN] = {2.422, 2.420, 2.416, 2.423, 2.420,
 		       2.418, 2.424, 2.420, 2.421, 2.415};
 #elif VREF == V256
+  #if DEVICE == 0
+float offs[NCHAN] = {0.0, 0.0, 0.0, 0.0, 0.0,
+		     0.0, 0.0, 0.0, 0.0, 0.0};
+float slopes[NCHAN] = {1.0, 1.0, 1.0, 1.0, 1.0,
+		       1.0, 1.0, 1.0, 1.0, 1.0};
+  #elif DEVICE == 1
 float offs[NCHAN] = {-2.8, -2.7, -2.8, -2.7, -2.7,
 		     -2.8, -2.9, -2.8, -2.8, -2.9};
 float slopes[NCHAN] = {1.219, 1.218, 1.219, 1.220, 1.219,
 		       1.218, 1.222, 1.218, 1.219, 1.217};
+  #elif DEVICE == 2
+float offs[NCHAN] = {-2.6, -2.4, -2.8, -2.6, -2.4,
+		     -2.9, -3.0, -2.7, -2.7, -2.5};
+float slopes[NCHAN] = {1.207, 1.203, 1.202, 1.205, 1.205,
+		       1.202, 1.202, 1.209, 1.204, 1.210};
+  #endif
 #endif
 
 static inline uint32_t curr2adc(int i, float curr) {
