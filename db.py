@@ -13,14 +13,14 @@ import string
 import mmap
 from http.client import HTTPSConnection
 
-from dataproc import label2item
+from dataproc import label2item, item2label
 from UUB import VIRGINUUBNUM
 
 
 class DBconnector(object):
     """Connector to SDEU DB"""
-    LOGITEMS = ('noise', 'noisestat', 'gain', 'freqgain', 'cutoff')
-    PHASES = ('pretest', 'ess', 'burnin')
+    LOGITEMS = ('ramp', 'noise', 'noisestat', 'gain', 'freqgain', 'cutoff')
+    PHASES = ('pretest', 'ess', 'burnin', 'combo')
     EMPTY_MP = {key: None for key in (
         'timestamp', 'meas_point', 'rel_time', 'set_temp', 'remark')}
     EMPTY_MP['typ'] = 'measpoint'
@@ -193,6 +193,11 @@ return True/False if successful or failure"""
                               'Content-Length': headerCL})
         resp = conn.getresponse()
         self.logger.debug('Received status %d', resp.status)
+        if resp.status != 204:
+            fnerr = self.ctx.datadir + \
+                    self.ctx.basetime.strftime('db-error-%Y%m%d%H%M.html')
+            with open(fnerr, 'wb') as fperr:
+                fperr.write(resp.read())
         # self.logger.debug("Received data %s", repr(resp.read()))
         conn.close()
         return resp.status == 204
@@ -272,6 +277,9 @@ flabels - list of frequencies to log for freqgain
         elif logitem in ('freqgain', 'cutoff'):
             self.skiprec = lambda d: 'db_freq' not in d
             self.typs = (logitem, )
+        elif logitem == 'ramp':
+            self.skiprec = lambda d: 'db_ramp' not in d
+            self.typs = ('ramp', )
         if logitem == 'freqgain':
             self.flabels = flabels
             self.typs = ('fgain', )
@@ -302,6 +310,16 @@ flabels - list of frequencies to log for freqgain
             values = {(uubnum, flabel): [None] * 11
                       for uubnum in uubnums
                       for flabel in self.flabels}
+        elif self.logitem == 'ramp':
+            for uubnum in uubnums:
+                label = item2label(typ='rampdb', uubnum=uubnum)
+                rec = {'typ': 'ramp',
+                       'mp': d['meas_point'],
+                       'uubnum': uubnum,
+                       'result': d[label]}
+                self.dbcon.measrecs.append(rec)
+            return  # fast track
+
         for label, value in d.items():
             item = label2item(label)
             if item.get('typ', None) not in self.typs:

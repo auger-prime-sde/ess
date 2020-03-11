@@ -204,7 +204,7 @@ predefined - dict functype: delay with predefined values """
 class PowerControl(threading.Thread):
     """Class managing power control module and splitter mode"""
     SPLITMODE_DEFAULT = 1
-    re_init = re.compile(rb'.*PowerControl (?P<version>[-0-9]+)\r\n',
+    re_init = re.compile(rb'.*PowerControl dev:(?P<device>\d) (?P<version>[-0-9]+)\r\n',
                          re.DOTALL)
     re_set = re.compile(rb'.*OK', re.DOTALL)
     # ten floats separated by whitespaces + OK
@@ -263,8 +263,8 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
         try:
             s = Serial(port, baudrate=115200)
             self.logger.info('Opening serial %s', repr(s))
+            s.write(b'?\r')
             sleep(0.5)  # ad hoc constant to avoid timeout
-            # s.write(b'?\r')
             resp = readSerRE(s, PowerControl.re_init, timeout=1,
                              logger=self.logger)
             self.version = PowerControl.re_init.match(

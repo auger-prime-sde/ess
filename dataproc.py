@@ -728,6 +728,10 @@ def make_DPfilter_ramp(uubnums):
 Check that for all UUBs and channels, all ramps are correct
 log failed or missing labels.
 res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
+    OK = 0
+    MISSING = 0x4000
+    FAILED = 0x2000
+
     def aggregate(d, uubnum):
         "check if label present in <d> for all chans and replace them by one"
         labels = [item2label(functype='R', uubnum=uubnum, chan=ch+1)
@@ -736,6 +740,9 @@ res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
             for label in labels:
                 d.remove(label)
             d.append(item2label(functype='R', uubnum=uubnum))
+        bitmap = sum([1 << ch for ch, label in enumerate(labels)
+                      if label in d])
+        return bitmap
 
     def filter_ramp(res_in):
         data = {item2label(functype='R', uubnum=uubnum, chan=ch+1): None
@@ -748,14 +755,21 @@ res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
             data[label] = value
         missing = [label for label, value in data.items() if value is None]
         failed = [label for label, value in data.items() if value is False]
-        # aggregate labels for UUB
-        for uubnum in uubnums:
-            aggregate(missing, uubnum)
-            aggregate(failed, uubnum)
         res_out = {key: res_in[key]
                    for key in ('timestamp', 'meas_ramp', 'meas_point',
                                'db_ramp')
                    if key in res_in}
+        # aggregate labels for UUB
+        for uubnum in uubnums:
+            label = item2label(typ='rampdb', uubnum=uubnum)
+            bitmap_m = aggregate(missing, uubnum)
+            bitmap_f = aggregate(failed, uubnum)
+            if bitmap_m > 0:  # should be 2**10 - 1
+                res_out[label] = MISSING
+            elif bitmap_f > 0:
+                res_out[label] = FAILED | bitmap_f
+            else:
+                res_out[label] = OK
         if missing:
             res_out['ramp_missing'] = missing
         if failed:

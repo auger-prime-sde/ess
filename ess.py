@@ -25,7 +25,7 @@ from modbus import Binder, Modbus, ModbusError
 from logger import LogHandlerRamp, LogHandlerPickle, LogHandlerGrafana
 from logger import LogHandlerVoltramp, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
-from logger import makeDLpedenoise, makeDLstat
+from logger import makeDLhumid, makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain, makeDLcutoff
 from logger import QueDispatch, QLogHandler
@@ -55,7 +55,7 @@ class DetectUSB(object):
     SERIALS = {
         "BME": ('ttyUSB', 115200, None, BME.re_bmeinit),
         "trigdelay": ('ttyUSB', 115200, None, TrigDelay.re_init),
-        "powercontrol": ('ttyACM', 115200, None, PowerControl.re_init),
+        "powercontrol": ('ttyACM', 115200, b'?\r', PowerControl.re_init),
         "power_cpx": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_cpx),
         "power_hmp": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_hmp)}
     TMCS = {
@@ -494,6 +494,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.dl.add_handler(
                 makeDLtemperature(self, luubnums, 'meas.sc' in d['tickers']))
 
+        # humidity
+        if d['dataloggers'].get('humid', False):
+            scuubs = d['dataloggers']['humid']  # True or list of UUBs
+            self.dl.add_handler(makeDLhumid(self, luubnums, scuubs))
+
         # slow control measured values
         if d['dataloggers'].get('slowcontrol', False):
             for uubnum in luubnums:
@@ -686,7 +691,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if self.flir is not None:
             self.flir.join()
         if self.chamber is not None and self.chamber.binder is not None:
-            self.chamber.binder.setState(Binder.STATE_BASIC)
+            self.chamber.binder.setState(Binder.STATE_MANUAL)
             self.chamber.join()
         self.ulisten.join()
         self.udaq.join()

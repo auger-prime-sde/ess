@@ -91,9 +91,9 @@ class LogHandlerRamp(object):
 # Ramp test results
 # date %s
 # tested UUBs: %s
-# columns: timestamp | meas_point | OK
-#   _or_   timestamp | meas_point | failed: <label list>
-#   _or_   timestamp | meas_point | missing: <label list>
+# columns: timestamp | meas_point | set_temp | OK
+#   _or_   timestamp | meas_point | set_temp | failed: <label list>
+#   _or_   timestamp | meas_point | set_temp | missing: <label list>
 """
 
     def __init__(self, filename, dt, uubnums):
@@ -104,7 +104,8 @@ class LogHandlerRamp(object):
         self.f.flush()
         self.skiprec = lambda d: 'meas_ramp' not in d
         self.formatter = MyFormatter('~')
-        self.formatstr = '{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:4d} '
+        self.formatstr = ('{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:4d} ' +
+                          '{set_temp:5.1f} ')
 
     def write_rec(self, d):
         if self.skiprec is not None and self.skiprec(d):
@@ -338,9 +339,9 @@ class LogHandlerVoltramp(object):
 # Power on/off test with voltage ramp up/down with expected state at end on/off
 # date %s
 # tested UUBs: %s
-# columns: timestamp | meas_point | <up/down> | <on/off> | """
+# columns: timestamp | meas_point | set_temp | <up/down> | <on/off> | """
     fmtprefix = '{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:4d} ' + \
-                '{direction:4s} {state:3s}'
+                '{set_temp} {direction:4s} {state:3s}'
 
     def __init__(self, filename, dt, uubnums):
         self.fp = None
@@ -349,7 +350,8 @@ class LogHandlerVoltramp(object):
         self.fp.write(LogHandlerVoltramp.prolog % (
             dt.strftime('%Y-%m-%d'),
             ', '.join(["%04d" % uubnum for uubnum in uubnums])))
-        self.fp.write('| '.join(['volt #%04d' % uubnum for uubnum in uubnums]))
+        self.fp.write(' | '.join(['volt #%04d' % uubnum
+                                  for uubnum in uubnums]))
         self.fp.write('\n')
         self.fp.flush()
 
@@ -357,9 +359,10 @@ class LogHandlerVoltramp(object):
         if 'volt_ramp' not in d:
             return
         direction, state = d['volt_ramp']
+        set_temp = '%5.1f' % d['set_temp'] if 'set_temp' in d else '  ~  '
         prefix = LogHandlerVoltramp.fmtprefix.format(
             timestamp=d['timestamp'], meas_point=d['meas_point'],
-            direction=direction, state=state)
+            set_temp=set_temp, direction=direction, state=state)
         labeltemplate = 'voltramp' + direction + state + '_u%04d'
         values = []
         for uubnum in self.uubnums:
@@ -632,6 +635,36 @@ sc - if True, log also temperatures from SlowControl"""
                           skiprec=lambda d: 'meas_thp' not in d)
 
 
+def makeDLhumid(ctx, uubnums, scuubs=False):
+    """Create LogHandlerFile for temperatures
+ctx - context object, used keys: datadir + basetime
+uubnums - list of UUB numbers to log
+scuubs - list of uubs to log sc humid
+         if True, use uubnums"""
+    if scuubs is True:
+        scuubs = uubnums
+    else:
+        assert set(scuubs) in set(uubnums)
+    prolog = """\
+# Humidity measurement: BME + chamber + [SlowControl]
+# date %s
+# columns: timestamp | set.humid | BME1.humid | BME2.humid |\
+ chamber.humid""" % ctx.basetime.strftime('%Y-%m-%d')
+    prolog += ''.join([' | UUB-%04d.sc_humid' % uubnum
+                       for uubnum in scuubs])
+    prolog += '\n'
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{set_humid:5.1f}',
+               '{bme_humid1:6.2f}',
+               '{bme_humid2:6.2f}',
+               '{chamber_humid:6.2f}']
+    logdata += ['{sc%04d_humid:6.2f}' % uubnum for uubnum in scuubs]
+    formatstr = ' '.join(logdata) + '\n'
+    fn = ctx.datadir + ctx.basetime.strftime('humid-%Y%m%d.log')
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_thp' not in d)
+
+
 def makeDLslowcontrol(ctx, uubnum):
     """Create LogHandlerFile for SlowControl values
 ctx - context object, used keys: datadir + basetime
@@ -691,7 +724,7 @@ uubnum - UUB to log"""
     prolog = """\
 # Pedestals and noise
 # UUB #%04d, date %s
-# columns: timestamp | meas_point""" % (
+# columns: timestamp | meas_point | set_temp""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     if count is not None:
         prolog += " | index"
@@ -702,7 +735,7 @@ uubnum - UUB to log"""
 
     if count is None:
         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                   '{meas_point:4d}']
+                   '{meas_point:4d}', '{set_temp:5.1f}']
         for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
             logdata += ['{%s:%s}' % (item2label(
                 functype='N', uubnum=uubnum, chan=chan, typ=typ), fmt)
@@ -712,7 +745,7 @@ uubnum - UUB to log"""
         loglines = []
         for ind in range(count):
             logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                       '{meas_point:4d}', "%03d" % ind]
+                       '{meas_point:4d}', '{set_temp:5.1f}', "%03d" % ind]
             for typ, fmt in (('pede', '7.2f'), ('noise', '7.2f')):
                 logdata += ['{%s:%s}' % (
                     item2label(functype='N', uubnum=uubnum, chan=chan,
@@ -744,10 +777,10 @@ styp - variable to calculate statistics for (e.g. pede or noise)"""
     prolog = """\
 # %s
 # UUB #%04d, date %s
-# columns: timestamp | meas_point""" % (
+# columns: timestamp | meas_point | set_temp""" % (
         p['prolog'], uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{meas_point:4d}']
+               '{meas_point:4d}', '{set_temp:5.1f}']
     for typ, fmt in ((styp+'mean', '7.2f'), (styp+'stdev', '7.2f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan) for chan in ctx.chans])
         logdata += ['{%s:%s}' % (item2label(
@@ -782,7 +815,7 @@ keys - voltages and/or splitmodes and/or count"""
 """ % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     if 'comment' in keys:
         prolog += "# %s\n" % keys['comment']
-    prolog += "# columns: timestamp | meas_point | "
+    prolog += "# columns: timestamp | meas_point | set_temp | "
     if splitmodes[0] is not None:
         prolog += "splitmode | "
     if voltages[0] is not None:
@@ -796,7 +829,7 @@ keys - voltages and/or splitmodes and/or count"""
         for voltage in voltages:
             for ind in indices:
                 logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                           '{meas_point:4d}']
+                           '{meas_point:4d}', '{set_temp:5.1f}']
                 if splitmode is not None:
                     logdata.append('%d' % splitmode)
                     itemr['splitmode'] = splitmode
@@ -839,7 +872,8 @@ keys - freqs, voltages and/or splitmodes"""
 """ % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     if 'comment' in keys:
         prolog += "# %s\n" % keys['comment']
-    prolog += "# columns: timestamp | meas_point | flabel | freq [MHz] | "
+    prolog += "# columns: timestamp | meas_point | set_temp | "
+    prolog += "flabel | freq [MHz] | "
     if splitmodes[0] is not None:
         prolog += "splitmode | "
     if voltages[0] is not None:
@@ -856,7 +890,7 @@ keys - freqs, voltages and/or splitmodes"""
             for voltage in voltages:
                 for ind in indices:
                     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                               '{meas_point:4d}',
+                               '{meas_point:4d}', '{set_temp:5.1f}',
                                '%-4s %6.2f' % (flabel, freq/1e6)]
                     if splitmode is not None:
                         logdata.append('%d' % splitmode)
@@ -887,10 +921,10 @@ uubnum - UUB to log"""
 # Linearity ADC count vs. voltage analysis
 # - gain [ADC count/mV] & correlation coefficient
 # UUB #%04d, date %s
-# columns: timestamp | meas_point""" % (
+# columns: timestamp | meas_point | set_temp""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{meas_point:4d}']
+               '{meas_point:4d}', '{set_temp:5.1f}']
     itemr = {'functype': 'P', 'uubnum': uubnum}
     for typ, fmt in (('gain', '6.3f'), ('lin', '7.5f')):
         prolog += ''.join([' | %s.ch%d' % (typ, chan)
@@ -914,7 +948,7 @@ freqs - list of frequencies to log"""
 # Frequency dependent gain ADC count vs. voltage analysis
 # - freqgain [ADC count/mV] & correlation coefficient
 # UUB #%04d, date %s
-# columns: timestamp | meas_point | flabel | freq [MHz]""" % (
+# columns: timestamp | meas_point | set_temp | flabel | freq [MHz]""" % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     for typ in ('fgain', 'flin'):
         prolog += ''.join([' | %s.ch%d' % (typ, chan)
@@ -926,7 +960,7 @@ freqs - list of frequencies to log"""
         flabel = float2expo(freq, manlength=3)
         itemr['flabel'] = flabel
         logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-                   '{meas_point:4d}',
+                   '{meas_point:4d}', '{set_temp:5.1f}',
                    '%-4s %6.2f' % (flabel, freq/1e6)]
         for typ, fmt in (('fgain', '6.3f'), ('flin', '7.5f')):
             logdata += ['{%s:%s}' % (item2label(itemr, chan=chan, typ=typ),
@@ -947,11 +981,11 @@ uubnum - UUB to log"""
     prolog = """\
 # Cut-off frequency [MHz]
 # UUB #%04d, date %s
-# columns: timestamp | meas_point""" % (
+# columns: timestamp | meas_point | meas_point """ % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     prolog += ''.join([' | cutoff.ch%d' % chan for chan in ctx.chans]) + '\n'
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{meas_point:4d}']
+               '{meas_point:4d}', '{set_temp:5.1f}']
     itemr = {'uubnum': uubnum, 'typ': 'cutoff'}
     logdata += ['{%s:5.2f}' % item2label(itemr, chan=chan)
                 for chan in ctx.chans]
