@@ -6,10 +6,14 @@
  2017-01-15
 */
 
+#define VERSION "2020-03-26"
+
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 #define DS3231_ADDRESS  0x68
 #define DS3231_CONTROL  0x0E
@@ -20,6 +24,7 @@
 #define F_ACTION 0x02
 #define F_BME1   0x04
 #define F_BME2   0x08
+#define F_CLOCK  0x10  /* read and print RTC */
 
 int flags;
 int counter_max;
@@ -28,10 +33,46 @@ int counter_act;
 char timestr[TIMESTR_LEN+1];   // 'YYYY-mm-ddTHH:MM:SS\0'
 Adafruit_BME280 bme1, bme2; // I2C
 
+#define DSMAX 10      // max. number of DS18B20 sensors
+const int pinDS = 4;  // pin where DS18B20 are attached
+int nDS = 0;          // the number of detected sensors
+uint8_t addrDS[DSMAX][8];   // their hw addresses
+OneWire oneWireDS(pinDS);
+DallasTemperature ds(&oneWireDS);
+
 // helper functions
 // static uint8_t bcd2bin (uint8_t val) { return val - 6 * (val >> 4); }
 // static uint8_t bin2bcd (uint8_t val) { return val + 6 * (val / 10); }
 
+/*
+  Detect DS18B20 sensors attached
+  Store their HW addresses to provided array
+ */
+int findDS(OneWire *ow, uint8_t (*addr)[8]) {
+  int i = 0;
+  while(ow->search(addr[i])) {
+    if(addr[i][0] == DS18B20MODEL &&
+       OneWire::crc8(addr[i], 7) == addr[i][7])
+      if(++i == DSMAX)
+	break; }
+  return i;
+}
+
+/* print hw addresses of detected DS18B20 sensors */
+void printDS(int nds, uint8_t (*addr)[8]) {
+  int j, i = 0;
+  uint8_t x;
+ 
+ for (i = 0; i < nds; i++) {
+   Serial.print("DS["); Serial.print(i);
+    Serial.print("]: 28-");
+    for(j = 6; j > 0; j--) {
+      if((x = addr[i][j]) < 0x10)
+	Serial.write('0');
+      Serial.print(x, HEX); }
+    Serial.println(); }
+}
+	     
 static uint8_t read_i2c_register(uint8_t addr, uint8_t reg) {
   Wire.beginTransmission(addr);
   Wire.write((byte)reg);
@@ -132,7 +173,7 @@ int setTime() {
 
 void skipSpaces() {
   while(Serial.available()) {
-    if(Serial.peek() == ' ')
+    if(Serial.peek() == ' ' || Serial.peek() == '\r')
       Serial.read();
     else
       return; }
@@ -167,12 +208,38 @@ unsigned int readUint() {
   }
 }
 
+void printOK() {
+  Serial.println(F("OK"));
+}
+
+void printIdent() {
+  Serial.println(F("BME " VERSION));
+}
+
+void printError() {
+  Serial.println(F("Error: t YYYY-mm-ddTHH:MM:SS .. set RTC" "\n"
+		   "       d                     .. print DS18B20 addresses" "\n"
+                   "       r/R                   .. use/do not use RTC" "\n"
+		   "       m                     .. manual measurement" "\n"
+		   "       c <interval [s]       .. start cyclic measurement" "\n"
+		   "       ?                     .. print identification"));
+}
+
 /*
  * perform measurement action
  */
 void action() {
-  readTime();
-  Serial.print(timestr);
+  int i;
+  unsigned long time;
+
+  if(nDS > 0) {
+    ds.requestTemperatures();
+    time = millis() + 100 /* to be safe interval */
+      + ds.millisToWaitForConversion(ds.getResolution()); }
+
+  if(flags & F_CLOCK) {
+    readTime();
+    Serial.print(timestr); }
   if(flags & F_BME1){
     Serial.print(" ");
     Serial.print(bme1.readTemperature());
@@ -189,28 +256,46 @@ void action() {
     Serial.print(" ");
     Serial.print(bme2.readPressure()/100.0);
   }
+
+  /* wait for conversion completed: read bit returns 1 */
+  if(nDS > 0) {
+    while(millis() < time && oneWireDS.read_bit() == 0)
+      delay(100); }
+  
+  for(i = 0; i < nDS; i++) {
+    Serial.print(" ");
+    Serial.print(ds.getTempC(addrDS[i])); }
+
   Serial.println();
 }
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+  printIdent();
+
   Wire.begin();
   delay(500); // some time to I2C settle down
   flags = F_MANUAL;
   if(bme1.begin(BME_ADDRESS)) {
     flags |= F_BME1;
-    Serial.println("BME1 detected"); }
+    Serial.println(F("BME1 detected")); }
   if(bme2.begin(BME_ADDRESS+1)) {
     flags |= F_BME2;
-    Serial.println("BME2 detected"); }
+    Serial.println(F("BME2 detected")); }
   if(!(flags & (F_BME1|F_BME2)))
-    Serial.println("No BME detected");
+    Serial.println(F("No BME detected"));
+  if((nDS = findDS(&oneWireDS, addrDS)) > 0) {
+    Serial.print(F("Detected "));
+    Serial.print(nDS);
+    Serial.println(F(" DS18B20 sensor(s)")); }
+  ds.begin();
+  ds.setWaitForConversion(false);
 }
 
 void loop() {
+  long time = millis();
   int i;
-  // put your main code here, to run repeatedly:
   skipSpaces();
   if(Serial.available()) {
     switch(Serial.read()) {
@@ -220,16 +305,31 @@ void loop() {
 	timestr[i] = Serial.read();
       timestr[i] = '\0';
       if(!setTime())
-        Serial.println("set time failed");
+        Serial.println("set time ERROR");
       else
-	Serial.println("set time OK");
+	printOK();
       break;
 
-    case 'm':
+    case 'd':  /* print DS18B20 hw addresses */
+      printDS(nDS, addrDS);
+      printOK();
+      break;
+
+    case 'R':  /* do not use RTC */
+      flags &= ~F_CLOCK;
+      printOK();
+      break;
+
+    case 'r':  /* use RTC */
+      flags |= F_CLOCK;
+      printOK();
+      break;
+
+    case 'm':  /* measure */
       flags |= F_MANUAL | F_ACTION;
       break;
 
-    case 'c':
+    case 'c':  /* start cyclic measurement */
       if(( i= readUint()) > 0 ) {
 	flags &= ~(F_MANUAL | F_ACTION);
 	counter_max = i;
@@ -237,6 +337,13 @@ void loop() {
       else
 	Serial.println("Error: c <interval/s>");
       break;
+
+    case '?':
+      printIdent();
+      break;
+
+    default:
+      printError();
     }
     while(Serial.available())  /* skip rest of input */
       Serial.read();
@@ -252,7 +359,8 @@ void loop() {
     flags &= ~F_ACTION;
   }
   
-  delay(1000);
+  if(!(flags & F_MANUAL)) {
+    time += 1000 - millis();  /* reuse time */
+    if(time > 0)
+      delay(time); }
 }
-
-
