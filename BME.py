@@ -44,27 +44,34 @@ return response from serial or raise SerialReadTimeout exception"""
     raise SerialReadTimeout
 
 
+# mapping DS18B20 hw addresses to paper labels
+DS_HW = {'28-0308977930c1': 0,
+         '28-030797794c45': 1,
+         '28-03079779bfb6': 2}
+
+
 class BME(threading.Thread):
     """Thread managing arduino reading BME280"""
-    re_bmeinit = re.compile(rb'.*BME1 detected[\r\n]*BME2 detected[\r\n]*',
-                            re.DOTALL)
-    re_bmetimeset = re.compile(rb'.*set time OK[\r\n]*', re.DOTALL)
-    re_bmemeas = re.compile(rb'.*(?P<dt>20\d{2}-\d{2}-\d{2}T' +
-                            rb'\d{2}:\d{2}:\d{2})' +
-                            rb' +(?P<temp1>-?\d+(\.\d*)?).*' +
-                            rb' +(?P<humid1>\d+(\.\d*)?).*' +
-                            rb' +(?P<press1>\d+(\.\d*)?).*' +
-                            rb' +(?P<temp2>-?\d+(\.\d*)?).*' +
-                            rb' +(?P<humid2>\d+(\.\d*)?).*' +
-                            rb' +(?P<press2>\d+(\.\d*)?)[\r\n]*',
-                            re.DOTALL)
+    re_bmeinit = re.compile(rb'.*BME.*[\r\n]*', re.DOTALL)
+    re_set = re.compile(rb'.*OK[\r\n]*', re.DOTALL)
+    RE_RTC = rb'.*(?P<dt>20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
+    RE_BME = (rb' +(?P<temp1>-?\d+(\.\d*)?).*' +
+              rb' +(?P<humid1>\d+(\.\d*)?).*' +
+              rb' +(?P<press1>\d+(\.\d*)?).*' +
+              rb' +(?P<temp2>-?\d+(\.\d*)?).*' +
+              rb' +(?P<humid2>\d+(\.\d*)?).*' +
+              rb' +(?P<press2>\d+(\.\d*)?)')
+    re_dsline = re.compile(rb'.*DS\[(\d+)\]: (28-[a-fA-F0-9]{12})')
+    RE_DSTEMP = rb' +(?P<dstemp%d>-?\d+(\.\d*)?)'
+    FLAG_RTC = 1
+    FLAG_SYNC = 2
 
-    def __init__(self, port, timer=None, q_resp=None, timesync=False):
+    def __init__(self, port, timer=None, q_resp=None, flags=0):
         """Constructor.
 port - serial port to connect
 timer - instance of timer
 q_resp - queue to send response
-timesync - sync Arduino time
+flags - 1: use RTC -or- 2: sync Arduino time
 """
         super(BME, self).__init__()
         self.timer = timer
@@ -72,18 +79,25 @@ timesync - sync Arduino time
         # check that we are connected to BME
         self.logger = logging.getLogger('bme')
         s = None               # avoid NameError on isinstance(s, Serial) check
+        self.dsmap = {}
         try:
             s = Serial(port, baudrate=115200)
             self.logger.info('Opening serial %s', repr(s))
             readSerRE(s, BME.re_bmeinit, timeout=3, logger=self.logger)
-            if timesync:
+            # set with/without RTC
+            s.write(b'r' if flags & BME.FLAG_RTC else b'R')
+            readSerRE(s, BME.re_set, timeout=1, logger=self.logger)
+            if flags & BME.FLAG_SYNC:
                 # initialize time
                 self.logger.info('BME time sync')
                 ts = (datetime.now() + timedelta(seconds=1)).strftime(
                     "t %Y-%m-%dT%H:%M:%S\r")
                 s.write(bytes(ts, 'ascii'))
-                readSerRE(s, BME.re_bmetimeset, timeout=3, logger=self.logger)
+                readSerRE(s, BME.re_set, timeout=3, logger=self.logger)
                 self.logger.info('synced to %s', ts)
+            # detect DS18B20
+            s.write(b'd')
+            respds = readSerRE(s, BME.re_set, timeout=1, logger=self.logger)
         except Exception:
             self.logger.exception("Init serial with BME failed")
             if isinstance(s, Serial):
@@ -91,6 +105,44 @@ timesync - sync Arduino time
                 s.close()
             raise SerialReadTimeout
         self.ser = s
+        # prepare RE for measurement results
+        for line in respds.split(b'\n'):
+            m = BME.re_dsline.match(line)
+            if m is not None:
+                ind, hw = m.groups()
+                hw = hw.decode('ascii').lower()
+                if hw in DS_HW:
+                    self.dsmap[int(ind)] = DS_HW[hw]
+                else:
+                    self.logger.warning('unknown DS %s', hw)
+        self.nds = len(self.dsmap)
+        self.logger.info(
+            'Detected ' + ', '.join(['DS%d' % self.dsmap[i]
+                                     for i in range(self.nds)]))
+        re_meas = BME.RE_RTC if flags & BME.FLAG_RTC else b''
+        re_meas += BME.RE_BME
+        re_meas += b''.join([BME.RE_DSTEMP % i for i in range(self.nds)])
+        self.re_meas = re.compile(re_meas + rb'[\r\n]*', re.DOTALL)
+
+    def measure(self, timestamp=None):
+        """Perform measurement, return dict with results"""
+        self.logger.debug('BME read')
+        self.ser.write(b'm')
+        resp = readSerRE(self.ser, self.re_meas, logger=self.logger)
+        self.logger.debug('BME read finished')
+
+        d = self.re_meas.match(resp).groupdict()
+        if 'dt' in d:
+            bmetime = d.pop('dt').decode('ascii')
+            bmetimestamp = datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S')
+            self.logger.debug('BME vs event time diff: %f s',
+                              (bmetimestamp - timestamp).total_seconds())
+        res = {'bme_' + k: float(d[k])
+               for k in ('temp1', 'temp2', 'humid1', 'humid2',
+                         'press1', 'press2')}
+        for i in range(self.nds):
+            res['temp_ds%d' % self.dsmap[i]] = float(d['dstemp%d' % i])
+        return res
 
     def stop(self):
         try:
@@ -119,19 +171,9 @@ timesync - sync Arduino time
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if 'meas.thp' in flags:
-                self.logger.debug('BME read')
-                self.ser.write(b'm')
-                resp = readSerRE(self.ser, BME.re_bmemeas, logger=self.logger)
-                self.logger.debug('BME read finished')
-                d = BME.re_bmemeas.match(resp).groupdict()
-                bmetime = d.pop('dt').decode('ascii')
-                bmetimestamp = datetime.strptime(bmetime, '%Y-%m-%dT%H:%M:%S')
-                self.logger.debug('BME vs event time diff: %f s',
-                                  (bmetimestamp - timestamp).total_seconds())
-                res = {'timestamp': timestamp, 'meas_thp': True}
-                # prefix keys from re_bme with 'bme.'
-                for k, v in d.items():
-                    res['bme_'+k] = float(v)
+                res = self.measure(timestamp)
+                res['timestamp'] = timestamp
+                res['meas_tmp'] = True
                 self.q_resp.put(res)
         self.logger.info('Run finished')
 
@@ -204,8 +246,9 @@ predefined - dict functype: delay with predefined values """
 class PowerControl(threading.Thread):
     """Class managing power control module and splitter mode"""
     SPLITMODE_DEFAULT = 1
-    re_init = re.compile(rb'.*PowerControl dev:(?P<device>\d) (?P<version>[-0-9]+)\r\n',
-                         re.DOTALL)
+    re_init = re.compile(
+        rb'.*PowerControl dev:(?P<device>\d) (?P<version>[-0-9]+)\r\n',
+        re.DOTALL)
     re_set = re.compile(rb'.*OK', re.DOTALL)
     # ten floats separated by whitespaces + OK
     re_readcurr = re.compile(rb'.*?' + (rb'(-?\d+\.?\d*)\s+' * 10) +

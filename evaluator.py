@@ -8,8 +8,14 @@ import logging
 from datetime import datetime
 from time import sleep
 
+try:
+    import zmq
+except ImportError:
+    zmq = None
 from threadid import syscall, SYS_gettid
 from UUB import VIRGINUUBNUM, uubnum2ip, isLive
+
+ZMQPORT = 5555
 
 
 class Evaluator(threading.Thread):
@@ -41,6 +47,10 @@ fp - file/stream for output
         self.removeUUB = ctx.removeUUB
         self.fp = fp
         self.thrs = []  # threads removing UUB to join
+        if zmq is not None:
+            self.zmqcontext = zmq.Context()
+            self.zmqsocket = self.zmqcontext.socket(zmq.PUB)
+            self.zmqsocket.bind("tcp://127.0.0.1:%d" % ZMQPORT)
         self.logger = logging.getLogger('Evaluator')
 
     def run(self):
@@ -226,12 +236,16 @@ Raise AssertionError in a non-allowed situation"""
             timestamp = datetime.now()
         ts = timestamp.strftime('%Y-%m-%dT%H:%M:%S | ')
         spacer = ' ' * len(ts)
-        if msglines:
-            self.fp.write(ts + msglines.pop(0) + '\n')
         for line in msglines:
-            self.fp.write(spacer + line + '\n')
+            msg = ts + line + '\n'
+            ts = spacer
+            self.fp.write(msg)
+            if zmq is not None:
+                self.zmqsocket.send(msg)
 
     def join(self, timeout=None):
+        if zmq is not None:
+            self.zmqsocket.close()
         while self.thrs:
             try:
                 thr = self.thrs.pop()
@@ -239,3 +253,14 @@ Raise AssertionError in a non-allowed situation"""
                 break
             thr.join()
         super(Evaluator, self).join(timeout)
+
+
+def msg_client():
+    """Listen for messages distributed by ZMQ"""
+    assert zmq is not None, "ZMQ not imported"
+    context = zmq.Context()
+    socket = context.socket(zmq.SUB)
+    socket.connect("tcp://127.0.0.1:%d" % ZMQPORT)
+    socket.setsockopt_string(zmq.SUBSCRIBE, '')
+    while True:
+        print(socket.recv_string())

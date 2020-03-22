@@ -43,8 +43,9 @@ from flir import FLIR
 from db import DBconnector
 from evaluator import Evaluator
 from threadid import syscall, SYS_gettid
+from console import Console
 
-VERSION = '20200227'
+VERSION = '20200320'
 
 
 class DetectUSB(object):
@@ -740,9 +741,10 @@ if __name__ == '__main__':
         raise
 
     logger = logging.getLogger('ESS')
-    # start RPyC TBD
     logger.info('ESSprogram started, waiting for timerstop.')
-    ess.timerstop.wait()
+    con = Console(locs={'ess': ess}, stopme=ess.timerstop.isSet)
+    con.start()
+    del con  # calls con.stop()
     logger.info('Stopping everything.')
     ess.stop()
     if not ess.abort and ess.dbcon.files is not None:
