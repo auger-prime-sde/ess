@@ -6,7 +6,7 @@
  2017-01-15
 */
 
-#define VERSION "2020-03-26"
+#define VERSION "2020-03-31"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -217,11 +217,11 @@ void printIdent() {
 }
 
 void printError() {
-  Serial.println(F("Error: t YYYY-mm-ddTHH:MM:SS .. set RTC" "\n"
-		   "       d                     .. print DS18B20 addresses" "\n"
-                   "       r/R                   .. use/do not use RTC" "\n"
-		   "       m                     .. manual measurement" "\n"
-		   "       c <interval [s]       .. start cyclic measurement" "\n"
+  Serial.println(F("Error: t YYYY-mm-ddTHH:MM:SS .. set RTC" "\r\n"
+		   "       d                     .. print DS18B20 addresses" "\r\n"
+                   "       r/R                   .. use/do not use RTC" "\r\n"
+		   "       m                     .. manual measurement" "\r\n"
+		   "       c <interval [s]       .. start cyclic measurement" "\r\n"
 		   "       ?                     .. print identification"));
 }
 

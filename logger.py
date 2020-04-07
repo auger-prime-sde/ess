@@ -158,11 +158,16 @@ class LogHandlerGrafana(object):
                  ('chamber_temp', 'temp_chamber'),
                  ('bme_temp1', 'temp_BME1'),
                  ('bme_temp2', 'temp_BME2'),
+                 ('ds_temp0', 'temp_DS0'),
                  ('ds_temp1', 'temp_DS1'),
                  ('ds_temp2', 'temp_DS2'),
                  ('ds_temp3', 'temp_DS3'),
                  ('ds_temp4', 'temp_DS4'),
-                 ('ds_temp5', 'temp_DS5'))
+                 ('ds_temp5', 'temp_DS5'),
+                 ('ds_temp6', 'temp_DS6'),
+                 ('ds_temp7', 'temp_DS7'),
+                 ('ds_temp8', 'temp_DS8'),
+                 ('ds_temp9', 'temp_DS9'))
     SLOW_KEYS = (('zynq{u:04d}_temp', 'temp_zynq'),
                  ('sc{u:04d}_temp', 'temp_sc'),
                  ('itot_u{u:04d}', 'i_tot'),
@@ -605,16 +610,18 @@ Consume items from queue in, put them to queue out and display them"""
 
 
 # predefined LogHandlers
-def makeDLtemperature(ctx, uubnums, sc=False):
+def makeDLtemperature(ctx, uubnums, sc=False, dslist=()):
     """Create LogHandlerFile for temperatures
 ctx - context object, used keys: datadir + basetime
 uubnums - list of UUB numbers to log
-sc - if True, log also temperatures from SlowControl"""
+sc - if True, log also temperatures from SlowControl
+dslist - list of DS18B20 labels to log (integers in label 'DS%d')"""
     prolog = """\
 # Temperature measurement: BME + chamber + Zynq
 # date %s
 # columns: timestamp | set.temp | BME1.temp | BME2.temp | chamber.temp""" % (
         ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | DS%d.temp' % i for i in dslist])
     prolog += ''.join([' | UUB-%04d.zynq_temp' % uubnum
                        for uubnum in uubnums])
     if sc:
@@ -626,6 +633,7 @@ sc - if True, log also temperatures from SlowControl"""
                '{bme_temp1:7.2f}',
                '{bme_temp2:7.2f}',
                '{chamber_temp:7.2f}']
+    logdata += ['{temp_ds%d:5.1f}' % i for i in dslist]
     logdata += ['{zynq%04d_temp:5.1f}' % uubnum for uubnum in uubnums]
     if sc:
         logdata += ['{sc%04d_temp:5.1f}' % uubnum for uubnum in uubnums]

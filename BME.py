@@ -47,7 +47,14 @@ return response from serial or raise SerialReadTimeout exception"""
 # mapping DS18B20 hw addresses to paper labels
 DS_HW = {'28-0308977930c1': 0,
          '28-030797794c45': 1,
-         '28-03079779bfb6': 2}
+         '28-03079779bfb6': 2,
+         '28-030797793e0f': 4,
+         '28-03079779d0fd': 5,
+         '28-030897795424': 6,
+         '28-03089779846d': 7,
+         '28-0308977967fb': 8,
+         '28-030797797db4': 9,
+}
 
 
 class BME(threading.Thread):
@@ -143,6 +150,10 @@ flags - 1: use RTC -or- 2: sync Arduino time
         for i in range(self.nds):
             res['temp_ds%d' % self.dsmap[i]] = float(d['dstemp%d' % i])
         return res
+
+    def dslist(self):
+        """Return list of detected DS18B20 (as integers in label 'DS%d')"""
+        return sorted(self.dsmap.values())
 
     def stop(self):
         try:

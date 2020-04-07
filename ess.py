@@ -45,7 +45,7 @@ from evaluator import Evaluator
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200320'
+VERSION = '20200407'
 
 
 class DetectUSB(object):
@@ -492,8 +492,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         dpfilter_stat_noise = None
         # temperature
         if d['dataloggers'].get('temperature', False):
+            dslist = self.bme.dslist() if self.bme else ()
             self.dl.add_handler(
-                makeDLtemperature(self, luubnums, 'meas.sc' in d['tickers']))
+                makeDLtemperature(
+                    self, luubnums, 'meas.sc' in d['tickers'], dslist))
 
         # humidity
         if d['dataloggers'].get('humid', False):
