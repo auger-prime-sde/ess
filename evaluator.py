@@ -3,6 +3,7 @@
   module for evaluation
 """
 
+import sys
 import threading
 import logging
 from datetime import datetime
@@ -241,7 +242,7 @@ Raise AssertionError in a non-allowed situation"""
             ts = spacer
             self.fp.write(msg)
             if zmq is not None:
-                self.zmqsocket.send(msg)
+                self.zmqsocket.send_string(msg)
 
     def join(self, timeout=None):
         if zmq is not None:
@@ -263,4 +264,4 @@ def msg_client():
     socket.connect("tcp://127.0.0.1:%d" % ZMQPORT)
     socket.setsockopt_string(zmq.SUBSCRIBE, '')
     while True:
-        print(socket.recv_string())
+        sys.stdout.write(socket.recv_string())

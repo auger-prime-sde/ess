@@ -3,9 +3,11 @@
  logging
 """
 
+import os.path
 import logging
 import string
 import threading
+import traceback
 import pickle
 import json
 import ssl
@@ -16,6 +18,29 @@ from queue import Empty
 from dataproc import item2label, float2expo
 from threadid import syscall, SYS_gettid
 NOTCALC = '9999.99'  # number not calculated as overflow expected
+
+
+class ExceptionLogger(object):
+    """Log exception details into separate file"""
+    fn_template = '{datadir:s}/exception_{count:04d}'
+
+    def __init__(self, datadir):
+        self.datadir = datadir
+        self.count = 0
+        self._lock = threading.Lock()
+
+    def log(self, **kwargs):
+        ts = datetime.now()
+        with self._lock:
+            count = self.count
+            self.count = count + 1
+        fn = self.fn_template.format(self.datadir, count)
+        with open(fn, 'w') as fp:
+            fp.write('ts = %s\n--- exception ---\n' % repr(ts))
+            traceback.print_exc(file=fp)
+            fp.write('--- /exception ---\n')
+            for key, val in kwargs.items():
+                fp.write('%s = %s\n' % (key, repr(val)))
 
 
 class MyFormatter(string.Formatter):
@@ -67,6 +92,7 @@ class LogHandlerFile(object):
                                           if k in missing_keys)
         self.formatter = formatter
         self.skiprec = skiprec
+        self.label = 'LogHandlerFile:' + os.path.basename(filename)
 
     def write_rec(self, d):
         """Write one record to log
@@ -106,6 +132,7 @@ class LogHandlerRamp(object):
         self.formatter = MyFormatter('~')
         self.formatstr = ('{timestamp:%Y-%m-%dT%H:%M:%S} {meas_point:4d} ' +
                           '{set_temp:5.1f} ')
+        self.label = 'LogHandlerRamp'
 
     def write_rec(self, d):
         if self.skiprec is not None and self.skiprec(d):
@@ -139,6 +166,7 @@ class LogHandlerPickle(object):
         self.fp = open(filename, 'ab')
         logging.getLogger('LogHandlerPickle').info('saving to pickle file %s',
                                                    filename)
+        self.label = 'LogHandlerPickle'
 
     def write_rec(self, d):
         pickle.dump(d, self.fp)
@@ -158,16 +186,16 @@ class LogHandlerGrafana(object):
                  ('chamber_temp', 'temp_chamber'),
                  ('bme_temp1', 'temp_BME1'),
                  ('bme_temp2', 'temp_BME2'),
-                 ('ds_temp0', 'temp_DS0'),
-                 ('ds_temp1', 'temp_DS1'),
-                 ('ds_temp2', 'temp_DS2'),
-                 ('ds_temp3', 'temp_DS3'),
-                 ('ds_temp4', 'temp_DS4'),
-                 ('ds_temp5', 'temp_DS5'),
-                 ('ds_temp6', 'temp_DS6'),
-                 ('ds_temp7', 'temp_DS7'),
-                 ('ds_temp8', 'temp_DS8'),
-                 ('ds_temp9', 'temp_DS9'))
+                 ('ds0_temp', 'temp_DS0'),
+                 ('ds1_temp', 'temp_DS1'),
+                 ('ds2_temp', 'temp_DS2'),
+                 ('ds3_temp', 'temp_DS3'),
+                 ('ds4_temp', 'temp_DS4'),
+                 ('ds5_temp', 'temp_DS5'),
+                 ('ds6_temp', 'temp_DS6'),
+                 ('ds7_temp', 'temp_DS7'),
+                 ('ds8_temp', 'temp_DS8'),
+                 ('ds9_temp', 'temp_DS9'))
     SLOW_KEYS = (('zynq{u:04d}_temp', 'temp_zynq'),
                  ('sc{u:04d}_temp', 'temp_sc'),
                  ('itot_u{u:04d}', 'i_tot'),
@@ -231,6 +259,7 @@ dbinfo - dict with configuration for Grafana
         self.runid = int(resp.read())
         conn.close()
         self.logger.info('Received runid: %d', self.runid)
+        self.label = 'LogHandlerGrafana'
 
     def setStarttime(self, starttime):
         self.logger.info('Setting starttime')
@@ -253,23 +282,25 @@ dbinfo - dict with configuration for Grafana
             common['rel_time'] = d['rel_time']
         res = {}
         # Temperature
-        temper = {dbkey: d[esskey] for esskey, dbkey in self.TEMP_KEYS
-                  if esskey in d}
-        if temper:
-            res['temperature'] = temper
+        if 'meas_thp' in d:
+            temper = {dbkey: d[esskey] for esskey, dbkey in self.TEMP_KEYS
+                      if esskey in d}
+            if temper:
+                res['temperature'] = temper
         # SlowValues
         slowvals = []
-        for uubnum in self.uubnums:
-            if uubnum is None:
-                continue
-            vals = {}
-            for keytemplate, dbname in self.SLOW_KEYS:
-                key = keytemplate.format(u=uubnum)
-                if key in d:
-                    vals[dbname] = d[key]
-            if vals:
-                vals['uubnum'] = uubnum
-                slowvals.append(vals)
+        if 'meas_thp' in d or 'meas_sc' in d:
+            for uubnum in self.uubnums:
+                if uubnum is None:
+                    continue
+                vals = {}
+                for keytemplate, dbname in self.SLOW_KEYS:
+                    key = keytemplate.format(u=uubnum)
+                    if key in d:
+                        vals[dbname] = d[key]
+                if vals:
+                    vals['uubnum'] = uubnum
+                    slowvals.append(vals)
         if slowvals:
             res['slowvals'] = slowvals
         # UUB data
@@ -359,6 +390,7 @@ class LogHandlerVoltramp(object):
                                   for uubnum in uubnums]))
         self.fp.write('\n')
         self.fp.flush()
+        self.label = 'LogHandlerVoltramp'
 
     def write_rec(self, d):
         if 'volt_ramp' not in d:
@@ -389,33 +421,62 @@ class LogHandlerVoltramp(object):
 
 class DataLogger(threading.Thread):
     """Thread to save all results"""
-    def __init__(self, q_resp, timeout=10):
+    def __init__(self, q_resp, timeout=10, elogger=None):
         """Constructor.
 q_resp - a queue with results to save
 timeout - interval for collecting data
+elogger - exception logger
 """
         super(DataLogger, self).__init__()
         self.q_resp = q_resp
         self.timeout = timeout
-        self.handlers = []
-        self.filters = {None: None}
+        self.elogger = elogger
+        self.handlers = []  # (handler, key, uubnum)
+        self.filters = []   # (key, start, filterlist)
         self.records = {}
         self.stop = threading.Event()
         self.uubnums2del = []
 
     def add_handler(self, handler, filterlist=None, uubnum=None):
         """Add handler and filters to apply for it
+filterlist - [(filter, filterlabel), ...]
 Ignore None filters
 if uubnum provided, the handler is removed when uubnum is removed"""
         if filterlist is None:
             key = None
         else:
-            key = tuple([id(filt) for filt in filterlist if filt is not None])
+            filterlist = [(filt, filtlabel) for (filt, filtlabel) in filterlist
+                          if filt is not None]
+            key = tuple([id(filt) for (filt, filtlabel) in filterlist])
             if key == ():
                 key = None
-        if key not in self.filters:
-            self.filters[key] = filterlist
         self.handlers.append((handler, key, uubnum))
+        currkeys = [rec[0] for rec in self.filters]
+        if key is None or key in currkeys:
+            return
+        # insert new key into self.filter evenutally using parent/child chains
+        i = 0
+        n = len(currkeys)
+        while True:
+            if i == n or key < currkeys[i]:
+                break
+            i += 1
+        # check if exists j < i so that currkeys[j] is a parent of key
+        for pkey in currkeys[i-1::-1]:
+            if key[:len(pkey)] == pkey:
+                start = pkey
+                filterlist = filterlist[len(pkey):]
+                break
+        else:
+            start = None
+        # modify ckey if key can be parent
+        for j in range(i, n):
+            ckey = currkeys[j]
+            if key == ckey[:len(key)]:
+                nfilt = len(ckey) - len(key)
+                cfiltlist = self.filters[j][2][-nfilt:]
+                self.filters[j] = (ckey, pkey, cfiltlist)
+        self.filters.insert(i, (key, start, filterlist))
 
     def run(self):
         logger = logging.getLogger('logger')
@@ -434,9 +495,9 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                         nhandlers.append(rec)
                 self.handlers = nhandlers
                 # remove unused filters
-                nfilterkeys = [rec[1] for rec in self.handlers] + [None]
-                self.filters = {k: v for k, v in self.filters.items()
-                                if k in nfilterkeys}
+                nfilterkeys = set([rec[1] for rec in self.handlers])
+                self.filters = [rec for rec in self.filters
+                                if rec[0] in nfilterkeys]
             if self.records:
                 qtend = min([rec['tend'] for rec in self.records.values()])
             else:
@@ -510,18 +571,28 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                 rec.pop('tend')
                 rec['timestamp'] = ts
                 # apply filters to rec
-                recs = {}
-                for key, filterlist in self.filters.items():
-                    if key is None:
-                        recs[None] = rec
-                        continue
-                    nrec = rec
-                    for filt in filterlist:
-                        nrec = filt(nrec)
+                recs = {None: rec}
+                for key, start, filterlist in self.filters:
+                    nrec = recs[start]
+                    for filt, filtlabel in filterlist:
+                        try:
+                            nrec = filt(nrec)
+                        except Exception:
+                            if self.elogger is not None:
+                                self.elogger.log(
+                                    filtlabel=filtlabel, nrec=nrec)
+                            logger.error('filter %s raised exception',
+                                         filtlabel)
                     recs[key] = nrec
                 # logger.debug('Rec written to handlers: %s', repr(recs))
                 for h, key, uubnum in self.handlers:
-                    h.write_rec(recs[key])
+                    try:
+                        h.write_rec(recs[key])
+                    except Exception:
+                        if self.elogger is not None:
+                            self.elogger.log(h_label=h.label, rec=recs[key])
+                        logger.error('%s.write_rec raised exception', h.label)
+
         logger.info('run() finished, deleting handlers')
         for h, key, uubnum in self.handlers:
             h.stop()
@@ -633,7 +704,7 @@ dslist - list of DS18B20 labels to log (integers in label 'DS%d')"""
                '{bme_temp1:7.2f}',
                '{bme_temp2:7.2f}',
                '{chamber_temp:7.2f}']
-    logdata += ['{temp_ds%d:5.1f}' % i for i in dslist]
+    logdata += ['{ds%d_temp:5.1f}' % i for i in dslist]
     logdata += ['{zynq%04d_temp:5.1f}' % uubnum for uubnum in uubnums]
     if sc:
         logdata += ['{sc%04d_temp:5.1f}' % uubnum for uubnum in uubnums]

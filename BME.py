@@ -53,8 +53,7 @@ DS_HW = {'28-0308977930c1': 0,
          '28-030897795424': 6,
          '28-03089779846d': 7,
          '28-0308977967fb': 8,
-         '28-030797797db4': 9,
-}
+         '28-030797797db4': 9}
 
 
 class BME(threading.Thread):
@@ -148,7 +147,7 @@ flags - 1: use RTC -or- 2: sync Arduino time
                for k in ('temp1', 'temp2', 'humid1', 'humid2',
                          'press1', 'press2')}
         for i in range(self.nds):
-            res['temp_ds%d' % self.dsmap[i]] = float(d['dstemp%d' % i])
+            res['ds%d_temp' % self.dsmap[i]] = float(d['dstemp%d' % i])
         return res
 
     def dslist(self):
@@ -182,10 +181,14 @@ flags - 1: use RTC -or- 2: sync Arduino time
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
             if 'meas.thp' in flags:
-                res = self.measure(timestamp)
-                res['timestamp'] = timestamp
-                res['meas_tmp'] = True
-                self.q_resp.put(res)
+                try:
+                    res = self.measure(timestamp)
+                except SerialReadTimeout:
+                    self.logger.warning('BME read timeout')
+                else:
+                    res['timestamp'] = timestamp
+                    res['meas_tmp'] = True
+                    self.q_resp.put(res)
         self.logger.info('Run finished')
 
 
@@ -335,6 +338,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
         self.uubnums2del = []
         self.splitterMode = splitmode
         self.atimestamp = None  # time of the last zeroTime
+        self.tick = PowerControl.TICK  # default value
         self.curzones = []
         self.bootvolt = self.boottime = self.pendingLimits = self.chk_ts = None
         self.rz_tout = PowerControl.RZ_TOUT
@@ -468,9 +472,13 @@ return tuple of two list: (uubsOn, uubsOff)"""
                           ts1.strftime("%M:%S.%f"), ts2.strftime("%M:%S.%f"),
                           self.atimestamp.strftime("%M:%S.%f"))
 
+    def calibrateTime(self):
+        """Read Arduino tick time and recalibrate"""
+        pass
+
     def atics2ts(self, atics):
         """Convert PowerControl internal time to timestamp"""
-        return self.atimestamp + timedelta(seconds=PowerControl.TICK * atics)
+        return self.atimestamp + timedelta(seconds=self.tick * atics)
 
     def _readCurrents(self):
         """Read currents [mA]. Return as tuple of ten floats"""
@@ -522,23 +530,24 @@ May raise IndexError if appropriate record does not exist"""
             self.logger.debug(   # ###
                 'vres start %s',
                 repr([rec for rec in self.curzones
-                      if rec['uubnum'] == uubnum and rec['dir'] == '+' and
-                      rec['zone'] == 1]))
+                      if rec['uubnum'] == uubnum and rec['dir'] == '+']))
             ztime = [rec['ts'] for rec in self.curzones
                      if rec['uubnum'] == uubnum and rec['dir'] == '+' and
                      rec['zone'] == PowerControl.NZONES-1][0]
             atime = [rec['ts'] for rec in self.curzones
                      if rec['uubnum'] == uubnum and rec['dir'] == '+' and
                      rec['zone'] == 1 and rec['ts'] < ztime][-1]
-        else:  # the last 1->0 transition
+        else:  # the first 1->0 transition after the last N-1->1 trans
             self.logger.debug(   # ###
                 'vres stop %s',
                 repr([rec for rec in self.curzones
-                      if rec['uubnum'] == uubnum and rec['dir'] == '-' and
-                      rec['zone'] == 0]))
+                      if rec['uubnum'] == uubnum and rec['dir'] == '-']))
+            ztime = [rec['ts'] for rec in self.curzones
+                     if rec['uubnum'] == uubnum and rec['dir'] == '-' and
+                     rec['zone'] == PowerControl.NZONES-2][-1]
             atime = [rec['ts'] for rec in self.curzones
                      if rec['uubnum'] == uubnum and rec['dir'] == '-' and
-                     rec['zone'] == 0][-1]
+                     rec['zone'] == 0 and rec['ts'] > ztime][0]
         istep = int((atime - self.chk_ts).total_seconds() /
                     bv['time_step'])
         self.logger.debug('bootvolt = %s, istep = %d', repr(bv), istep)

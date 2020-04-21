@@ -28,7 +28,7 @@ from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
 from logger import makeDLhumid, makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain, makeDLcutoff
-from logger import QueDispatch, QLogHandler
+from logger import QueDispatch, QLogHandler, ExceptionLogger
 from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
 from UUB import uubnum2mac, VIRGINUUBNUM
@@ -251,6 +251,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.datadir += os.sep
         if not os.path.isdir(self.datadir):
             os.mkdir(self.datadir)
+        self.elogger = ExceptionLogger(self.datadir)
         # save configuration
         if configfn is not None:
             shutil.copy(configfn, self.datadir)
@@ -484,7 +485,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 self.dbcon.start()
 
         #  ===== DataLogger & handlers =====
-        self.dl = DataLogger(self.q_resp)
+        self.dl = DataLogger(self.q_resp, elogger=self.elogger)
         dpfilter_linear = None
         dpfilter_cutoff = None
         dpfilter_ramp = None
@@ -520,9 +521,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                                     uubnum=uubnum)
             if count is not None:
                 if dpfilter_stat_pede is None:
-                    dpfilter_stat_pede = make_DPfilter_stat('pede')
+                    dpfilter_stat_pede = (make_DPfilter_stat('pede'),
+                                          'stat_pede')
                 if dpfilter_stat_noise is None:
-                    dpfilter_stat_noise = make_DPfilter_stat('noise')
+                    dpfilter_stat_noise = (make_DPfilter_stat('noise'),
+                                           'stat_noise')
                 for uubnum in luubnums:
                     self.dl.add_handler(makeDLstat(self, uubnum, 'pede'),
                                         (dpfilter_stat_pede, ), uubnum)
@@ -544,8 +547,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # gain/linearity
         if d['dataloggers'].get('linearity', False):
             if dpfilter_linear is None:
-                dpfilter_linear = make_DPfilter_linear(
-                    self.notcalc, self.splitgain)
+                dpfilter_linear = (make_DPfilter_linear(
+                    self.notcalc, self.splitgain), 'linear')
             for uubnum in luubnums:
                 self.dl.add_handler(makeDLlinear(self, uubnum),
                                     (dpfilter_linear, ), uubnum)
@@ -553,8 +556,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # freqgain
         if 'freqgain' in d['dataloggers']:
             if dpfilter_linear is None:
-                dpfilter_linear = make_DPfilter_linear(
-                    self.notcalc, self.splitgain)
+                dpfilter_linear = (make_DPfilter_linear(
+                    self.notcalc, self.splitgain), 'linear')
             freqs = d['dataloggers']['freqgain']
             for uubnum in luubnums:
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
@@ -563,10 +566,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # cut-off
         if d['dataloggers'].get('cutoff', False):
             if dpfilter_linear is None:
-                dpfilter_linear = make_DPfilter_linear(
-                    self.notcalc, self.splitgain)
+                dpfilter_linear = (make_DPfilter_linear(
+                    self.notcalc, self.splitgain), 'linear')
             if dpfilter_cutoff is None:
-                dpfilter_cutoff = make_DPfilter_cutoff()
+                dpfilter_cutoff = (make_DPfilter_cutoff(), 'cutoff')
             for uubnum in luubnums:
                 self.dl.add_handler(makeDLcutoff(self, uubnum),
                                     (dpfilter_linear, dpfilter_cutoff), uubnum)
@@ -574,7 +577,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # ramp
         if d['dataloggers'].get('ramp', False):
             if dpfilter_ramp is None:
-                dpfilter_ramp = make_DPfilter_ramp(luubnums)
+                dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
             fn = self.datadir + self.basetime.strftime('ramp-%Y%m%d.log')
             lh = LogHandlerRamp(fn, self.basetime, luubnums)
             self.dl.add_handler(lh, (dpfilter_ramp, ))
@@ -591,29 +594,31 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             for item in d['dataloggers']['db']['logitems']:
                 if item == 'ramp':
                     if dpfilter_ramp is None:
-                        dpfilter_ramp = make_DPfilter_ramp(luubnums)
+                        dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
                     self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_ramp, ))
                 elif item == 'cutoff':
                     if dpfilter_linear is None:
-                        dpfilter_linear = make_DPfilter_linear(
-                            self.notcalc, self.splitgain)
+                        dpfilter_linear = (make_DPfilter_linear(
+                            self.notcalc, self.splitgain), 'linear')
                     if dpfilter_cutoff is None:
-                        dpfilter_cutoff = make_DPfilter_cutoff()
+                        dpfilter_cutoff = (make_DPfilter_cutoff(), 'cutoff')
                     self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_linear, dpfilter_cutoff))
                 elif item in ('gain', 'freqgain'):
                     if dpfilter_linear is None:
-                        dpfilter_linear = make_DPfilter_linear(
-                            self.notcalc, self.splitgain)
+                        dpfilter_linear = (make_DPfilter_linear(
+                            self.notcalc, self.splitgain), 'linear')
                     self.dl.add_handler(
                         self.dbcon.getLogHandler(item, flabels=flabels),
                         (dpfilter_linear, ))
                 elif item == 'noisestat':
                     if dpfilter_stat_pede is None:
-                        dpfilter_stat_pede = make_DPfilter_stat('pede')
+                        dpfilter_stat_pede = (make_DPfilter_stat('pede'),
+                                              'stat_pede')
                     if dpfilter_stat_noise is None:
-                        dpfilter_stat_noise = make_DPfilter_stat('noise')
+                        dpfilter_stat_noise = (make_DPfilter_stat('noise'),
+                                               'stat_noise')
                     self.dl.add_handler(self.dbcon.getLogHandler(item),
                                         (dpfilter_stat_pede,
                                          dpfilter_stat_noise))
@@ -625,14 +630,16 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             lh = LogHandlerGrafana(
                 self.starttime, self.uubnums, d['dataloggers']['grafana'])
             self.dl.add_handler(
-                lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
+                lh, (dpfilter_linear, dpfilter_cutoff,
+                     dpfilter_stat_pede, dpfilter_stat_noise))
 
         # pickle: filters must be already created before
         if d['dataloggers'].get('pickle', False):
             fn = self.datadir + dt.strftime('pickle-%Y%m%d')
             lh = LogHandlerPickle(fn)
             self.dl.add_handler(
-                lh, (dpfilter_stat_pede, dpfilter_stat_noise, dpfilter_linear))
+                lh, (dpfilter_linear, dpfilter_cutoff,
+                     dpfilter_stat_pede, dpfilter_stat_noise))
 
         self.dl.start()
 
