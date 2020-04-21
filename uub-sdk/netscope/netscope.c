@@ -2,18 +2,22 @@
    Petr Tobiska
    based on scope.c by R. Assiro
 
-   version 2019-07-14
+   version 2020-04-21
 */
 
 #define TRIG_EXT
 //#define TRIG_SB
 //#define TRIG_SB_MULTI
 //#define TRIG_COMPAT_SB
+#define REALTIME
+#define BUFALIGN
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sched.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -22,6 +26,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <time.h>
+#include <sys/time.h>
 #include <sys/mman.h>
 #include <ctype.h>
 #include <termios.h>
@@ -86,7 +91,13 @@ struct frag_header {
 /* global variables */
 static struct read_evt_global gl;
 static struct shwr_header sh;
-uint8_t workbuf[WBUFSIZE];
+/* make workbuf aligned on 4B but not on 8B */
+uint8_t _workbuf[WBUFSIZE + 8];
+#ifdef BUFALIGN
+  #define workbuf ((uint8_t*)((((uintptr_t)_workbuf) & ~7) + 4))
+#else
+  #define workbuf _workbuf
+#endif
 #define databuf (workbuf + sizeof(struct frag_header))
 #define endbuf (workbuf + WBUFSIZE)
 
@@ -309,14 +320,17 @@ void read_evt_end() {
 
 /*
  * read out FADC to buf and fill shwr_header
+ * return time for data acquisition in us
  */
-int read_evt_read(struct shwr_header* sh, uint8_t *buf) {
+long long read_evt_read(struct shwr_header* sh, uint8_t *buf) {
   uint32_t volatile *st;
   void *pt_aux;
   uint32_t aux;
   uint32_t *fadc;
   int rd, sig, i;
   int offset;
+  struct timeval tval;
+  long long duration;
 
   fadc = (uint32_t *)buf;
 
@@ -331,6 +345,8 @@ int read_evt_read(struct shwr_header* sh, uint8_t *buf) {
     sig = sigwaitinfo(&gl.sigset, NULL);
 
   if(sig == SIG_WAKEUP){
+    gettimeofday(&tval, NULL);
+    duration = - (tval.tv_sec * 1000000L + tval.tv_usec);
     rd = (((*st) >> SHWR_BUF_RNUM_SHIFT) & SHWR_BUF_RNUM_MASK);
     offset = rd * SHWR_NSAMPLES;
     for(i = 0; i < SHWR_RAW_NCH_MAX; i++){
@@ -348,14 +364,34 @@ int read_evt_read(struct shwr_header* sh, uint8_t *buf) {
     /* release buffer */
     gl.regs[SHWR_BUF_CONTROL_ADDR] = rd;
     gl.id_counter++;
-    return(0);
+    gettimeofday(&tval, NULL);
+    duration += tval.tv_sec * 1000000L + tval.tv_usec;
+    return(duration);
   }
-  return(1);
+  return(-1);
 }
   
 int main(int argc, char ** argv) {
   struct sockaddr_in sa;
   int datasock, controlsock;
+  long long duration;
+
+  // check workbuf vs _workbuf position
+#ifdef BUFALIGN     
+  if(workbuf < _workbuf || workbuf >= _workbuf + 8
+     || (uintptr_t)workbuf & 7 != 4) {
+    fprintf(stderr, "workbuf alignment problem: _workbuf = %p, workbuf = %p\n",
+	    (void *)_workbuf, (void*)workbuf);
+    exit(-1); }
+#endif
+
+  // set real-time priority
+#ifdef REALTIME
+  struct sched_param sched_p;
+  sched_p.sched_priority = 10;
+ if(sched_setscheduler(0, SCHED_FIFO, &sched_p) < 0) {
+   fprintf(stderr, "Schedule setting error: %s\n", strerror(errno)); }
+#endif
 
   // prepare UDP
   datasock = opensock(&sa);
@@ -396,12 +432,17 @@ int main(int argc, char ** argv) {
   gl.tstctl_regs[USE_FAKE_ADDR] |= 1 << USE_FAKE_PPS_BIT;
 
   while(controlrecv(controlsock) <= 0) {
-    read_evt_read(&sh, databuf);
+    duration = read_evt_read(&sh, databuf);
+    if(duration < 0) {
+      fprintf(stderr, "read evt error\n");
+      continue; }
     senddata(datasock, &sa);
-    fprintf(stderr, "sent id %08x, rd %d, time %9d.%09d [s.tics], evt %1x\n",
+    fprintf(stderr, "sent id %08x, rd %d, time %9d.%09d [s.tics], evt %1x"
+	    ", duration %lld [us]\n",
 	    sh.id, sh.rd, sh.ttag_shwr_seconds,
 	    sh.ttag_shwr_nanosec & TTAG_NANOSEC_MASK,
-	    sh.ttag_shwr_nanosec >> TTAG_EVTCTR_SHIFT);
+	    sh.ttag_shwr_nanosec >> TTAG_EVTCTR_SHIFT,
+	    duration);
   }
 
   read_evt_end();
