@@ -11,7 +11,7 @@
 
 #define STR(s) _STR(s)
 #define _STR(s) #s
-#define VERSION "dev:" STR(DEVICE) " 2020-03-10"
+#define VERSION "dev:" STR(DEVICE) " 2020-04-15"
 
 /* constants for voltage reference */
 #define AVCC 1
@@ -541,6 +541,7 @@ void printError() {
 		 "       1/0            -- switch splitter ON/OFF" "\r\n"
 		 "       z              -- print zone change report" "\r\n"
 		 "       t              -- reset time" "\r\n"
+		 "       c              -- time after reset [400us]" "\r\n"
 		 "       l [0-9*] <limit1> ... <limit" STR(NZONE) ">" "\r\n"
 		 "                      -- set current limits for port(s) [0.1mA]"
 		 "\r\n"
@@ -675,6 +676,14 @@ void loop() {
     cli();
     gtime = 0;
     SREG = oldSREG;
+    printOK();
+    break;
+  case 'c':
+    oldSREG = SREG;
+    cli();
+    adcval = gtime; /* reuse adcval for current time */
+    SREG = oldSREG;
+    Serial.print(adcval);
     printOK();
     break;
   case 'l':
