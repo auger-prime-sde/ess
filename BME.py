@@ -4,11 +4,14 @@
 #
 
 import re
+import math
 import threading
 import logging
 from time import sleep
 from datetime import datetime, timedelta
 from serial import Serial
+
+import numpy as np
 
 from dataproc import item2label
 from threadid import syscall, SYS_gettid
@@ -125,7 +128,7 @@ flags - 1: use RTC -or- 2: sync Arduino time
         self.logger.info(
             'Detected ' + ', '.join(['DS%d' % self.dsmap[i]
                                      for i in range(self.nds)]))
-        re_meas = BME.RE_RTC if flags & BME.FLAG_RTC else b''
+        re_meas = BME.RE_RTC if flags & BME.FLAG_RTC else rb'\s*'
         re_meas += BME.RE_BME
         re_meas += b''.join([BME.RE_DSTEMP % i for i in range(self.nds)])
         self.re_meas = re.compile(re_meas + rb'[\r\n]*', re.DOTALL)
@@ -269,6 +272,8 @@ class PowerControl(threading.Thread):
                              rb'OK', re.DOTALL)
     # ten 0/1 symbols + OK
     re_readrelay = re.compile(rb'.*?([01]{10})\s*OK', re.DOTALL)
+    # integer + OK
+    re_atime = re.compile(rb'.*?(\d+)\s*OK', re.DOTALL)
     # (<pin>[+-]<final zone>:<mtime> )*
     re_zones = re.compile(rb'.*?(([0-9][+-][0-7]:\d+\s)*)\s*OK', re.DOTALL)
     re_zone = re.compile(rb'(?P<port>[0-9])(?P<dir>[+-])(?P<zone>[0-7]):' +
@@ -280,6 +285,8 @@ class PowerControl(threading.Thread):
     ZONEOVER = 7  # zone for overcurrent
     CURLIMS = (50.0, 250.0, 750.0)  # current limits in mA; recompile dtto
     ZONEFMT = '{ts:%Y-%m-%dT%H:%M:%S.%f} {uubnum:04d} {dir:1s} {zone:d}\n'
+    USBCOMX = 0.5  # moment of Arduino action between start and end timestamp
+    TCALIB = 60  # decay time for calibration weitgths
 
     def __init__(self, port, ctx=None, splitmode=None):
         """Constructor
@@ -293,6 +300,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
         if ctx is None:
             self.timer, self.q_resp, self.fp = None, None, None
             self.uubnums = {}
+            self.basetime = datetime.now().replace(microsecond=0)
         else:
             self.timer, self.q_resp = ctx.timer, ctx.q_resp
             assert len(ctx.uubnums) <= 10
@@ -308,6 +316,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
                           if uubnum is not None}
             self.curlims = {uubnum: PowerControl.CURLIMS
                             for uubnum in ctx.uubnums if uubnum is not None}
+            self.basetime = ctx.basetime
             fn = ctx.datadir + ctx.basetime.strftime('zones-%Y%m%d.log')
             self.fp = open(fn, 'a')
             self.fp.write("""\
@@ -467,14 +476,46 @@ return tuple of two list: (uubsOn, uubsOff)"""
             self.ser.write(b't\r')
             readSerRE(self.ser, PowerControl.re_set, logger=self.logger)
             ts2 = datetime.now()
-            self.atimestamp = ts1 + 0.5*(ts2 - ts1)
+        self.atimestamp = ts1 + self.USBCOMX*(ts2 - ts1)
+        self.calibtime = self.atimestamp
+        dt = (self.atimestamp - self.basetime).total_seconds()
+        self.XtX = np.array([[1.0, 0.0], [0.0, 0.0]], dtype='float64')
+        self.XtY = np.array([[dt], [0.0]], dtype='float64')
         self.logger.debug('ts1 = %s, ts2 = %s, atimestamp = %s',
                           ts1.strftime("%M:%S.%f"), ts2.strftime("%M:%S.%f"),
                           self.atimestamp.strftime("%M:%S.%f"))
 
     def calibrateTime(self):
         """Read Arduino tick time and recalibrate"""
-        pass
+        assert self.atimestamp is not None, "zeroTime not called yet"
+        with self._lock:
+            ts1 = datetime.now()
+            self.ser.write(b'c\r')
+            resp = readSerRE(self.ser, PowerControl.re_atime,
+                             logger=self.logger)
+            ts2 = datetime.now()
+        atime = ts1 + self.USBCOMX*(ts2 - ts1)
+        atics = int(PowerControl.re_atime.match(resp).groups()[0])
+        self.logger.debug(
+            'Arduino time calibration ' +
+            'ts1 = %s, ts2 = %s, atime = %s, tics = %d',
+            ts1.strftime("%M:%S.%f"), ts2.strftime("%M:%S.%f"),
+            atime.strftime("%M:%S.%f"), atics)
+        dt = (atime - self.basetime).total_seconds()
+        w = math.exp((self.calibtime - atime).total_seconds()/self.TCALIB)
+        self.XtX = w*self.XtX + np.array([[1.0, atics], [atics, atics*atics]])
+        self.XtY = w*self.XtY + np.array([[dt], [dt*atics]])
+        res = np.linalg.lstsq(self.XtX, self.XtY)
+        if res[2] < 2:
+            self.logger.warning('Singularity in calibration, abandoned')
+            return
+        # store results, locking against atics2ts/zeroTime TBD
+        self.atimestamp = self.basetime + timedelta(seconds=res[0][0, 0])
+        self.tick = res[0][1, 0]
+        self.calibtime = atime
+        self.logger.info('new atimestamp = %s, tick = %7.2f us',
+                         self.atimestamp.strftime("%M:%S.%f"),
+                         1e6*self.tick)
 
     def atics2ts(self, atics):
         """Convert PowerControl internal time to timestamp"""
@@ -621,6 +662,8 @@ May raise IndexError if appropriate record does not exist"""
                     self.rz_tout = tout if tout is not None else self.RZ_TOUT
                 if flags['power'].get('pczero', False):
                     self.zeroTime()
+                if flags['power'].get('pccalib', False):
+                    self.calibrateTime()
                 # valid uubs for pcon/pcoff: <list>, True, None
                 if 'pcoff' in flags['power']:
                     self.switch(False, flags['power']['pcoff'])
