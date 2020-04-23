@@ -10,10 +10,11 @@ import serial
 import crcmod
 from functools import reduce
 
-VERSION = '20190830'
+VERSION = '20200423'
 
 # constants
 READ_HOLDING_REGISTERS = 0x03
+READ_INPUT_REGISTERS = 0x04
 WRITE_SINGLE_REGISTER = 0x06
 WRITE_MULTIPLE_REGISTERS = 0x10
 
@@ -38,13 +39,15 @@ class ModbusError(Exception):
 
 class Modbus:
     """Implementation of Modbus client subset"""
-    def __init__(self, port, baudrate=9600, timeout=1, slave_id=1):
+    def __init__(self, port, baudrate=9600, timeout=1, slave_id=1, echo=False):
         """Constructor
 port      - device to connect, str
 baudrate  - baudrate to use, int
 timeout   - timeout for serial read (seconds, float)
+echo      - sent data are echoed
 """
         self.slave_id = slave_id
+        self.echo = echo
         self.crc = crcmod.predefined.mkCrcFun('modbus')
         self.logger = logging.getLogger('modbus')
         self.ser = None
@@ -75,6 +78,10 @@ return data with CRC stripped
         if nw < len(data):
             self.logger.debug("written %d" % nw)
             raise ModbusError("Incomplete serial data write")
+        if self.echo:
+            resp = self.ser.read(nw)
+            assert resp == data, 'incorrect echo => %s <= %s' % (
+                data.hex(), resp.hex())
         # early detection of Modbus error
         resp = self.ser.read(5)
         if len(resp) < 5:
@@ -89,9 +96,12 @@ return data with CRC stripped
             raise ModbusError("Modbus error code", resp[2])
         if n > 3:   # read the rest of data if no error occurred
             resp += self.ser.read(n-3)
-            self.logger.debug(
-                "<=  %s %s [%s]",
-                data[:2].hex(), data[2:-2].hex(), data[-2:].hex())
+            if len(resp) < n+2:
+                self.logger.error("Incomplete serial read: <%s>" % resp.hex())
+                raise ModbusError("Incomplete serial data read")
+        self.logger.debug(
+            "<=  %s %s [%s]",
+            resp[:2].hex(), resp[2:-2].hex(), resp[-2:].hex())
         if self.ser.in_waiting > 0:
             self.ser.read(self.ser.in_waiting)  # empty read buffer
             raise ModbusError("Surplus data in serial read")
@@ -110,6 +120,24 @@ return data with CRC stripped
 reg_addr     - register address (0 to 0xFFFF)
 reg_nb       - number of registers (1 to 125)
 """
+        return self._read_registers(READ_HOLDING_REGISTERS, reg_addr, reg_nb)
+
+    def read_input_registers(self, reg_addr, reg_nb=1):
+        """Modbus function READ_INPUT_REGISTERS (0x04)
+reg_addr     - register address (0 to 0xFFFF)
+reg_nb       - number of registers (1 to 125)
+"""
+        return self._read_registers(READ_INPUT_REGISTERS, reg_addr, reg_nb)
+
+    def _read_registers(self, ins, reg_addr, reg_nb=1):
+        """Modbus function to read registers
+ins          - instruction: one of READ_HOLDING_REGISTERS or
+                                   READ_INPUT_REGISTERS
+reg_addr     - register address (0 to 0xFFFF)
+reg_nb       - number of registers (1 to 125)
+"""
+        assert ins in (READ_HOLDING_REGISTERS, READ_INPUT_REGISTERS), \
+            "wrong instruction"
         assert 0 <= reg_addr <= 0xFFFF, "reg_addr out of range"
         assert 1 <= reg_nb <= 80, "reg_nb out of range"
         frame = pack('>BBHH', self.slave_id, READ_HOLDING_REGISTERS,
@@ -200,7 +228,7 @@ class Binder:
     ADDR_PROG_SEG      = 0x1A04            # segment programmed
     ADDR_PROG_NSEG     = 0x1A05            # total number of segments
     ADDR_PROG_6        = 0x1A06            # ???
-    ADDR_PROG_VAL      = 0x1A07            # target value 
+    ADDR_PROG_VAL      = 0x1A07            # target value
     ADDR_PROG_GRAD     = 0x1A09            # gradient ?
     ADDR_PROG_LIMI     = 0x1A0B            # limit min
     ADDR_PROG_LIMA     = 0x1A0D            # limit max
@@ -213,9 +241,9 @@ class Binder:
     ADDR_MODE          = 0x1A22
     ADDR_PROGNO        = 0x1A23
     # constants
-    STATE_BASIC =  0x1000
+    STATE_BASIC  = 0x1000
     STATE_MANUAL = 0x0800
-    STATE_PROG =   0x0400
+    STATE_PROG   = 0x0400
     P_TEMP = 0                             # segment type temperature
     P_HUMID = 1                            # segment type humidity
     NPROG = 25                      # max. number of programs (numbered from 0)
