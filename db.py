@@ -288,6 +288,7 @@ flabels - list of frequencies to log for freqgain
             self.item2key = lambda item: (item['uubnum'], item['typ'])
         else:
             self.item2key = lambda item: item['uubnum']
+        self.label = 'LogHandlerDB:' + logitem
 
     def write_rec(self, d):
         if self.skiprec(d):

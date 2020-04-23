@@ -409,6 +409,7 @@ class LogHandlerVoltramp(object):
             else:
                 values.append('  ~  ')
         self.fp.write(prefix + ''.join(values) + '\n')
+        self.fp.flush()
 
     def stop(self):
         if self.fp is not None:
@@ -1060,7 +1061,7 @@ uubnum - UUB to log"""
     prolog = """\
 # Cut-off frequency [MHz]
 # UUB #%04d, date %s
-# columns: timestamp | meas_point | meas_point """ % (
+# columns: timestamp | meas_point | set_temp """ % (
         uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     prolog += ''.join([' | cutoff.ch%d' % chan for chan in ctx.chans]) + '\n'
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',

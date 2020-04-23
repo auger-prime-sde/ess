@@ -264,4 +264,7 @@ def msg_client():
     socket.connect("tcp://127.0.0.1:%d" % ZMQPORT)
     socket.setsockopt_string(zmq.SUBSCRIBE, '')
     while True:
-        sys.stdout.write(socket.recv_string())
+        try:
+            sys.stdout.write(socket.recv_string())
+        except KeyboardInterrupt:
+            break
