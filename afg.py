@@ -4,19 +4,185 @@
  RPi trigger
 """
 
+import re
 import logging
 import math
 import os
 import errno
 import signal
+import socket
 from subprocess import Popen
 from binascii import unhexlify
 from struct import pack
 
+try:
+    import vxi11
+except ImportError:
+    vxi11 = None
+
 YSCALE = 0x3FFE    # data point value range <0, YSCALE>, including
 
 
-class AFG(object):
+class BlackHoleLogger(object):
+    """Placeholder for logger discarding any log messages"""
+
+    def debug(msg, *args, **kwargs):
+        pass
+
+    def info(msg, *args, **kwargs):
+        pass
+
+    def warning(msg, *args, **kwargs):
+        pass
+
+    def error(msg, *args, **kwargs):
+        pass
+
+    def critical(msg, *args, **kwargs):
+        pass
+
+    def log(level, msg, *args, **kwargs):
+        pass
+
+    def exception(msg, *args, **kwargs):
+        pass
+
+
+class TekDevice(object):
+    """Class for communication with (Tektronix) devices via TCP/IP
+or USBTMC
+provided methods:
+ - init(device, logger=None)
+ - send(line, resplen=0, lvl=logging.DEBUG)
+ - read(nbytes, eol=True)
+ - stop()
+"""
+    RE_DEVICE = (
+        re.compile(r'(?P<typ>usbtmc):(?P<tmcid>\d+)'),
+        re.compile(r'(?P<typ>tcpip):(?P<ip>[0-9a-zA-Z.-]+):(?P<port>\d+)'),
+        re.compile(r'(?P<typ>vxi):(?P<ip>[0-9a-zA-Z.-]+)'))
+
+    def __init__(self, device, logger=None):
+        self.logger = logger if logger else BlackHoleLogger()
+
+        self.sock = self.fd = self.instr = dev_d = None
+        for redev in TekDevice.RE_DEVICE:
+            try:
+                dev_d = redev.match(device).groupdict()
+            except AttributeError:
+                continue
+            break
+        assert dev_d is not None, "Unrecognized device %s" % device
+        self.devtyp = dev_d['typ']
+        if self.devtyp == 'usbtmc':
+            resp = self._connect__tmc(int(dev_d['tmcid']))
+        elif self.devtyp == 'tcpip':
+            resp = self._connect_tcpip(addr=(dev_d['ip'], int(dev_d['port'])))
+        elif self.devtyp == 'vxi':
+            assert vxi11 is not None, 'VXI11 not imported (import problem)'
+            self.instr = vxi11.Instrument(dev_d['ip'])
+            resp = self.instr.ask("*IDN?")
+        else:
+            AssertionError('Unimplemented devtyp')
+        self.logger.info('Connected, %s', resp)
+
+    def _connect_tmc(self, tmcid):
+        device = '/dev/usbtmc%d' % tmcid
+        self.logger.debug('Opening %s', device)
+        try:
+            self.fd = os.open(device, os.O_RDWR)
+            return self.send('*IDN?', 1000)
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                self.logger.error('Device %s does not exist (ENOENT)', device)
+            elif e.errno == errno.EACCES:
+                self.logger.error('Access to %s denied (EACCESS)', device)
+            else:
+                self.logger.error('Error opening %s - %s, %s',
+                                  device, errno.errorcode[e.errno], e.args[1])
+            if self.fd is not None:
+                os.close(self.fd)
+            raise
+
+    def _connect_tcpip(self, addr):
+        self.logger.debug('Connecting to %s:%d', *addr)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.sock.connect(addr)
+            return self.send('*IDN?', 1000)
+        except (Exception, OSError):  # 113 no route to host
+            raise
+
+    def _read(self, nbytes):
+        """Wrapper around os.read/socket.recv
+Try to read <nbytes>, return as bytes"""
+        if self.devtyp == 'usbtmc':
+            resp = os.read(self.fd, nbytes)
+        elif self.devtyp == 'tcpip':
+            resp = self.sock.recv(nbytes)
+        elif self.devtyp == 'vxi':
+            resp = self.instr.read_raw(nbytes)
+        else:
+            AssertionError('Unimplemented devtyp')
+        return resp
+
+    def read(self, nbytes, eol=True):
+        """Read data
+if <eol> == True: read upto <nbytes> until EOL
+if <eol> == False: read <nbytes>
+Return data as bytes"""
+        data = bytearray()
+        remain = nbytes
+        while remain > 0:
+            data += self._read(remain)
+            if eol and data[-1] == ord('\n'):
+                break
+            remain = nbytes - len(data)
+        return data
+
+    def send(self, line, resplen=0, lvl=logging.DEBUG):
+        """Send line to TekDevice
+lvl - optional logging level
+if resplen > 0 return line with result
+"""
+        line.rstrip()
+        cmd = bytes(line, 'ascii')
+        self.logger.log(lvl, 'Sending %s', line)
+        if self.devtyp == 'usbtmc':
+            os.write(self.fd, cmd)
+        elif self.devtyp == 'tcpip':
+            self.sock.send(cmd + b'\n')
+        elif self.devtyp == 'vxi':
+            if resplen > 0:
+                return self.instr.ask(line)
+            else:
+                self.instr.write(line)
+        else:
+            AssertionError('Unimplemented devtyp')
+        if resplen > 0:
+            return self.read(resplen, True).decode('ascii').rstrip()
+
+    def stop(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        if self.sock is not None:
+            self.sock.shutdown(socket.SHUT_RDWR)
+            self.sock.close()
+            self.sock = None
+        if self.instr is not None:
+            self.instr.close()
+            self.instr = None
+        self.stop = self._noaction
+
+    def __del__(self):
+        self.stop()
+
+    def _noaction(self):
+        pass
+
+
+class AFG(TekDevice):
     """Class for control of AFG over usbtmc"""
 
     # default values of parameters
@@ -50,9 +216,9 @@ source{ch:d}:function sinusoid
 source{ch:d}:phase 90 deg
 """
 
-    def __init__(self, tmcid=1, zLoadUserfun=False, **kwargs):
+    def __init__(self, device, zLoadUserfun=False, **kwargs):
         """Constructor.
-tmcid - number of usbtmc device (default 1, i.e. /dev/usbtmc1)
+device - usbtmc:<tmcid>, tcpip:<address>:<port> or vxi:<address>
 zLoadUserfun - if True, load halfsine as a user function
 kwargs - parameters:
   functype - type of signal P (5 half-sine pulses), F (sinusoid), default P
@@ -67,27 +233,8 @@ for functype F:
   freq - frequency of sinusiod in Hz (default 1e6)
   Fvoltage - amplitude of sinusiod in volt (default 0.5)
 """
-        self.logger = logging.getLogger('AFG')
-        device = '/dev/usbtmc%d' % tmcid
+        super(AFG, self).__init__(device, logging.getLogger('AFG'))
         self.DURATION = 22e-6  # duration of fun FREQ in seconds
-        self.fd = None
-        try:
-            self.fd = os.open(device, os.O_RDWR)
-            self.logger.debug('%s open', device)
-            os.write(self.fd, b'*IDN?')
-            resp = os.read(self.fd, 1000)
-            self.logger.info('Connected, %s', resp)
-        except OSError as e:
-            if e.errno == errno.ENOENT:
-                self.logger.error('Device %s does not exist (ENOENT)', device)
-            elif e.errno == errno.EACCES:
-                self.logger.error('Access to %s denied (EACCESS)', device)
-            else:
-                self.logger.error('Error opening %s - %s, %s',
-                                  device, errno.errorcode[e.errno], e.args[1])
-            if self.fd is not None:
-                os.close(self.fd)
-            raise
         # get parameters from kwargs with PARAM as default
         params = {key: kwargs.get(key, AFG.PARAM[key])
                   for key in AFG.PARAM}
@@ -111,22 +258,8 @@ for functype F:
         for ch in (0, 1):
             if self.param['gains'][ch] is not None:
                 self.send('output%d:state off' % (ch+1))
-        os.close(self.fd)
-        self.stop = self._noaction
-
-    def __del__(self):
-        self.stop()
-
-    def _noaction(self):
-        pass
-
-    def send(self, line, lvl=logging.DEBUG):
-        """Send line to AFG
-lvl - optional logging level
-"""
-        line.rstrip()
-        self.logger.log(lvl, 'Sending %s', line)
-        os.write(self.fd, bytes(line, 'ascii'))
+        # close communicaton channel
+        super(AFG, self).stop()
 
     def setParams(self, **d):
         """Set AFG parameters according to dictionary d.
@@ -227,7 +360,7 @@ scale    - scaling of X (number of points corresponding to interva <0, 1>
             elif value < 0:
                 value = 0
             self.send('data:data:value ememory,%d,%d' % (i+1, value),
-                      logging.DEBUG - 1)
+                      lvl=logging.DEBUG-1)
         self.send('data:lock user%d,off' % usernum)
         self.send('data:copy user%d,ememory' % usernum)
         self.send('data:lock user%d,on' % usernum)

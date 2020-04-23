@@ -394,7 +394,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # AFG
         if 'afg' in d:
-            self.afg = AFG(**afgkwargs)
+            self.afg = AFG(d['ports']['afg'], **afgkwargs)
 
         # Trigger
         if 'trigger' in d:
