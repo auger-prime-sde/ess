@@ -61,8 +61,8 @@ DS_HW = {'28-0308977930c1': 0,
 
 class BME(threading.Thread):
     """Thread managing arduino reading BME280"""
-    re_bmeinit = re.compile(rb'.*BME.*[\r\n]*', re.DOTALL)
-    re_set = re.compile(rb'.*OK[\r\n]*', re.DOTALL)
+    re_bmeinit = re.compile(rb'.*BME.*\r\n', re.DOTALL)
+    re_set = re.compile(rb'.*OK\r\n', re.DOTALL)
     RE_RTC = rb'.*(?P<dt>20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
     RE_BME = (rb' +(?P<temp1>-?\d+(\.\d*)?).*' +
               rb' +(?P<humid1>\d+(\.\d*)?).*' +
@@ -131,7 +131,7 @@ flags - 1: use RTC -or- 2: sync Arduino time
         re_meas = BME.RE_RTC if flags & BME.FLAG_RTC else rb'\s*'
         re_meas += BME.RE_BME
         re_meas += b''.join([BME.RE_DSTEMP % i for i in range(self.nds)])
-        self.re_meas = re.compile(re_meas + rb'[\r\n]*', re.DOTALL)
+        self.re_meas = re.compile(re_meas + rb'\r\n', re.DOTALL)
 
     def measure(self, timestamp=None):
         """Perform measurement, return dict with results"""
@@ -197,9 +197,9 @@ flags - 1: use RTC -or- 2: sync Arduino time
 
 class TrigDelay(object):
     """Interface to arduino managing trigger delay"""
-    re_init = re.compile(rb'.*TrigDelay (?P<version>\d+)', re.DOTALL)
-    re_ok = re.compile(rb'.*OK', re.DOTALL)
-    re_getdelay = re.compile(rb'.*trigdelay .*: (?P<delay>\d+)', re.DOTALL)
+    re_init = re.compile(rb'.*TrigDelay (?P<version>\d+)\r\n', re.DOTALL)
+    re_ok = re.compile(rb'.*OK\r\n', re.DOTALL)
+    re_getdelay = re.compile(rb'.*trigdelay .*: (?P<delay>\d+)\r\n', re.DOTALL)
 
     def __init__(self, port, predefined=None):
         """Constructor.
@@ -284,7 +284,8 @@ class PowerControl(threading.Thread):
     NZONES = 3  # number of current zones; recompile Arduino fw if modified
     ZONEOVER = 7  # zone for overcurrent
     CURLIMS = (50.0, 250.0, 750.0)  # current limits in mA; recompile dtto
-    ZONEFMT = '{ts:%Y-%m-%dT%H:%M:%S.%f} {uubnum:04d} {dir:1s} {zone:d}\n'
+    ZONEFMT = '{ts:%Y-%m-%dT%H:%M:%S.%f} {atics:12d} ' + \
+              '{uubnum:04d} {dir:1s} {zone:d}\n'
     USBCOMX = 0.5  # moment of Arduino action between start and end timestamp
     TCALIB = 60  # decay time for calibration weitgths
 
@@ -323,7 +324,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
 # Current zone transition
 # date %s
 # port/UUBs: %s
-# columns: time | UUB | direction <+/-> | final zone
+# columns: time | atics | UUB | direction <+/-> | final zone
 """ % (ctx.basetime.strftime('%Y-%m-%d'), luubnums))
         s = None               # avoid NameError on isinstance(s, Serial) check
         try:
@@ -502,7 +503,8 @@ return tuple of two list: (uubsOn, uubsOff)"""
             ts1.strftime("%M:%S.%f"), ts2.strftime("%M:%S.%f"),
             atime.strftime("%M:%S.%f"), atics)
         dt = (atime - self.basetime).total_seconds()
-        w = math.exp((self.calibtime - atime).total_seconds()/self.TCALIB)
+        w = math.exp(math.atan(
+            (self.calibtime - atime).total_seconds()/self.TCALIB))
         self.XtX = w*self.XtX + np.array([[1.0, atics], [atics, atics*atics]])
         self.XtY = w*self.XtY + np.array([[dt], [dt*atics]])
         res = np.linalg.lstsq(self.XtX, self.XtY)
@@ -513,7 +515,7 @@ return tuple of two list: (uubsOn, uubsOff)"""
         self.atimestamp = self.basetime + timedelta(seconds=res[0][0, 0])
         self.tick = res[0][1, 0]
         self.calibtime = atime
-        self.logger.info('new atimestamp = %s, tick = %7.2f us',
+        self.logger.info('new atimestamp = %s, tick = %7.3f us',
                          self.atimestamp.strftime("%M:%S.%f"),
                          1e6*self.tick)
 
@@ -552,7 +554,7 @@ Return list of dict with keys: ts, uubnum, dir, zone"""
             except KeyError:
                 self.logger.warning('Transition in unassigned port: %s', rec)
                 continue
-            d['ts'] = self.atics2ts(d.pop('atics'))
+            d['ts'] = self.atics2ts(d['atics'])
             if self.fp is not None:
                 self.fp.write(PowerControl.ZONEFMT.format(**d))
             if d['zone'] == PowerControl.ZONEOVER:
@@ -560,6 +562,8 @@ Return list of dict with keys: ts, uubnum, dir, zone"""
                     'OverCurrent on UUB %04d at %s', d['uubnum'],
                     d['ts'].strftime('%Y-%m-%d %H:%M:%S.%f'))
             recs.append(d)
+        if recs:
+            self.fp.flush()
         return recs
 
     def _voltres(self, uubnum):

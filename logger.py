@@ -34,7 +34,7 @@ class ExceptionLogger(object):
         with self._lock:
             count = self.count
             self.count = count + 1
-        fn = self.fn_template.format(self.datadir, count)
+        fn = self.fn_template.format(datadir=self.datadir, count=count)
         with open(fn, 'w') as fp:
             fp.write('ts = %s\n--- exception ---\n' % repr(ts))
             traceback.print_exc(file=fp)
@@ -440,14 +440,13 @@ elogger - exception logger
 
     def add_handler(self, handler, filterlist=None, uubnum=None):
         """Add handler and filters to apply for it
-filterlist - [(filter, filterlabel), ...]
+filterlist - [(filter, filterlabel) or None, ...]
 Ignore None filters
 if uubnum provided, the handler is removed when uubnum is removed"""
         if filterlist is None:
             key = None
         else:
-            filterlist = [(filt, filtlabel) for (filt, filtlabel) in filterlist
-                          if filt is not None]
+            filterlist = [f for f in filterlist if f is not None]
             key = tuple([id(filt) for (filt, filtlabel) in filterlist])
             if key == ():
                 key = None

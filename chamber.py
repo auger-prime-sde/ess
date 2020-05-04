@@ -334,7 +334,8 @@ jsonobj - either json string or json file"""
                     # PowerControl
                     # pcon, pcoff parameter: list of UUBs, True or None
                     # rz_tout parameter: wait time [s] for readZone, float
-                    for key in ('pcon', 'pcoff', 'rz_tout', 'pczero'):
+                    for key in ('pcon', 'pcoff', 'rz_tout',
+                                'pczero', 'pccalib'):
                         if key in pp:
                             kwargs[key] = self._macro(pp[key])
                     if 'volt_ramp' in pp:

@@ -743,7 +743,7 @@ class UUBtelnet(threading.Thread):
         self.timestamp = None
         # parameters
         self.TOUT = 1  # timeout for read_until
-        self.TOUT_DEAD = 0.003 # timeout in _isdead
+        self.TOUT_DEAD = 0.003  # timeout in _isdead
         self.TOUT_CMD = 0.1  # timeout between cmds and downloads
         self.LOGIN = "root"
         self.PASSWD = "root"

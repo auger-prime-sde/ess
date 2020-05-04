@@ -757,7 +757,7 @@ res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
         failed = [label for label, value in data.items() if value is False]
         res_out = {key: res_in[key]
                    for key in ('timestamp', 'meas_ramp', 'meas_point',
-                               'db_ramp')
+                               'set_temp', 'db_ramp')
                    if key in res_in}
         # aggregate labels for UUB
         for uubnum in uubnums:

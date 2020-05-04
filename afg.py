@@ -75,7 +75,7 @@ provided methods:
         assert dev_d is not None, "Unrecognized device %s" % device
         self.devtyp = dev_d['typ']
         if self.devtyp == 'usbtmc':
-            resp = self._connect__tmc(int(dev_d['tmcid']))
+            resp = self._connect_tmc(int(dev_d['tmcid']))
         elif self.devtyp == 'tcpip':
             resp = self._connect_tcpip(addr=(dev_d['ip'], int(dev_d['port'])))
         elif self.devtyp == 'vxi':

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
  ESS procedure
@@ -9,6 +9,7 @@ import os
 import sys
 import re
 import json
+import argparse
 import logging
 import logging.config
 import logging.handlers
@@ -45,7 +46,7 @@ from evaluator import Evaluator
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200407'
+VERSION = '20200424'
 
 
 class DetectUSB(object):
@@ -118,7 +119,7 @@ class DetectUSB(object):
                     self.logger.debug('Detecting %s as %s', dev, fn)
                     tmcid = self._check_tmc(fn, cmd_id, re_resp)
                     if tmcid is not None:
-                        self.found[dev] = tmcid
+                        self.found[dev] = 'usbtmc:%d' % tmcid
                         self.devices['usbtmc'].remove(fn)
                         self.logger.info('%s found as %s', dev, fn)
                         break
@@ -506,6 +507,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # slow control measured values
         if d['dataloggers'].get('slowcontrol', False):
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLslowcontrol(self, uubnum),
                                     uubnum=uubnum)
 
@@ -517,6 +520,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         if d['dataloggers'].get('pede', False):
             count = d['dataloggers'].get('pedestatcount', None)
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLpedenoise(self, uubnum, count),
                                     uubnum=uubnum)
             if count is not None:
@@ -527,6 +532,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     dpfilter_stat_noise = (make_DPfilter_stat('noise'),
                                            'stat_noise')
                 for uubnum in luubnums:
+                    if uubnum == VIRGINUUBNUM:
+                        continue
                     self.dl.add_handler(makeDLstat(self, uubnum, 'pede'),
                                         (dpfilter_stat_pede, ), uubnum)
                     self.dl.add_handler(makeDLstat(self, uubnum, 'noise'),
@@ -535,12 +542,16 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # amplitudes of halfsines
         if 'ampli' in d['dataloggers']:
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLhsampli(
                     self, uubnum, d['dataloggers']['ampli']), uubnum=uubnum)
 
         # amplitudes of sines vs freq
         if 'fampli' in d['dataloggers']:
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLfampli(
                     self, uubnum, d['dataloggers']['fampli']), uubnum=uubnum)
 
@@ -550,6 +561,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 dpfilter_linear = (make_DPfilter_linear(
                     self.notcalc, self.splitgain), 'linear')
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLlinear(self, uubnum),
                                     (dpfilter_linear, ), uubnum)
 
@@ -560,6 +573,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     self.notcalc, self.splitgain), 'linear')
             freqs = d['dataloggers']['freqgain']
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
                                     (dpfilter_linear, ), uubnum)
 
@@ -571,6 +586,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             if dpfilter_cutoff is None:
                 dpfilter_cutoff = (make_DPfilter_cutoff(), 'cutoff')
             for uubnum in luubnums:
+                if uubnum == VIRGINUUBNUM:
+                    continue
                 self.dl.add_handler(makeDLcutoff(self, uubnum),
                                     (dpfilter_linear, dpfilter_cutoff), uubnum)
 
@@ -730,24 +747,73 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.timerstop.set()
 
 
-def Pretest(jsfn, uubnum):
-    """Wrap for ESS with uubnum"""
-    subst = {'UUBNUM': uubnum,
-             'UUBNSTR': '%04d' % uubnum,
-             'MACADDR': uubnum2mac(uubnum)}
-    with open(jsfn, 'r') as fp:
-        js = fp.read()
-    for key, val in subst.items():
-        js = js.replace('$'+key, str(val))
-    return ESS(jsfn=None, jsdata=js)
+TESTERS = {'suma': 'Petr Tobiska',
+           'martina': 'Martina Bohacova',
+           'matej': 'Matej Havelka',
+           'honza': 'Jan Stastny'}
+
+PHASES = {'pretest': ('config/config_pretest.json', ('tester', 'uubnum')),
+          'cycles': ('config/config_ess.json', ('tester', 'uubnums')),
+          'combo': ('config/config_combo.json', ('tester', 'uubnums')),
+          'burnin': ('config/config_burnin.json', ('tester', 'uubnums')),
+          'check': ('config/config_check.json', ('uubnums',))}
 
 
 if __name__ == '__main__':
+    exefn = os.path.basename(sys.argv[0])
     try:
-        ess = ESS(sys.argv[1])
-    except (IndexError, IOError, ValueError):
-        print("Usage: %s <JSON config file>" % sys.argv[0])
-        raise
+        jsfn, reqargs = PHASES[exefn]
+    except KeyError:
+        try:
+            ess = ESS(sys.argv[1])
+        except (IndexError, IOError, ValueError):
+            print("Usage: %s <JSON config file>" % sys.argv[0])
+            raise
+    else:
+        parser = argparse.ArgumentParser(description='ESS test')
+        if 'tester' in reqargs:
+            parser.add_argument(
+                '-t', '--tester', required=True,
+                help="tester name: [%s]" % ', '.join(
+                    [rec[0] for rec in TESTERS]))
+        if 'uubnum' in reqargs:
+            parser.add_argument(
+                '-u', '--uubnum', required=True, type=int,
+                help="UUB number to test")
+        if 'uubnums' in reqargs:
+            parser.add_argument(
+                '-U', '--uubnums', required=True,
+                help="comma separated list of UUB numbers (no space!)")
+        args = parser.parse_args()
+        subst = {}
+        if 'tester' in reqargs:
+            try:
+                subst['TESTER'] = TESTERS[args.tester]
+            except KeyError:
+                print('Unknown tester, choose one of ' +
+                      ', '.join(TESTERS))
+                sys.exit()
+        if 'uubnum' in reqargs:
+            subst['UUBNUM'] = args.uubnum
+            subst['UUBNSTR'] = '%04d' % args.uubnum
+            subst['MACADDR'] = uubnum2mac(args.uubnum)
+        if 'uubnums' in reqargs:
+            try:
+                uubnums = [None if u == '' else int(u)
+                           for u in args.uubnums.split(',')]
+            except ValueError:
+                print('Wrong format for uubnums, e.g. "101,103,,108"')
+                sys.exit()
+            if not 0 < len(uubnums) <= 10:
+                print("Wrong number of UUBs")
+                sys.exit()
+            uubnums = ["null" if u is None else str(u) for u in uubnums]
+            subst['UUBNUMS'] = "[ %s ]" % ', '.join(uubnums)
+        with open(jsfn, 'r') as fp:
+            js = fp.read()
+        for key, val in subst.items():
+            js = js.replace('$'+key, str(val))
+        ess = ESS(jsfn=None, jsdata=js)
 
     logger = logging.getLogger('ESS')
     logger.info('ESSprogram started, waiting for timerstop.')
@@ -757,5 +823,10 @@ if __name__ == '__main__':
     logger.info('Stopping everything.')
     ess.stop()
     if not ess.abort and ess.dbcon.files is not None:
-        ess.dbcon.commit()
+        logger.info('Uploading results to SDEU DB.')
+        res = ess.dbcon.commit()
+        msg = 'Upload of results to SDEU DB ' + (
+            'successful.' if res else 'failed.')
+        ess.evaluator.writeMsg([msg])
+    ess.evaluator.stopZMQ()
     logger.info('Done. Everything stopped.')

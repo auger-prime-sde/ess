@@ -197,6 +197,8 @@ Raise AssertionError in a non-allowed situation"""
         self.logger.debug('Checkin UUB order, thread id %d', tid)
         uubset_all = set([uubnum for uubnum in self.uubnums
                           if uubnum is not None])
+        maxind = max([i for i, uubnum in enumerate(self.uubnums)
+                      if uubnum is not None])
         uub2ip = {uubnum: uubnum2ip(uubnum) for uubnum in uubset_all}
         uubset_exp = set([uubnum for uubnum in uubset_all
                           if isLive(uub2ip[uubnum], self.logger)])
@@ -218,7 +220,9 @@ Raise AssertionError in a non-allowed situation"""
             uubnums.append(diflist[0] if diflist else None)
             uubset_exp = uubset_real
 
-        if uubnums != self.uubnums:
+        maxind = max([maxind] + [i for i, uubnum in enumerate(self.uubnums)
+                                 if uubnum is not None])
+        if uubnums[:maxind+1] != self.uubnums[:maxind+1]:
             uubs = ['%04d' % uubnum if uubnum else 'null'
                     for uubnum in uubnums]
             msglines = ['Incorrect UUB numbers.',
@@ -245,8 +249,6 @@ Raise AssertionError in a non-allowed situation"""
                 self.zmqsocket.send_string(msg)
 
     def join(self, timeout=None):
-        if zmq is not None:
-            self.zmqsocket.close()
         while self.thrs:
             try:
                 thr = self.thrs.pop()
@@ -254,6 +256,11 @@ Raise AssertionError in a non-allowed situation"""
                 break
             thr.join()
         super(Evaluator, self).join(timeout)
+
+    def stopZMQ(self):
+        if zmq is not None and self.zmqsocket is not None:
+            self.zmqsocket.close()
+            self.zmqsocket = None
 
 
 def msg_client():
