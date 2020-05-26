@@ -222,7 +222,8 @@ Raise AssertionError in a non-allowed situation"""
 
         maxind = max([maxind] + [i for i, uubnum in enumerate(self.uubnums)
                                  if uubnum is not None])
-        if uubnums[:maxind+1] != self.uubnums[:maxind+1]:
+        zFail = uubnums[:maxind+1] != self.uubnums[:maxind+1]
+        if zFail:
             uubs = ['%04d' % uubnum if uubnum else 'null'
                     for uubnum in uubnums]
             msglines = ['Incorrect UUB numbers.',
@@ -231,7 +232,7 @@ Raise AssertionError in a non-allowed situation"""
                 msglines.append('Aborting.')
             self.writeMsg(msglines, timestamp)
             self.logger.info(' '.join(msglines))
-        if abort and uubnums != self.uubnums:
+        if abort and zFail:
             self.critical_error()
 
         return uubnums

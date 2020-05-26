@@ -1,16 +1,21 @@
 """
-  Communication with MDO3000
+  Communication with Tektronix MDO3000/DPO7000
 """
 
 import logging
 import os
 import errno
+import re
+import socket
 from struct import unpack
 import numpy as np
 
+from afg import TekDevice, BlackHoleLogger
 
-class MDO(object):
-    """Class for data readout from oscilloscope MDO3000"""
+
+class MDO(TekDevice):
+    """Class for data readout from (TekTronix mainly) oscilloscopes"""
+
     PARAM = {'WFMOUTPRE:BYT_NR': 1,
              'DATA:ENCDG': 'RIBINARY'}
     STRPARAM = ('WFMOUTPRE:BYT_OR', 'WFMOUTPRE:BN_FMT', 'WFMOUTPRE:ENCDG',
@@ -19,54 +24,13 @@ class MDO(object):
     ENDIAN = {'MSB': '>', 'LSB': '<'}
     NRTYPE = {'8': 'b', '16': 'h'}
 
-    def __init__(self, tmcid=2, **kwargs):
+    def __init__(self, device, **kwargs):
         self.logger = logging.getLogger('MDO')
-        device = '/dev/usbtmc%d' % tmcid
-        self.fd = None
-        try:
-            self.fd = os.open(device, os.O_RDWR)
-            self.logger.debug('%s open', device)
-            os.write(self.fd, b'*IDN?')
-            resp = os.read(self.fd, 1000).decode('ascii')
-            self.logger.info('Connected, %s', resp)
-        except OSError as e:
-            if e.errno == errno.ENOENT:
-                self.logger.error('Device %s does not exist (ENOENT)', device)
-            elif e.errno == errno.EACCES:
-                self.logger.error('Access to %s denied (EACCESS)', device)
-            else:
-                self.logger.error('Error opening %s - %s, %s',
-                                  device, errno.errorcode[e.errno], e.args[1])
-            if self.fd is not None:
-                os.close(self.fd)
-            raise
+        super(MDO, self).__init__(device, self.logger)
         self.setParams(**MDO.PARAM)
         params = {key: kwargs[key] for key in MDO.NUMPARAM + MDO.STRPARAM
                   if key in kwargs}
         self.setParams(**params)
-
-    def stop(self):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
-        self.stop = self._noaction
-
-    def __del__(self):
-        self.stop()
-
-    def _noaction(self):
-        pass
-
-    def send(self, line, lvl=logging.DEBUG, resplen=0):
-        """Send line to MDO3000
-lvl - optional logging level
-"""
-        line.rstrip()
-        self.logger.log(lvl, 'Sending %s', line)
-        os.write(self.fd, bytes(line, 'ascii'))
-        if resplen > 0:
-            resp = os.read(self.fd, resplen).decode('ascii')
-            return resp
 
     def setParams(self, **d):
         """Set MDO parameters according to dict <d>"""
@@ -95,16 +59,16 @@ fn - if not None, save data (raw format) to the file
 return tuple (numpy.array yvals, float xincr, float xzero, xunit, yunit)"""
         self.send('DATA:SOURCE CH%d' % ch)
         self.send('HEADER 1')
-        self.send('WFMOUTPRE?')
-        resp = os.read(self.fd, 1000).decode('ascii').rstrip()
+        resp = self.send('WFMOUTPRE?', 1000)
         self.logger.debug('WFM: %s', resp)
         wfmd = self._parseWFM(resp)
         self.send('HEADER 0')
         self.send('CURVE?')
-        h = os.read(self.fd, 2)
+        h = self.read(2, False)
         assert h[0] == ord('#')
-        numpt = int(os.read(self.fd, h[1] - ord('0')))
-        data = os.read(self.fd, numpt)
+        numpt = int(self.read(h[1] - ord('0'), False))
+        data = self.read(numpt, False)
+        self.read(1)  # EOL
         self.logger.debug('WFM transferred')
         ndata = numpt // (int(wfmd['BIT_NR']) // 8)
         fmtstr = (MDO.ENDIAN[wfmd['BYT_OR']] + str(ndata) +

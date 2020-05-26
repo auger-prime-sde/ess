@@ -398,7 +398,7 @@ limits - list of (uubnum, limit_1, .. limit_NZONES)
 
     def _get_splitterMode(self):
         """Return current setting of splitmode"""
-        self._splitmode
+        return self._splitmode
 
     def _set_splitterMode(self, mode=None):
         """Set splitter mode (0: attenuated, 1: frequency, 3: amplified)"""

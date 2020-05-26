@@ -20,12 +20,12 @@ from UUB import gener_funcparams
 from dataproc import item2label, SplitterGain
 from hsfitter import HalfSineFitter, SineFitter
 
-VERSION = "20190901"
+VERSION = "20200505"
 
 # timeouts & constants
 TOUT_PREP = 0.4   # delay between afg setting and trigger in s
 TOUT_DAQ = 0.1    # timeout between trigger and oscilloscope readout
-MINVOLTSCALE = 0.001  # minimal voltage scale on MDO [V]
+MINVOLTSCALE = 0.0005  # minimal voltage scale on MDO [V]
 
 
 def mdoSetVert(splitmode, volt_pp, mdo, splitgain, offsets, logger):
@@ -35,15 +35,15 @@ def mdoSetVert(splitmode, volt_pp, mdo, splitgain, offsets, logger):
     for mdoch, splitch in splitgain.mdomap.items():
         amplif = splitgain.gainMDO(splitmode, mdoch)
         scale = volt_pp * amplif / NDIV
-        offset = offsets[(splitch, splitmode)] - scale * NDIV/2
-        if scale < MINVOLTSCALE:
-            scale = MINVOLTSCALE
+        offset, noise = offsets[(splitch, splitmode)]
+        offset -= scale * NDIV/2
+        mdo.send('CH%d:OFFSET %f' % (mdoch, offset))
+        scale = max(scale, MINVOLTSCALE, 5*noise)
         mdo.send('CH%d:SCALE %f' % (mdoch, scale))
         # read back scale, there is 25 dig. levels per div on 1B
         resp = mdo.send('CH%d:SCALE?' % mdoch, resplen=20)
         scale = float(resp)
-        lsb.append('%s: %f' % (splitch, scale/25))
-        mdo.send('CH%d:OFFSET %f' % (mdoch, offset))
+        lsb.append('%s: %f' % (splitch, scale/25 * 1000))
     logger.info('LSBs set by SCALE [mV]: %s', ', '.join(lsb))
 
 
@@ -51,9 +51,10 @@ def calibOffsets(mdo, afg, pc, mdomap, fp, formstr, logger):
     """Find offset value and noise, write results to file
 return dict {splitch: offset value}"""
     INITSCALE = 0.04  # offset must be in <-5*INITSCALE, 5*INITSCALE>, [volt]
-    offsets = {(splitch, splitmode): None for splitch in mdomap.values()
-               for splitmode in (0, 1, 3)}
-    logger.info('Offset calibration, coarse estimation LSB: %f V', INITSCALE)
+    offsets = {(splitch, splitmode): (None, None)
+               for splitch in mdomap.values() for splitmode in (0, 1, 3)}
+    logger.info('Offset calibration, coarse estimation LSB: %f mV',
+                INITSCALE/25 * 1000)
     for splitmode in (0, 1, 3):
         pc.splitterMode = splitmode
         for mdoch in mdomap.keys():
@@ -66,33 +67,32 @@ return dict {splitch: offset value}"""
         for mdoch, splitch in mdomap.items():
             res = mdo.readWFM(mdoch)
             offset = np.mean(res[0])
-            std = np.std(res[0])
-            logger.debug('%s:%d coarse read offset: %.6f V, noise %.6f V',
-                         splitch, splitmode, offset, std)
+            noise = np.std(res[0])
+            logger.debug('%s:%d coarse read offset: %.3f mV, noise %.3f mV',
+                         splitch, splitmode, 1000*offset, 1000*noise)
             mdo.send('CH%d:OFFSET %f' % (mdoch, offset))
             resp = mdo.send('CH%d:OFFSET?' % mdoch, resplen=20)
             offset = float(resp)
-            if std < MINVOLTSCALE:
-                std = MINVOLTSCALE
-            mdo.send('CH%d:SCALE %f' % (mdoch, std))
+            scale = max(MINVOLTSCALE, noise)
+            mdo.send('CH%d:SCALE %f' % (mdoch, scale))
             resp = mdo.send('CH%d:SCALE?' % mdoch, resplen=20)
-            std = float(resp)
+            scale = float(resp)
             logger.debug(
                 '%s:%d fine set: offset %.5f V, scale %.5f V, LSB %.2f mV',
-                splitch, splitmode, offset, std, std / 25 * 1000)
-            offsets[(splitch, splitmode)] = offset
+                splitch, splitmode, offset, scale, scale / 25 * 1000)
         # fine readout
         sleep(TOUT_PREP)
         trigger()
         sleep(TOUT_DAQ)
         for mdoch, splitch in mdomap.items():
             res = mdo.readWFM(mdoch)
-            offset = 1000 * np.mean(res[0])  # in mV
-            noise = 1000 * np.std(res[0])    # in mV
+            offset = np.mean(res[0])
+            noise = np.std(res[0])
+            offsets[(splitch, splitmode)] = offset, noise
             logger.debug('%s:%d fine read offset: %.3f mV, noise %.3f mV',
-                         splitch, splitmode, offset, noise)
+                         splitch, splitmode, 1000*offset, 1000*noise)
             fp.write(formstr.format(splitch=splitch, splitmode=splitmode,
-                                    offset=offset, noise=noise))
+                                    offset=1000*offset, noise=1000*noise))
     return offsets
 
 
@@ -106,12 +106,14 @@ try:
     assert _nch <= 4
     if _nch > 0:
         d['mdochans'][:_nch] = _mdochans
+    assert any([ch is not None for ch in d['mdochans']]), "No MDO channel"
 except (IndexError, IOError, ValueError, AssertionError):
     print("Usage: %s <JSON config file> [<MDO channels>]" % sys.argv[0])
     raise
 
 dt = datetime.now()
 datadir = dt.strftime(d.get('datadir', './'))
+datadir = datadir.replace('$CHS', ''.join(d['mdochans']))
 if datadir[-1] != os.sep:
     datadir += os.sep
 if not os.path.isdir(datadir):
@@ -138,21 +140,20 @@ logger = logging.getLogger('calib')
 # td_predefined = d.get('trigdelay', {'P': 0, 'F': 30})
 # td = TrigDelay(d['ports']['trigdelay'], td_predefined)
 # trigger = TrigDelay.trigger
-pc = PowerControl(d['ports']['powercontrol'], None, None, [None]*10)
+pc = PowerControl(d['ports']['powercontrol'])
 afgparams = d.get('afgparams', {})
-afg = AFG(tmcid=d['usbtmc']['afg'], **afgparams)
+afg = AFG(d['ports']['afg'], **afgparams)
 trigger = afg.trigger
 afg_chans = [i for i, gain in enumerate(afg.param['gains'])
              if gain is not None]
 
-mdo = MDO(tmcid=d['usbtmc']['mdo'])
+mdo = MDO(d['ports']['mdo'])
 mdochans = d.get('mdochans')
-try:
+if 'TRIG' in mdochans:
     trig = mdochans.index('TRIG')
     mdochans[trig] = None
-except IndexError:
-    logger.error('No TRIG in mdochans')
-    raise
+else:
+    trig = -1  # placeholder for item.format
 
 splitgain = SplitterGain(pregains=afg.param['gains'], mdochans=mdochans)
 
@@ -246,6 +247,7 @@ prolog = """\
 foff.write(prolog)
 foff_formstr = "{splitch:2s} {splitmode:1d}  {offset:7.3f}  {noise:5.3f}\n"
 
+print('Calibrating offsets', file=sys.stderr)
 mdo.send('ACQUIRE:STATE ON')
 afg.switchOn(False, afg_chans)
 offsets = calibOffsets(mdo, afg, pc, splitgain.mdomap,
@@ -256,11 +258,17 @@ foff.close()
 if 'P' in d['daqparams'] and any(hsf):
     # td.delay = 'P'
     logger.info('Pulse measurement')
+    print('Pulse measurement', file=sys.stderr)
     mdo.send('HORIZONTAL:POSITION %f' % mdo_delays['P'])
     afg.setParams(functype='P')
     afg.switchOn(True, afg_chans)
     for afg_dict, item_dict in generP(**d['daqparams']['P']):
         if afg_dict is not None:
+            msg = '  splitmode = %d, voltage = %.1fV' % (
+                item_dict.get('splitmode', -1),
+                item_dict.get('voltage', -1))
+            logger.info(msg)
+            print(msg, file=sys.stderr)
             afg.setParams(**afg_dict)
             if 'splitmode' in item_dict:
                 splitmode = item_dict['splitmode']
@@ -299,11 +307,18 @@ datapulses.close()
 if 'F' in d['daqparams'] and any(sf):
     # td.delay = 'F'
     logger.info('Frequency measurement')
+    print('Frequency measurement', file=sys.stderr)
     mdo.send('HORIZONTAL:POSITION %f' % mdo_delays['F'])
     afg.setParams(functype='F')
     afg.switchOn(True, afg_chans)
     for afg_dict, item_dict in generF(**d['daqparams']['F']):
         if afg_dict is not None:
+            msg = '  splitmode = %d, voltage = %.1fV, freq = %6.2fMHz' % (
+                item_dict.get('splitmode', -1),
+                item_dict.get('voltage', -1),
+                1e-6*item_dict.get('freq', -1e6))
+            logger.info(msg)
+            print(msg, file=sys.stderr)
             afg.setParams(**afg_dict)
             freq, flabel = item_dict['freq'], item_dict['flabel']
             if afg_dict is not None:

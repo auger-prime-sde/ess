@@ -659,7 +659,7 @@ or
                 key = ('F', uubnum, chan, flabel)
             if notcalc(key[0], chan, splitmode, voltage):
                 continue
-            gain = splitgain.gainUUB(splitmode, uubnum, chan, flabel)
+            gain = splitgain.gainUUB(splitmode, uubnum, chan, 'f'+flabel)
             # voltage in mV
             volt = 1000*voltage * gain
             if key not in data:

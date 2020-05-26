@@ -11,7 +11,7 @@
 
 #define STR(s) _STR(s)
 #define _STR(s) #s
-#define VERSION "dev:" STR(DEVICE) " 2020-04-15"
+#define VERSION "dev:" STR(DEVICE) " 2020-04-29"
 
 /* constants for voltage reference */
 #define AVCC 1
@@ -67,6 +67,8 @@ struct _creport *rd_ptr, *wr_ptr;
 #define ZONEOVER 7
 /* insert report to report buf */
 inline void report(uint8_t pin, uint8_t dir, uint8_t zone, uint32_t mtime) {
+  if(wr_ptr->stat != ZONEUP)
+    return;
   dir |= (zone << 4) | pin;
   wr_ptr->stat = dir;
   wr_ptr->time = mtime;
