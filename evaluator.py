@@ -28,7 +28,7 @@ class Evaluator(threading.Thread):
     ISN_SEVERITY_REPORT = 8   # no action, just report status
     TOUT_ORD = 0.5            # timeout for UUB order check
 
-    def __init__(self, ctx, fp):
+    def __init__(self, ctx, fplist):
         """Constructor.
 ctx - context object (i.e. ESS), used keys:
         timer
@@ -36,7 +36,7 @@ ctx - context object (i.e. ESS), used keys:
         internalSNs - dict
         uubtsc - uses uubtsc.internalSN
         critical_error - function to call to abort the test
-fp - file/stream for output
+fplist - list of files/streams for output
 """
         super(Evaluator, self).__init__()
         self.timer = ctx.timer
@@ -46,7 +46,7 @@ fp - file/stream for output
         self.pc = ctx.pc
         self.critical_error = ctx.critical_error
         self.removeUUB = ctx.removeUUB
-        self.fp = fp
+        self.fplist = fplist
         self.thrs = []  # threads removing UUB to join
         if zmq is not None:
             self.zmqcontext = zmq.Context()
@@ -245,7 +245,8 @@ Raise AssertionError in a non-allowed situation"""
         for line in msglines:
             msg = ts + line + '\n'
             ts = spacer
-            self.fp.write(msg)
+            for fp in self.fplist:
+                fp.write(msg)
             if zmq is not None:
                 self.zmqsocket.send_string(msg)
 

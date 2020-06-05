@@ -328,6 +328,8 @@ Updates self.param and send them to AFG."""
                     continue
                 self.send("source%d:frequency %fHz" % (ch+1, freq))
                 self.send("source%d:burst:ncycles %d" % (ch+1, ncycles))
+        self.send('*STB?', 100)  # wait for settings to complete
+        self.logger.debug('setParams done')
 
     def switchOn(self, state=True, chans=(0, 1)):
         """Switch on/off outputs"""

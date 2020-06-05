@@ -419,6 +419,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                                    dp_ctx['splitmode'])
             if 'pc_limits' in d:
                 self.pc.setCurrLimits(d['pc_limits'], True)
+            if 'pc_rz_tout' in d:
+                self.pc.rz_tout = float(d['pc_rz_tout'])
             self.splitmode = self.pc._set_splitterMode
             self.spliton = self.pc.splitterOn
             self.pc.start()
@@ -429,6 +431,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 calibration = d['splitter'].get('calibration', None)
                 self.splitgain = SplitterGain(self.afg.param['gains'], None,
                                               self.uubnums, calibration)
+                if calibration is not None:
+                    shutil.copy(calibration, self.datadir)
             else:
                 self.splitgain = DirectGain()
             self.notcalc = make_notcalc(dp_ctx)
@@ -456,7 +460,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             uub.start()
 
         # evaluator
-        self.evaluator = Evaluator(self, sys.stdout)
+        self.fp_msg = open(self.datadir + 'messages.txt', 'w')
+        self.evaluator = Evaluator(self, (sys.stdout, self.fp_msg))
         self.evaluator.start()
 
         # tickers
@@ -828,5 +833,6 @@ if __name__ == '__main__':
         msg = 'Upload of results to SDEU DB ' + (
             'successful.' if res else 'failed.')
         ess.evaluator.writeMsg([msg])
+    ess.fp_msg.close()
     ess.evaluator.stopZMQ()
     logger.info('Done. Everything stopped.')

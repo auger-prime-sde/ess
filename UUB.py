@@ -477,10 +477,14 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     self.ulisten.details = item_dict.copy()
                     self.ulisten.uubnums = self.uubnums.copy()
                     if afg_dict is not None:
-                        self.afg.setParams(**afg_dict)
+                        dt_tout = datetime.now() + \
+                                  timedelta(seconds=UUBdaq.TOUT_PREP)
                         if 'splitmode' in item_dict:
                             self.splitmode(item_dict['splitmode'])
-                        sleep(UUBdaq.TOUT_PREP)
+                        self.afg.setParams(**afg_dict)
+                        dt_now = datetime.now()
+                        if dt_now < dt_tout:
+                            sleep((dt_tout - dt_now).total_seconds())
                     self.trigger()
                     logger.debug('trigger sent')
                     finished = self.ulisten.done.wait(UUBdaq.TOUT_DAQ)
@@ -503,7 +507,6 @@ gener_param - generator of measurement paramters (see gener_funcparams)
                     if self.spliton is not None:
                         logger.info('splitter power on after meas.noise')
                         self.spliton(True)
-                        sleep(UUBdaq.TOUT_PREP)
                 elif tname in ('meas.pulse', 'meas.freq'):
                     self.afg.switchOn(False)
         # end while(True)
