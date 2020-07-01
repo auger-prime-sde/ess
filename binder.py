@@ -63,6 +63,9 @@ manual - if True, switch to manual mode"""
 manual - if True, switch to manual mode"""
         raise RuntimeError('Not implemented in base class')
 
+    def __del__(self):
+        pass
+
 
 class Binder_MKFT115_MB1(Binder):
     """Interface to Binder MKFT 115 with MB1 controller"""
@@ -129,7 +132,7 @@ class Binder_MKFT115_MB1(Binder):
 
     def start_prog(self, progno):
         assert 0 <= progno < self.NPROG, "Incorrect Prog No"
-        self.state()  # read current state
+        self.get_state()  # read current state
         self.modbus.write_single_register(self.ADDR_MODE, 0)
         self.modbus.write_single_register(self.ADDR_PROGNO, progno)
         self.modbus.write_single_register(self.ADDR_MODE, self.STATE_PROG)
@@ -184,7 +187,9 @@ returns (seg_temp, seg_humid)
         cycle_ind = 0 if len(chamberprog.cycles) > 0 else None
         for i, seg in enumerate(chamberprog.segments):
             dur = seg['duration']
-            temp_end = seg.get('temperature', temp_prev)
+            temp_end = seg.get('temperature', None)
+            if temp_end is None:
+                temp_end = temp_prev
             anticond = seg.get('anticond', None)
             if anticond is None:
                 anticond = anticond_prev
@@ -218,7 +223,9 @@ returns (seg_temp, seg_humid)
             temp_prev = temp_end
             anticond_prev = anticond
             if humid_prev is not None:
-                humid_end = seg.get('humidity', humid_prev)
+                humid_end = seg.get('humidity', None)
+                if humid_end is None:
+                    humid_end = humid_prev
                 hseg = Binder_MKFT115_MB1.Segment(
                     humid_prev, dur,
                     numjump=tseg.numjump, segjump=tseg.segjump)
@@ -256,7 +263,7 @@ returns (seg_temp, seg_humid)
                 m.write_single_register(self.ADDR_PROG_6, s.r6)
                 m.write_float(self.ADDR_PROG_VAL, s.val)
                 m.write_float(self.ADDR_PROG_GRAD, s.grad)
-                m.write_int(self.ADDR_PROG_DUR, s.duration)
+                m.write_int_BE(self.ADDR_PROG_DUR, s.duration)
                 m.write_single_register(self.ADDR_PROG_NUM_JUMP, s.numjump)
                 m.write_single_register(self.ADDR_PROG_SEG_JUMP, s.segjump)
                 m.write_float(self.ADDR_PROG_LIMI, s.minlim)
@@ -660,9 +667,9 @@ returns Binder instance or None in case of failure"""
             b = bcls(m)
             b.get_state()
         except ModbusError:
-            logger.exception('Init modbus failed')
             if b is not None:
                 b.__del__()
+                b = None
             continue
         break
     m.ser.close()

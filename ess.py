@@ -80,6 +80,8 @@ class DetectUSB(object):
                               ', '.join(self.devices[devclass]))
 
     def detect(self, devlist, trials=3):
+        assert not isinstance(devlist, str), \
+            "devlist must be list/tuple of device names"
         for trial in range(trials):
             self.logger.info('detect trial %d', trial+1)
             self._detect(devlist)
@@ -148,7 +150,7 @@ class DetectUSB(object):
                         self.found['chamber'] = port
                         self.found[blabel] = port
                         break
-                    elif blabel in binderlist:
+                    elif btype in binderlist:
                         self.found[blabel] = port
                         binderlist.remove(btype)
                         if not binderlist:
@@ -347,7 +349,9 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 found['power'] = found.pop('power_hmp')
             binderlist = ['chamber_' + btype for btype in BinderTypes.keys()
                           if 'chamber_' + btype in found]
-            if len(binderlist) > 1:
+            if  len(binderlist) == 1:
+                found['chamber'] = found.pop(binderlist[0])
+            elif len(binderlist) > 1:
                 try:
                     blabel = d['chamber']['type']
                     assert blabel in binderlist
