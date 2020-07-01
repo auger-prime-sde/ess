@@ -75,6 +75,10 @@ delay - delay in seconds
 class Timer(threading.Thread):
     """Event (periodic/from list) generator"""
     EPS = 0.0001  # guard interval for immediates
+    GENERS = {'periodic': periodic_ticker,
+              'point': point_ticker,
+              'list': list_ticker,
+              'one': one_tick}
 
     def __init__(self, basetime):
         super(Timer, self).__init__()
@@ -197,6 +201,9 @@ offset - an offset to basetime (seconds)
             self.logger.debug('fine sleep %.6fs', sec)
             sleep(sec)
             if newflags:  # may be empty if only stop was present
+                if 'timer' in newflags:
+                    for rec in newflags.pop('timer')['recs']:
+                        self.replace_ticker(rec)
                 self.logger.debug('event: %s', ', '.join(newflags))
                 self.timestamp = timestamp
                 self.flags = newflags
@@ -212,6 +219,59 @@ offset - an offset to basetime (seconds)
                 self._clear()
                 zTimerStop = False
         self.logger.info('timer.run finished')
+
+    def replace_ticker(self, rec):
+        """Create ticker decribed by rec and eventually replace old ticker
+rec - list with mandatory/optional items
+  name - name of the new ticker (if None, no new ticker will be created)
+  typ - type of generator (GENERS)
+  oldname - name of existing ticker (default None)
+  offset - offset to add (default None)
+  args - arguments to function (default ())
+  kwargs - keyword arguments to function (default {})
+return (oldname, name, gener, offset)"""
+        if len(rec) < 2 or len(rec) > 6:
+            self.logger.error("Replace ticker: wrong length of rec %s",
+                              repr(rec))
+            return
+        name = rec[0]
+        oldname = rec[2] if len(rec) > 2 else None
+        if name is None:
+            if oldname is None:
+                return  # no action
+            if oldname in self.tickers:
+                self.logger.info('Removing ticker %s', oldname)
+                del self.tickers[oldname]
+            else:
+                self.logger.warning(
+                    "Ticker %s to delete does not exist", oldname)
+            return
+        if name in self.tickers and oldname != name:
+            self.logger.error('Duplicate ticker %s', name)
+            return
+        if rec[1] not in Timer.GENERS:
+            self.logger.error("Unknown generator type %s", rec[1])
+            return
+        offset = rec[3] if len(rec) > 3 else None
+        args = rec[4] if len(rec) > 4 else ()
+        kwargs = rec[5] if len(rec) > 5 else {}
+        try:
+            gener = Timer.GENERS[rec[1]](*args, **kwargs)
+            # at least one value must be produced
+            nextval, detail = next(gener)
+        except (TypeError, StopIteration) as e:
+            self.logger.error('Creating generator error: %s', e)
+            return
+        if oldname in self.tickers:
+            self.logger.info('Replacing ticker %s by %s', oldname, name)
+            del self.tickers[oldname]
+        else:
+            self.logger.info('Adding ticker ' + name)
+            if oldname is not None:
+                self.logger.warning(
+                    "Ticker %s to replace does not exist", oldname)
+        nextval += offset
+        self.tickers[name] = [nextval, detail, gener, offset]
 
     def join(self, timeout=None):
         self.logger.debug('Timer.join')

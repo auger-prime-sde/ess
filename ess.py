@@ -22,7 +22,7 @@ from serial import Serial, SerialException
 
 # ESS stuff
 from timer import Timer, periodic_ticker, EvtDisp
-from modbus import Binder, Modbus, ModbusError
+from binder import BinderTypes, getBinder
 from logger import LogHandlerRamp, LogHandlerPickle, LogHandlerGrafana
 from logger import LogHandlerVoltramp, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
@@ -46,7 +46,7 @@ from evaluator import Evaluator
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200424'
+VERSION = '20200619'
 
 
 class DetectUSB(object):
@@ -130,21 +130,34 @@ class DetectUSB(object):
                     self.logger.debug('%s not found', dev)
 
         if 'chamber' in devlist:  # detect Binder
-            modbus = None
+            binderlist = True
+        else:
+            binderlist = [label for label in BinderTypes.keys()
+                          if 'chamber_' + label in devlist]
+        if binderlist:
             for port in self.devices['ttyUSB']:
                 self.logger.debug('Detecting chamber on %s', port)
-                try:
-                    modbus = Modbus(port)
-                    modbus.read_holding_registers(Binder.ADDR_MODE)
-                except ModbusError:
-                    continue
-                finally:
-                    if modbus is not None:
-                        modbus.__del__()
-                self.found['chamber'] = port
-                self.devices['ttyUSB'].remove(port)
-                self.logger.info('chamber found at %s', port)
-                break
+                b = getBinder(port)
+                if b is not None:
+                    self.devices['ttyUSB'].remove(port)
+                    btype = b.mytype
+                    b.__del__()
+                    self.logger.info('chamber %s found at %s', btype, port)
+                    blabel = 'chamber_' + btype
+                    if 'chamber' in devlist:
+                        self.found['chamber'] = port
+                        self.found[blabel] = port
+                        break
+                    elif blabel in binderlist:
+                        self.found[blabel] = port
+                        binderlist.remove(btype)
+                        if not binderlist:
+                            break
+            else:
+                if 'chamber' in devlist:
+                    self.failed.append('chamber')
+                else:
+                    self.failed.extend(binderlist)
 
         if 'flir' in devlist:  # detect FLIR
             flir = None
@@ -332,6 +345,17 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 found['power'] = found.pop('power_cpx')
             elif 'power_hmp' in found:
                 found['power'] = found.pop('power_hmp')
+            binderlist = ['chamber_' + btype for btype in BinderTypes.keys()
+                          if 'chamber_' + btype in found]
+            if len(binderlist) > 1:
+                try:
+                    blabel = d['chamber']['type']
+                    assert blabel in binderlist
+                except (KeyError, AssertionError):
+                    raise RuntimeError(
+                        'More chambers detected, ' +
+                        'cannot distinguish which should be used')
+                found['chamber'] = found.pop(blabel)
             if 'ports' in d:
                 found.update(d['ports'])
             d['ports'] = found
@@ -385,7 +409,16 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # chamber
         if 'chamber' in d['ports']:
             port = d['ports']['chamber']
-            self.chamber = Chamber(port, self.timer, self.q_resp)
+            binder = getBinder(port)
+            assert binder is not None, "Binder not found on port " + port
+            self.chamber = Chamber(binder, self.timer, self.q_resp)
+            if 'chamber' in d and 'stopstate' in d['chamber']:
+                stopstate = d['chamber']['stopstate']
+                if stopstate in self.chamber.nonprog_states:
+                    self.chamber.stopstate = stopstate
+                else:
+                    self.logger.error('Unknown chamber stopstate %s, ignored',
+                                      stopstate)
             self.chamber.start()
 
         # TrigDelay
@@ -722,8 +755,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.bme.join()
         if self.flir is not None:
             self.flir.join()
-        if self.chamber is not None and self.chamber.binder is not None:
-            self.chamber.binder.setState(Binder.STATE_MANUAL)
+        if self.chamber is not None:
+            self.chamber.stop()
             self.chamber.join()
         self.ulisten.join()
         self.udaq.join()

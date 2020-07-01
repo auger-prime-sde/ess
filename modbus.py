@@ -8,9 +8,8 @@ from struct import pack, unpack
 import logging
 import serial
 import crcmod
-from functools import reduce
 
-VERSION = '20200423'
+VERSION = '20200618'
 
 # constants
 READ_HOLDING_REGISTERS = 0x03
@@ -165,7 +164,7 @@ reg_addr     - register address (0 to 0xFFFF)
 reg_values   - list of values to write (each 0 to 0xFFFF)
 """
         assert 0 <= reg_addr <= 0xFFFF, "reg_addr out of range"
-        assert isinstance(reg_values, list), "reg_valus not a list"
+        assert hasattr(reg_values, '__iter__'), "reg_valeus not a list"
         n = len(reg_values)
         assert 1 <= n <= 80, "wrong length of reg_values list"
         for v in reg_values:
@@ -183,10 +182,25 @@ reg_values   - list of values to write (each 0 to 0xFFFF)
         """Convert float to 2 words and write them to <reg_addr>"""
         self.write_multiple_registers(reg_addr, floats2words(fval))
 
-    def write_int(self, reg_addr, ival):
-        """Convert int to 2 words and write them to <reg_addr>"""
+    def write_int_BE(self, reg_addr, ival):
+        """Convert int to 2 words (big end) and write them to <reg_addr>"""
         self.write_multiple_registers(reg_addr,
                                       [ival // 0x10000, ival % 0x10000])
+
+    def write_int_LE(self, reg_addr, ival):
+        """Convert int to 2 words (little end) and write them to <reg_addr>"""
+        self.write_multiple_registers(reg_addr,
+                                      [ival % 0x10000, ival // 0x10000])
+
+    def read_int_LE(self, reg_addr):
+        """Read 2 words from <reg_addr> and interpret them as LE int"""
+        words = self.read_holding_registers(reg_addr, 2)
+        return words[0] + (words[1] << 16)
+
+    def read_int_BE(self, reg_addr):
+        """Read 2 words from <reg_addr> and interpret them as BE int"""
+        words = self.read_holding_registers(reg_addr, 2)
+        return (words[0] << 16) + words[1]
 
 
 def words2floats(*words):
@@ -208,131 +222,3 @@ def floats2words(*floats):
         w1, w2 = unpack(">HH", blob)
         vals.extend([w2, w1])
     return vals
-
-
-class Binder:
-    """Interface to Binder MKFT 115"""
-    # register addresses, MKFT 115 E.2, MB1 controller
-    ADDR_ACT_TEMP      = 0x11A9
-    ADDR_ACT_HUMID     = 0x11CD
-    ADDR_SET_TEMP      = 0x1077
-    ADDR_SET_HUMID     = 0x1079
-    ADDR_SET_TEMP_MAN  = 0x156F
-    ADDR_SET_HUMID_MAN = 0x1571
-    ADDR_SET_TEMP_BAS  = 0x1581
-    ADDR_SET_HUMID_BAS = 0x1583
-    ADDR_PROG_RESET    = 0x1A00
-    ADDR_PROG_STATUS   = 0x1A01
-    ADDR_PROG_NO       = 0x1A02            # program number
-    ADDR_PROG_TYPE     = 0x1A03            # 0 .. temperature, 1 .. humidity
-    ADDR_PROG_SEG      = 0x1A04            # segment programmed
-    ADDR_PROG_NSEG     = 0x1A05            # total number of segments
-    ADDR_PROG_6        = 0x1A06            # ???
-    ADDR_PROG_VAL      = 0x1A07            # target value
-    ADDR_PROG_GRAD     = 0x1A09            # gradient ?
-    ADDR_PROG_LIMI     = 0x1A0B            # limit min
-    ADDR_PROG_LIMA     = 0x1A0D            # limit max
-    ADDR_PROG_DUR      = 0x1A0F            # duration
-    ADDR_PROG_OPERC    = 0x1A11            # operational contacts
-    ADDR_PROG_NUM_JUMP = 0x1A12            # number of jumps back
-    ADDR_PROG_SEG_JUMP = 0x1A13            # segment to jump back (from 0)
-    ADDR_PROG_END      = 0x1599            # end of program
-
-    ADDR_MODE          = 0x1A22
-    ADDR_PROGNO        = 0x1A23
-    # constants
-    STATE_BASIC  = 0x1000
-    STATE_MANUAL = 0x0800
-    STATE_PROG   = 0x0400
-    P_TEMP = 0                             # segment type temperature
-    P_HUMID = 1                            # segment type humidity
-    NPROG = 25                      # max. number of programs (numbered from 0)
-
-    def __init__(self, modbus):
-        assert isinstance(modbus, Modbus), "Modbus instance expected"
-        self.modbus = modbus
-
-    def reset(self):
-        """Some initialization"""
-        self.modbus.write_single_register(Binder.ADDR_PROG_RESET, 5)
-        self.modbus.read_holding_registers(Binder.ADDR_PROG_RESET)
-        self.modbus.read_holding_registers(Binder.ADDR_PROG_STATUS)
-
-    def state(self):
-        """Read state from chamber"""
-        return self.modbus.read_holding_registers(Binder.ADDR_MODE)[0]
-
-    def setState(self, state, progno=None):
-        assert state in (Binder.STATE_BASIC, Binder.STATE_MANUAL,
-                         Binder.STATE_PROG), "Incorrect Binder state"
-        if state == Binder.STATE_PROG and progno is not None:
-            assert 0 <= progno < Binder.NPROG, "Incorrect Prog No"
-        self.state()  # read current state
-        self.modbus.write_single_register(Binder.ADDR_MODE, 0)
-        if state == Binder.STATE_PROG and progno is not None:
-            self.modbus.write_single_register(Binder.ADDR_PROGNO, progno)
-        self.modbus.write_single_register(Binder.ADDR_MODE, state)
-
-    def getActTemp(self):
-        return self.modbus.read_float(Binder.ADDR_ACT_TEMP)
-
-    def getActHumid(self):
-        return self.modbus.read_float(Binder.ADDR_ACT_HUMID)
-
-
-class BinderSegment:
-    """Program segment"""
-    def __init__(self, val, duration, **kw):
-        self.val = val
-        self.duration = duration
-        self.grad = kw.get('grad', 200004.)
-        self.minlim = kw.get('minlim', -999.)
-        self.maxlim = kw.get('maxlim', 999.)
-        self.operc = kw.get('operc', 0)
-        self.r6 = kw.get('r6', 0)
-        self.numjump = kw.get('numjump', 0)
-        self.segjump = kw.get('segjump', 0)
-
-
-class BinderProg:
-    """Implementation of Program for Binder MKFT 115"""
-    def __init__(self):
-        self.seg_temp = []
-        self.seg_humid = []
-
-    def lengths(self):
-        """Calculates lengths of temperature/humidity segments"""
-        def fs(x, seg):
-            return x + seg.duration
-        ltemp = reduce(fs, self.seg_temp, 0.0)
-        lhumid = reduce(fs, self.seg_humid, 0.0)
-        return ltemp, lhumid
-
-    def send(self, binder, progno):
-        assert isinstance(binder, Binder), "Binder instance expected"
-        assert len(self.seg_temp) <= 100, "Max. 100 segments allowed"
-        assert len(self.seg_humid) <= 100, "Max. 100 segments allowed"
-        assert 0 <= progno < Binder.NPROG, "Incorrect Prog No"
-        m = binder.modbus
-        # clear existing program TBD
-        binder.reset()
-        for segtype, segs in ((Binder.P_TEMP, self.seg_temp),
-                              (Binder.P_HUMID, self.seg_humid)):
-            m.write_single_register(Binder.ADDR_PROG_NO, progno)
-            m.write_single_register(Binder.ADDR_PROG_TYPE, segtype)
-            m.write_single_register(Binder.ADDR_PROG_NSEG, len(segs))
-
-            for i, s in enumerate(iter(segs)):
-                m.write_single_register(Binder.ADDR_PROG_SEG, i)
-                m.write_single_register(Binder.ADDR_PROG_6, s.r6)
-                m.write_float(Binder.ADDR_PROG_VAL, s.val)
-                m.write_float(Binder.ADDR_PROG_GRAD, s.grad)
-                m.write_int(Binder.ADDR_PROG_DUR, s.duration)
-                m.write_single_register(Binder.ADDR_PROG_NUM_JUMP, s.numjump)
-                m.write_single_register(Binder.ADDR_PROG_SEG_JUMP, s.segjump)
-                m.write_float(Binder.ADDR_PROG_LIMI, s.minlim)
-                m.write_float(Binder.ADDR_PROG_LIMA, s.maxlim)
-                if segtype == Binder.P_TEMP:
-                    m.write_single_register(Binder.ADDR_PROG_OPERC, s.operc)
-                binder.reset()
-        m.write_single_register(Binder.ADDR_PROG_END, 0)

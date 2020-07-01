@@ -9,34 +9,26 @@ import json
 
 # ESS stuff
 from timer import one_tick, point_ticker, list_ticker
-from modbus import Modbus, ModbusError, Binder, BinderSegment, BinderProg
+from binder import Binder
 from threadid import syscall, SYS_gettid
 
 
 class Chamber(threading.Thread):
     """Thread managing Climate chamber"""
+    stopstate = 'manual'
+    nonprog_states = ('manual', 'idle')
 
-    def __init__(self, port, timer, q_resp):
+    def __init__(self, binder, timer, q_resp):
         """Constructor.
-port - serial port to connect
+binder - instance of Binder derivative
 timer - instance of Timer
 q_resp - queue to send response"""
         super(Chamber, self).__init__()
+        assert isinstance(binder, Binder)
+        self.binder = binder
         self.timer = timer
         self.q_resp = q_resp
-        # check that we are connected to Binder climate chamber
         self.logger = logging.getLogger('chamber')
-        b = None
-        try:
-            m = Modbus(port)
-            self.logger.info('Opening serial %s', repr(m.ser))
-            b = Binder(m)
-            b.state()
-        except ModbusError:
-            m.ser.close()
-            self.logger.exception('Init modbus failed')
-            raise
-        self.binder = b
 
     def run(self):
         tid = syscall(SYS_gettid)
@@ -50,19 +42,17 @@ q_resp - queue to send response"""
                 return
             timestamp = self.timer.timestamp   # store info from timer
             flags = self.timer.flags
-            if 'binder.state' in flags:
-                if flags['binder.state'] is None:
-                    self.logger.info('Stopping program')
-                    self.binder.setState(Binder.STATE_BASIC)
-                else:
-                    try:
-                        progno = int(flags['binder.state'])
-                        self.logger.info('Starting program %d', progno)
-                        self.binder.setState(Binder.STATE_PROG, progno)
-                    except Exception:
-                        self.logger.error(
-                            'Unknown detail for binder.state: %s',
-                            repr(flags['binder.state']))
+            if 'binder.start_prog' in flags:
+                try:
+                    progno = int(flags['binder.start_prog'])
+                    self.logger.info('Starting program %d', progno)
+                    self.binder.start_prog(progno)
+                except Exception as e:
+                    self.logger.error(
+                        'Error starting chamber program. %s', e)
+            if 'binder.stop_prog' in flags:
+                manual = flags.get['binder.stop_prog']
+                self.binder.stop_prog(manual)
             if 'meas.thp' in flags:
                 self.logger.debug('Chamber temperature & humidity measurement')
                 temperature = self.binder.getActTemp()
@@ -74,11 +64,90 @@ q_resp - queue to send response"""
                        'chamber_temp': temperature,
                        'chamber_humid': humid}
                 self.q_resp.put(res)
-            if 'binder.prog' in flags:
-                progno, prog = (flags['binder.prog']['progno'],
-                                flags['binder.prog']['prog'])
+            if 'binder.load_prog' in flags:
+                progno, prog = (flags['binder.load_prog']['progno'],
+                                flags['binder.load_prog']['prog'])
                 self.logger.info('Loading program %d', progno)
-                prog.send(self.binder, progno)
+                self.binder.load_prog(progno, prog)
+
+    def stop(self, state=None):
+        """Stop a program running in chamber
+to to manual mode if state == 'manual', else idle"""
+        if state is None:
+            state = self.stopstate
+        if self.binder is not None and isinstance(self.binder, Binder):
+            self.binder.stop_program(state == 'manual')
+
+
+class ChamberProg(object):
+    """Representation of climate chamber program"""
+    def __init__(self, temperature, humidity=None, anticond=False, title=b''):
+        """Constructor
+temperature - initial temperature [float]
+humidity - initial humidity [float or None]
+         - if None, no control of humidity
+anticond - apply anticond contact by default"""
+        self.temperature = temperature
+        self.humidity = humidity
+        self.anticond = anticond
+        self.title = title
+        self.segments = []
+        self.cycles = []  # (<first segment>, #repeat, <last segment>)
+
+    def _startcycle(self, currentseg, repeat):
+        if self.cycles:
+            assert self.cycles[-1][2] is not None, "Nested cycles"
+        repeat = int(repeat)
+        assert repeat >= 0, "Negative cycle repeat number"
+        self.cycles.append([currentseg, repeat, None])
+
+    def _endcycle(self, currentseg):
+        assert self.cycles and self.cycles[-1][2] is None, \
+            "End cycle while not in cycle"
+        self.cycles[-1][2] = currentseg
+
+    def add_segment(self, **segment):
+        """Add segment to program
+segment - dictionary
+   duration - [int]. Segment length (seconds, positive)
+   temperature - [float or None/not present]. If None, use the previous value
+   humidity - as temperature. Ignored if initial humidity None
+   anticond - apply anticondensation, if None use previous value
+   startcycle - [int or None/not present]. Non-negative number of repetions
+   endcycle - [True or None/not present]. Close the cycle
+   label - [str or None/not present]. Label of the segment.
+         - evaluated as label.format(i=<cycle iteration, 1..repeat>)
+"""
+        nseg = {}
+        assert isinstance(segment['duration'], int),\
+            "Missing/wrong format of duration"
+        assert segment['duration'] > 0, "Duration not positive"
+        nseg['duration'] = segment['duration']
+        temp = segment.get('temperature', None)
+        assert temp is None or isinstance(temp, float),\
+            "Wrong format of temperature"
+        nseg['temperature'] = temp
+        if self.humidity is not None:
+            humid = segment.get('humidity', None)
+            assert humid is None or isinstance(humid, float),\
+                "Wrong format of humidity"
+            nseg['humidity'] = humid
+        else:
+            nseg['humidity'] = None
+        nseg['anticond'] = segment.get('anticond', None)
+        startcycle = segment.get('startcycle', None)
+        if startcycle is not None:
+            self._startcycle(nseg, startcycle)
+        if segment.get('endcycle', False):
+            self._endcycle(nseg)
+        self.segments.append(nseg)
+
+    def compact(self):
+        """Compact segments - TBD"""
+        pass
+
+    def __str__(self):
+        return "Chamber program dump TBD"
 
 
 class ESSprogram(threading.Thread):
@@ -102,6 +171,7 @@ class ESSprogram(threading.Thread):
             self.fls = {}   # flir operations {time: flags}
             self.els = {}   # evaluator operations {time: flags}
             self.lto = {}   # log_timeout: {time: log_timeout value}
+            self.ts = {}    # timers {time: flags}
             self.t = 0      # time
             self.time_temp = []
             self.time_humid = []
@@ -114,7 +184,7 @@ class ESSprogram(threading.Thread):
                     [(t + self.t, val)
                      for t, val in otherpoints.__dict__[timelist]])
             # { time: flags } dictionaries
-            for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps',
+            for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps', 'ts',
                           'lis', 'los', 'cms', 'dls', 'fls', 'els', 'lto'):
                 self.__dict__[dname].update(
                     {t + self.t: val
@@ -125,7 +195,7 @@ class ESSprogram(threading.Thread):
         def keys(self):
             """Return all time points"""
             keys = self.tps
-            for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps',
+            for dname in ('mrs', 'mns', 'mps', 'mfs', 'pps', 'ts',
                           'lis', 'los', 'cms', 'dls', 'fls', 'els', 'lto'):
                 keys.extend(list(self.__dict__[dname].keys()))
             return sorted(set(keys))
@@ -145,90 +215,41 @@ jsonobj - either json string or json file"""
             self.macros.update(essprog_macros)
         self.progno = jso.get('progno', 0)
         self.load = jso.get('load', False)
-        self.prog = BinderProg()
-        temp_prev = None
-        humid_prev = None
-        temp_seg = None
-        humid_seg = None
-        operc = 0
+        temperature = jso.get('temperature', None)
+        if temperature is not None:
+            humidity = jso.get('humidity', None)
+            anticond = jso.get('anticond', False)
+            title = bytes(jso.get('title', ''), 'utf-8')
+            self.prog = ChamberProg(temperature, humidity, anticond, title)
+            self.prog.stop_manual = jso.get('stop_manual', None)
+        else:
+            self.prog = None
         gp = ESSprogram._points()  # global points
         cp = None                  # points in cycle
         numrepeat = None           # number to repeat
         ap = gp                    # actual points
         self.timerstop = None
         for segment in jso['program']:
-            if 'num_repeat' in segment:  # start cycle
-                assert cp is None, "Nested cycle"
-                numrepeat = segment['num_repeat']
-                assert isinstance(numrepeat, int) and numrepeat >= 1
-                if temp_prev is not None:
-                    temp_seg = len(self.prog.seg_temp)
-                if humid_prev is not None:
-                    humid_seg = len(self.prog.seg_humid)
-                cp = ESSprogram._points()
-                ap = cp
-                continue
-            elif segment == 'endcycle':
-                assert cp is not None, "End cycle while not in cycle"
-                if temp_seg is not None:
-                    self.prog.seg_temp[-1].numjump = numrepeat-1
-                    self.prog.seg_temp[-1].segjump = temp_seg
-                if humid_seg is not None:
-                    self.prog.seg_humid[-1].numjump = numrepeat-1
-                    self.prog.seg_humid[-1].segjump = humid_seg
-                for i in range(numrepeat):
-                    gp.update(cp)
-                    gp.t += cp.t
-                temp_seg, humid_seg, cp, numrepeat = None, None, None, None
-                ap = gp
-                continue
-            elif 'stop' in segment:  # stop timer after a delay
+            if 'stop' in segment:  # stop timer after a delay
                 assert self.timerstop is None, "Double stop timer"
                 assert cp is None, "Stop timer while in cycle"
                 self.timerstop = gp.t + int(segment['stop'])
                 continue
             else:
                 assert self.timerstop is None, "Segment after stop"
-            dur = segment["duration"]
-            # temperature & operc
-            temp_end = segment.get("temperature", temp_prev)
-            operc = segment.get("operc", operc)
-            if temp_prev is None and temp_end is not None:
-                temp_prev = temp_end
-                gp.time_temp.append((0, temp_prev))
-                if gp.t > 0:
-                    seg = BinderSegment(temp_prev, gp.t, operc=operc)
-                    self.prog.seg_temp.append(seg)
-                    gp.time_temp.append((gp.t, temp_prev))
-                if cp is not None and cp.t > 0:
-                    temp_seg = len(self.prog.seg_temp)
-                    seg = BinderSegment(temp_prev, cp.t, operc=operc)
-                    self.prog.seg_temp.append(seg)
-                    cp.time_temp.append((cp.t, temp_prev))
-            if temp_prev is not None and dur > 0:
-                seg = BinderSegment(temp_prev, dur, operc=operc)
-                self.prog.seg_temp.append(seg)
-                ap.time_temp.append((ap.t + dur, temp_end))
-            temp_prev = temp_end
-            # humidity
-            humid_end = segment.get("humidity", humid_prev)
-            if humid_prev is None and humid_end is not None:
-                humid_prev = humid_end
-                gp.time_humid.append((0, humid_prev))
-                if gp.t > 0:
-                    seg = BinderSegment(humid_prev, gp.t)
-                    self.prog.seg_humid.append(seg)
-                    gp.time_humid.append((gp.t, humid_prev))
-                if cp is not None and cp.t > 0:
-                    humid_seg = len(self.prog.seg_humid)
-                    seg = BinderSegment(humid_prev, cp.t)
-                    self.prog.seg_humid.append(seg)
-                    cp.time_humid.append((cp.t, humid_prev))
-            if humid_prev is not None and dur > 0:
-                seg = BinderSegment(humid_prev, dur)
-                self.prog.seg_humid.append(seg)
-                ap.time_humid.append((ap.t + dur, humid_end))
-            humid_prev = humid_end
+            binderseg = {}
+            if 'startcycle' in segment:
+                assert cp is None, "Nested cycle"
+                numrepeat = segment['startcycle']
+                assert isinstance(numrepeat, int) and numrepeat >= 0
+                binderseg['startcycle'] = numrepeat
+                cp = ESSprogram._points()
+                ap = cp
+
+            binderseg['duration'] = dur = segment["duration"]
+            # temperature, humidity & operc
+            for key in ('temperature', 'humidity', 'opercont'):
+                binderseg[key] = segment.get(key, None)
             # meas points
             if "meas.ramp" in segment:
                 meas = self._macro(segment["meas.ramp"])
@@ -423,16 +444,33 @@ jsonobj - either json string or json file"""
                                          'message')
                              if key in ep}
                     ap.els[etime] = flags
+            # Timer
+            if 'timer' in segment:
+                timers = self._macro(segment["timer"])
+                for t in timers:
+                    t = self._macro(t)
+                    offset = self._macro(t["offset"])
+                    ttime = ap.t + offset
+                    if offset < 0:
+                        ttime += dur
+                    recs = filter(self._macro, self._macro(t['recs']))
+                    ap.ts[ttime] = {'recs': recs}
             ap.t += dur
+            if segment.get('endcycle', False):
+                assert cp is not None, "End cycle while not in cycle"
+                binderseg['endcycle'] = True
+                for i in range(numrepeat):
+                    gp.update(cp)
+                    gp.t += cp.t
+                cp, numrepeat = None, None
+                ap = gp
+            if self.prog:
+                self.prog.add_segment(**binderseg)
         assert cp is None, "Unfinished cycle"
         self.progdur = gp.t
         self.time_temp = gp.time_temp
         self.time_humid = gp.time_humid
         # append the last segments
-        if temp_prev is not None:
-            self.prog.seg_temp.append(BinderSegment(temp_prev, 1))
-        if humid_prev is not None:
-            self.prog.seg_humid.append(BinderSegment(humid_prev, 1))
         self.meas_ramps = [(mptime, gp.mrs[mptime])
                            for mptime in sorted(gp.mrs)]
         self.meas_noises = [(mptime, gp.mns[mptime])
@@ -451,6 +489,7 @@ jsonobj - either json string or json file"""
         self.dloads = [(ttime, gp.dls[ttime]) for ttime in sorted(gp.dls)]
         self.flirs = [(ftime, gp.fls[ftime]) for ftime in sorted(gp.fls)]
         self.evals = [(etime, gp.els[etime]) for etime in sorted(gp.els)]
+        self.timers = [(ttime, gp.ts[ttime]) for ttime in sorted(gp.ts)]
         self.lto_touts = [(ltime, gp.lto[ltime]) for ltime in sorted(gp.lto)]
         self.lto_touts.append((None, None))  # sentinel
         self.timepoints = {ptime: pind for pind, ptime in enumerate(gp.keys())}
@@ -477,8 +516,9 @@ return polyline approximation at the time t"""
         tid = syscall(SYS_gettid)
         logger.debug('run start, name %s, tid %d', self.name, tid)
         if self.load:
-            self.timer.add_immediate('binder.prog', {'prog': self.prog,
-                                                     'progno': self.progno})
+            self.timer.add_immediate(
+                'binder.load_prog',
+                {'prog': self.prog, 'progno': self.progno})
         timestamp = None
         ltime, lto = self.lto_touts.pop(0)
         while True:
@@ -520,7 +560,7 @@ return polyline approximation at the time t"""
             self.q_resp.put(res)
 
     def startprog(self, delay=31):
-        """Create tickers for meas.*, power.*, telnet.* and binder.state
+        """Create tickers for meas.*, power.*, telnet.* and binder.*
 and add them to timer"""
         starttime = datetime.now() + timedelta(seconds=60+delay)
         starttime = starttime.replace(second=0, microsecond=0)
@@ -530,10 +570,14 @@ and add them to timer"""
         message += ' %d:%02d' % (self.progdur // 60, self.progdur % 60)
         logging.getLogger('ESSprogram').info(message)
         offset = (self.starttime - self.timer.basetime).total_seconds()
-        # start and stop binder program
-        self.timer.add_ticker('binder.state',
-                              point_ticker(((0, self.progno),
-                                            (self.progdur, None)), offset))
+        if self.prog is not None:
+            self.timer.add_ticker(
+                'binder.start_prog',
+                one_tick(None, delay=offset, detail=self.progno))
+            self.timer.add_ticker(
+                'binder.stop_prog',
+                one_tick(None, delay=offset+self.progdur,
+                         detail=self.prog.stop_manual))
         if self.meas_ramps:
             self.timer.add_ticker('meas.ramp',
                                   point_ticker(self.meas_ramps, offset,
@@ -575,6 +619,9 @@ and add them to timer"""
         if self.evals:
             self.timer.add_ticker('eval',
                                   point_ticker(self.evals, offset))
+        if self.timers:
+            self.timer.add_ticker('timer',
+                                  point_ticker(self.timers, offset))
         if self.test_points:
             self.timer.add_ticker('power.test',
                                   list_ticker(self.test_points, offset,
