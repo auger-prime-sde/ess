@@ -226,7 +226,7 @@ rec - list with mandatory/optional items
   name - name of the new ticker (if None, no new ticker will be created)
   typ - type of generator (GENERS)
   oldname - name of existing ticker (default None)
-  offset - offset to add (default None)
+  offset - offset to add (if None use offset from oldname's ticker)
   args - arguments to function (default ())
   kwargs - keyword arguments to function (default {})
 return (oldname, name, gener, offset)"""
@@ -235,24 +235,30 @@ return (oldname, name, gener, offset)"""
                               repr(rec))
             return
         name = rec[0]
-        oldname = rec[2] if len(rec) > 2 else None
+        if len(rec) > 2 and rec[2] is not None:
+            oldname = rec[2]
+            try:
+                oldoffset = self.tickers[oldname][3]
+            except KeyError:
+                self.logger.error(
+                    'Ticker %s to replace/remove does not exist', oldname)
+                oldname = None
+                oldoffset = 0
+        else:
+            oldname = None
+            oldoffset = 0
         if name is None:
-            if oldname is None:
-                return  # no action
-            if oldname in self.tickers:
+            if oldname is not None:
                 self.logger.info('Removing ticker %s', oldname)
                 del self.tickers[oldname]
-            else:
-                self.logger.warning(
-                    "Ticker %s to delete does not exist", oldname)
             return
         if name in self.tickers and oldname != name:
-            self.logger.error('Duplicate ticker %s', name)
+            self.logger.error('Duplicate ticker %s, ignoring', name)
             return
         if rec[1] not in Timer.GENERS:
             self.logger.error("Unknown generator type %s", rec[1])
             return
-        offset = rec[3] if len(rec) > 3 else None
+        offset = rec[3] if len(rec) > 3 and rec[3] is not None else oldoffset
         args = rec[4] if len(rec) > 4 else ()
         kwargs = rec[5] if len(rec) > 5 else {}
         try:
@@ -270,7 +276,24 @@ return (oldname, name, gener, offset)"""
             if oldname is not None:
                 self.logger.warning(
                     "Ticker %s to replace does not exist", oldname)
-        nextval += offset
+        # skip passed ticks
+        now = datetime.now()
+        skipcount = 0
+        while True:
+            nextval += offset
+            if self.basetime + timedelta(seconds=nextval) >= now:
+                break
+            skipcount += 1
+            try:
+                nextval, detail = next(gener)
+            except StopIteration:
+                self.logger.warning(
+                    'New ticker %s exhausted while skipping %d ticks',
+                    name, skipcount)
+                return
+        if skipcount > 0:
+            self.logger.debug(
+                'New ticker %s skipped %d ticks', name, skipcount)
         self.tickers[name] = [nextval, detail, gener, offset]
 
     def join(self, timeout=None):

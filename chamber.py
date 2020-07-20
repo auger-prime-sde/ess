@@ -29,6 +29,7 @@ q_resp - queue to send response"""
         self.timer = timer
         self.q_resp = q_resp
         self.logger = logging.getLogger('chamber')
+        self.binder.get_state()
 
     def run(self):
         tid = syscall(SYS_gettid)
@@ -55,8 +56,8 @@ q_resp - queue to send response"""
                 self.binder.stop_prog(manual)
             if 'meas.thp' in flags:
                 self.logger.debug('Chamber temperature & humidity measurement')
-                temperature = self.binder.getActTemp()
-                humid = self.binder.getActHumid()
+                temperature = self.binder.get_temp()
+                humid = self.binder.get_humid()
                 self.logger.debug('Done. t = %.2fdeg.C, h = %.2f%%',
                                   temperature, humid)
                 res = {'timestamp': timestamp,
@@ -76,7 +77,7 @@ to to manual mode if state == 'manual', else idle"""
         if state is None:
             state = self.stopstate
         if self.binder is not None and isinstance(self.binder, Binder):
-            self.binder.stop_program(state == 'manual')
+            self.binder.stop_prog(state == 'manual')
 
 
 class ChamberProg(object):
@@ -124,8 +125,8 @@ segment - dictionary
         assert segment['duration'] > 0, "Duration not positive"
         nseg['duration'] = segment['duration']
         temp = segment.get('temperature', None)
-        assert temp is None or isinstance(temp, float),\
-            "Wrong format of temperature"
+        if temp is not None:
+            temp = float(temp)  # make sure temp is float
         nseg['temperature'] = temp
         if self.humidity is not None:
             humid = segment.get('humidity', None)
@@ -248,7 +249,7 @@ jsonobj - either json string or json file"""
 
             binderseg['duration'] = dur = segment["duration"]
             # temperature, humidity & operc
-            for key in ('temperature', 'humidity', 'opercont'):
+            for key in ('temperature', 'humidity', 'anticond'):
                 binderseg[key] = segment.get(key, None)
             # meas points
             if "meas.ramp" in segment:

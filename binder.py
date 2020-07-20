@@ -64,7 +64,10 @@ manual - if True, switch to manual mode"""
         raise RuntimeError('Not implemented in base class')
 
     def __del__(self):
-        pass
+        try:
+            self.modbus.ser.close()
+        except AttributeError:
+            pass
 
 
 class Binder_MKFT115_MB1(Binder):
@@ -143,6 +146,15 @@ class Binder_MKFT115_MB1(Binder):
         mode = self.STATE_MANUAL if manual else self.STATE_BASIC
         self.modbus.write_single_register(self.ADDR_MODE, mode)
 
+    def delete_prog(self, progno):
+        """Delete the program from the chamber
+N.B. progno is diplayed as progno+1 on the chamber"""
+        self.modbus.write_single_register(self.ADDR_PROG_NO, progno)
+        self.modbus.write_single_register(self.ADDR_PROG_TYPE, -1)
+        self.modbus.write_single_register(self.ADDR_PROG_SEG, -1)
+        self.modbus.write_single_register(self.ADDR_PROG_6, -1)
+        self._reset()
+
     def get_state(self):
         """Read state from chamber"""
         resp = self.modbus.read_holding_registers(self.ADDR_MODE)[0]
@@ -185,6 +197,8 @@ returns (seg_temp, seg_humid)
         anticond_prev = chamberprog.anticond
         cycle_start = None
         cycle_ind = 0 if len(chamberprog.cycles) > 0 else None
+        numrepeat = -1  # not in cycle
+        hseg = None
         for i, seg in enumerate(chamberprog.segments):
             dur = seg['duration']
             temp_end = seg.get('temperature', None)
@@ -196,41 +210,40 @@ returns (seg_temp, seg_humid)
             operc = self.OP_ANTICOND if anticond else 0
             tseg = Binder_MKFT115_MB1.Segment(
                 temp_prev, dur, operc=operc)
+            if humid_prev is not None:
+                humid_end = seg.get('humidity', None)
+                if humid_end is None:
+                    humid_end = humid_prev
+                hseg = Binder_MKFT115_MB1.Segment(humid_prev, dur)
             # check for cycle start
             if(cycle_ind is not None and
                seg is chamberprog.cycles[cycle_ind][0]):
                 assert cycle_start is None, "Nested cycles"
                 cycle_start = i
+                numrepeat = chamberprog.cycles[cycle_ind][1]
+            # if out of cycle or at least 1 passage, append segments
+            if numrepeat != 0:
+                seg_temp.append(tseg)
+                temp_prev = temp_end
+                anticond_prev = anticond
+                if humid_prev is not None:
+                    seg_humid.append(hseg)
+                    humid_prev = humid_end
             # check for cycle end
             if(cycle_ind is not None and
                seg is chamberprog.cycles[cycle_ind][2]):
                 assert cycle_start is not None, "Cycle end while not in cycle"
-                numrepeat = chamberprog.cycles[cycle_ind][1]
                 if numrepeat > 0:
                     tseg.numjump = numrepeat - 1
                     tseg.segjump = cycle_start
-                else:  # discard zero-repeat cycles
-                    seg_temp = seg_temp[:cycle_start]
                     if humid_prev is not None:
-                        seg_humid = seg_humid[:cycle_start]
+                        hseg.numjump = numrepeat - 1
+                        hseg.segjump = cycle_start
+                numrepeat = -1
                 cycle_start = None
                 cycle_ind += 1
                 if len(chamberprog.cycles) == cycle_ind:
                     cycle_ind = None
-                if numrepeat == 0:
-                    continue
-            seg_temp.append(tseg)
-            temp_prev = temp_end
-            anticond_prev = anticond
-            if humid_prev is not None:
-                humid_end = seg.get('humidity', None)
-                if humid_end is None:
-                    humid_end = humid_prev
-                hseg = Binder_MKFT115_MB1.Segment(
-                    humid_prev, dur,
-                    numjump=tseg.numjump, segjump=tseg.segjump)
-                seg_humid.append(hseg)
-                humid_prev = humid_end
         # the last segment
         assert cycle_start is None, "Unfinished cycle"
         seg_temp.append(Binder_MKFT115_MB1.Segment(temp_prev, 1))
@@ -671,6 +684,6 @@ returns Binder instance or None in case of failure"""
                 b.__del__()
                 b = None
             continue
-        break
+        return b
     m.ser.close()
-    return b
+    return None
