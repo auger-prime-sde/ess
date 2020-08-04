@@ -9,7 +9,7 @@ import logging
 import serial
 import crcmod
 
-VERSION = '20200618'
+VERSION = '20200731'
 
 # constants
 READ_HOLDING_REGISTERS = 0x03
@@ -79,8 +79,10 @@ return data with CRC stripped
             raise ModbusError("Incomplete serial data write")
         if self.echo:
             resp = self.ser.read(nw)
-            assert resp == data, 'incorrect echo => %s <= %s' % (
-                data.hex(), resp.hex())
+            if resp != data:
+                self.logger.debug("Incorrect echo => %s <= %s",
+                                  data.hex(), resp.hex())
+                raise ModbusError("Incorrect echo")
         # early detection of Modbus error
         resp = self.ser.read(5)
         if len(resp) < 5:
@@ -89,7 +91,9 @@ return data with CRC stripped
         if resp[1] & 0x80 and len(resp) == 5:
             self.logger.debug("<=  %02X %02X %02X [%04X]" %
                               unpack(">BBBH", resp))
-            assert self.crc(resp) == 0, "Wrong CRC code"
+            if self.crc(resp) != 0:
+                self.logger.debug("Wrong CRC code")
+                raise ModbusError("Wrong CRC code")
             if resp[0] != data[0] or resp[1] & 0x7F != data[1]:
                 raise ModbusError("Malformed error response")
             raise ModbusError("Modbus error code", resp[2])
@@ -102,16 +106,13 @@ return data with CRC stripped
             "<=  %s %s [%s]",
             resp[:2].hex(), resp[2:-2].hex(), resp[-2:].hex())
         if self.ser.in_waiting > 0:
-            self.ser.read(self.ser.in_waiting)  # empty read buffer
+            # empty read buffer and log surplus data
+            self.logger.debug("surplus data: %s",
+                              self.ser.read(self.ser.in_waiting).hex())
             raise ModbusError("Surplus data in serial read")
-        if resp[1] & 0x80 and len(resp) == 5:
-            assert self.crc(resp) == 0, "Wrong CRC code"
-            if resp[0] != data[0] or resp[1] & 0x7F != data[1]:
-                raise ModbusError("Malformed error response")
-            raise ModbusError("Modbus error code", resp[2])
-        if len(resp) < n+2 or self.ser.in_waiting > 0:
-            raise ModbusError("Incomplete serial data read")
-        assert self.crc(resp) == 0, "Wrong CRC code"
+        if self.crc(resp) != 0:
+            self.logger.debug("Wrong CRC code")
+            raise ModbusError("Wrong CRC code")
         return resp[:-2]
 
     def read_holding_registers(self, reg_addr, reg_nb=1):

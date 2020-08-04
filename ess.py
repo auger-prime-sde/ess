@@ -46,7 +46,7 @@ from evaluator import Evaluator
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200619'
+VERSION = '20200731'
 
 
 class DetectUSB(object):
@@ -349,7 +349,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 found['power'] = found.pop('power_hmp')
             binderlist = ['chamber_' + btype for btype in BinderTypes.keys()
                           if 'chamber_' + btype in found]
-            if  len(binderlist) == 1:
+            if len(binderlist) == 1:
                 found['chamber'] = found.pop(binderlist[0])
             elif len(binderlist) > 1:
                 try:
@@ -706,7 +706,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         """Remove UUB from running system, might run in a separate thread"""
         if logger is not None:
             tid = syscall(SYS_gettid)
-            logger.debug('Removing UUB #%04d, thread id %d', uubnum, tid)
+            logger.debug('Removing UUB #%04d, name %s, tid %d',
+                         uubnum, threading.current_thread().name, tid)
         ind = self.uubnums.index(uubnum)
         self.uubnums[ind] = None
         if self.pc is not None:

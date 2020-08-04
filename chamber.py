@@ -52,7 +52,7 @@ q_resp - queue to send response"""
                     self.logger.error(
                         'Error starting chamber program. %s', e)
             if 'binder.stop_prog' in flags:
-                manual = flags.get['binder.stop_prog']
+                manual = flags['binder.stop_prog']
                 self.binder.stop_prog(manual)
             if 'meas.thp' in flags:
                 self.logger.debug('Chamber temperature & humidity measurement')
@@ -94,6 +94,7 @@ anticond - apply anticond contact by default"""
         self.title = title
         self.segments = []
         self.cycles = []  # (<first segment>, #repeat, <last segment>)
+        self.isCompact = False
 
     def _startcycle(self, currentseg, repeat):
         if self.cycles:
@@ -142,10 +143,89 @@ segment - dictionary
         if segment.get('endcycle', False):
             self._endcycle(nseg)
         self.segments.append(nseg)
+        self.isCompact = False
 
     def compact(self):
-        """Compact segments - TBD"""
-        pass
+        """Compact segments
+ - all cycles with nrepeat > 1
+ - all constant segment compactified"""
+        SEGKEYS = ('temperature', 'humidity', 'anticond')
+        if self.isCompact:
+            return
+        iseg = 0
+        ncycles = []
+        for cyc in self.cycles:
+            if cyc[1] > 1:
+                ncycles.append(cyc)
+                continue
+            if cyc[1] == 0:   # numrepeat = 0 => remove segments
+                while self.segments[iseg] is not cyc[0]:
+                    iseg += 1
+                del self.segments[iseg]
+                if cyc[0] is cyc[2]:
+                    continue
+                while self.segments[iseg] is not cyc[2]:
+                    del self.segments[iseg]
+                del self.segments[iseg]
+        self.cycles = ncycles
+        nsegments = []  # newly created list of segments
+        lastSeg = None  # pointer to last compactificable segment
+        prevSeg = {'temperature': self.temperature,
+                   'humidity': self.humidity,
+                   'anticond': self.anticond}
+        cycle_ind = 0 if len(ncycles) > 0 else None
+        """ actions: (Y mandatory, O optional)
+last+seg  := lastSeg['duration'] += seg['duration']
+appLast   := nsegments.append(lastSeg)
+appSeg    := nsegments.append(seg)
+seg2last  := lastSeg = seg
+none2last := lastSeg = None
+         STATE           |                    ACTIONS
+lastSeg  const start end | last+seg  appLast  appSeg  none2last  seg2last
+  None     F     x    x  |                       Y        O
+  None     T     x    T  |                       Y        O
+  None     T     x    F  |                                          Y
+
+ not None  F     x    x  |              Y        Y        Y
+ not None  T     T    T  |              Y        Y        Y
+ not None  T     T    F  |              Y                           Y
+
+ not None  T     F    T  |     Y        Y                 Y
+ not None  T     F    F  |     Y
+"""
+        for seg in self.segments:
+            isConst = all([seg[key] is None or prevSeg[key] == seg[key]
+                           for key in SEGKEYS])
+            if not isConst:
+                prevSeg = {key: seg[key] for key in SEGKEYS}
+            isStart = cycle_ind is not None and ncycles[cycle_ind][0] is seg
+            isEnd = cycle_ind is not None and ncycles[cycle_ind][2] is seg
+            if isEnd:
+                cycle_ind += 1
+                if len(ncycles) == cycle_ind:
+                    cycle_ind = None
+            # actions
+            if lastSeg is None:  # first group
+                if isConst and not isEnd:
+                    lastSeg = seg
+                else:
+                    nsegments.append(seg)
+            elif isConst and not isStart:  # third group
+                lastSeg['duration'] += seg['duration']
+                if isEnd:
+                    nsegments.append(lastSeg)
+                    lastSeg = None
+            else:  # second group
+                nsegments.append(lastSeg)
+                if isConst and not isEnd:
+                    lastSeg = seg
+                else:
+                    nsegments.append(seg)
+                    lastSeg = None
+        if lastSeg is not None:
+            nsegments.append(lastSeg)
+        self.segments = nsegments
+        self.isCompact = True
 
     def __str__(self):
         return "Chamber program dump TBD"
@@ -217,15 +297,19 @@ jsonobj - either json string or json file"""
         self.progno = jso.get('progno', 0)
         self.load = jso.get('load', False)
         temperature = jso.get('temperature', None)
+        gp = ESSprogram._points()  # global points
         if temperature is not None:
+            gp.time_temp.append((0, temperature))
             humidity = jso.get('humidity', None)
+            if humidity is not None:
+                gp.time_humid.append((0, humidity))
             anticond = jso.get('anticond', False)
             title = bytes(jso.get('title', ''), 'utf-8')
             self.prog = ChamberProg(temperature, humidity, anticond, title)
             self.prog.stop_manual = jso.get('stop_manual', None)
         else:
             self.prog = None
-        gp = ESSprogram._points()  # global points
+            self.load = False  # silently ignore loading non-existing program
         cp = None                  # points in cycle
         numrepeat = None           # number to repeat
         ap = gp                    # actual points
@@ -460,18 +544,27 @@ jsonobj - either json string or json file"""
             if segment.get('endcycle', False):
                 assert cp is not None, "End cycle while not in cycle"
                 binderseg['endcycle'] = True
+            if self.prog:
+                self.prog.add_segment(**binderseg)
+                if binderseg['temperature'] is not None:
+                    temperature = binderseg['temperature']
+                ap.time_temp.append((ap.t, temperature))
+                if binderseg['humidity'] is not None:
+                    humidity = binderseg['humidity']
+                if humidity is not None:
+                    ap.time_humid.append((ap.t, humidity))
+            if segment.get('endcycle', False):
                 for i in range(numrepeat):
                     gp.update(cp)
                     gp.t += cp.t
                 cp, numrepeat = None, None
                 ap = gp
-            if self.prog:
-                self.prog.add_segment(**binderseg)
         assert cp is None, "Unfinished cycle"
         self.progdur = gp.t
         self.time_temp = gp.time_temp
         self.time_humid = gp.time_humid
-        # append the last segments
+        if self.prog is not None:
+            self.prog.compact()
         self.meas_ramps = [(mptime, gp.mrs[mptime])
                            for mptime in sorted(gp.mrs)]
         self.meas_noises = [(mptime, gp.mns[mptime])

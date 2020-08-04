@@ -85,7 +85,7 @@ fplist - list of files/streams for output
 
             if 'orderUUB' in flags:
                 thr = threading.Thread(
-                    target=self.orderUUB,
+                    target=self.orderUUB, name='Thread-orderUUB',
                     args=(flags['orderUUB'], timestamp))
                 self.thrs.append(thr)
                 thr.start()
@@ -93,7 +93,7 @@ fplist - list of files/streams for output
             if 'removeUUB' in flags:
                 for uubnum in flags['removeUUB']:
                     thr = threading.Thread(
-                        target=self.removeUUB,
+                        target=self.removeUUB, name='Thread-removeUUB',
                         args=(uubnum, self.logger))
                     thr.start()
                     self.thrs.append(thr)
@@ -194,7 +194,8 @@ Suppose all UUBs are booted, switch them one by one to determine their order
 Return their order
 Raise AssertionError in a non-allowed situation"""
         tid = syscall(SYS_gettid)
-        self.logger.debug('Checkin UUB order, thread id %d', tid)
+        self.logger.debug('Checkin UUB order, name %s, tid %d',
+                          threading.current_thread().name, tid)
         uubset_all = set([uubnum for uubnum in self.uubnums
                           if uubnum is not None])
         maxind = max([i for i, uubnum in enumerate(self.uubnums)

@@ -11,13 +11,22 @@ from struct import unpack
 
 from modbus import Modbus, ModbusError, floats2words, words2floats
 
-VERSION = "20200630"
+VERSION = "20200724"
 
 
 class Binder(object):
     """Abstraction of Binder chamber"""
     mytype = None
     stop_manual = True  # manual state by default after stop
+    logger = None
+
+    def __init__(self, modbus):
+        assert isinstance(modbus, Modbus), "Modbus instance expected"
+        if not modbus.ser.isOpen():
+            if self.logger is not None:
+                self.logger.info('Reopenning serial')
+            modbus.ser.open()
+        self.modbus = modbus
 
     def load_prog(self, progno, chamberprog):
         """Load ChamberProg into the chamber"""
@@ -124,8 +133,8 @@ class Binder_MKFT115_MB1(Binder):
             self.segjump = kw.get('segjump', 0)
 
     def __init__(self, modbus):
-        assert isinstance(modbus, Modbus), "Modbus instance expected"
-        self.modbus = modbus
+        super(Binder_MKFT115_MB1, self).__init__(modbus)
+        self.logger = logging.getLogger('BinderMB1')
 
     def _reset(self):
         """Some initialization"""
@@ -150,9 +159,9 @@ class Binder_MKFT115_MB1(Binder):
         """Delete the program from the chamber
 N.B. progno is diplayed as progno+1 on the chamber"""
         self.modbus.write_single_register(self.ADDR_PROG_NO, progno)
-        self.modbus.write_single_register(self.ADDR_PROG_TYPE, -1)
-        self.modbus.write_single_register(self.ADDR_PROG_SEG, -1)
-        self.modbus.write_single_register(self.ADDR_PROG_6, -1)
+        self.modbus.write_single_register(self.ADDR_PROG_TYPE, 0xffff)
+        self.modbus.write_single_register(self.ADDR_PROG_SEG, 0xffff)
+        self.modbus.write_single_register(self.ADDR_PROG_6, 0xffff)
         self._reset()
 
     def get_state(self):
@@ -189,7 +198,7 @@ N.B. progno is diplayed as progno+1 on the chamber"""
     def convert_chamber2binder(self, chamberprog):
         """Convert ChamberProg into temp/humid segments
 returns (seg_temp, seg_humid)
-        seg_temp, seg_humid - list of BinderMB1Segment, humid may be None"""
+        seg_temp, seg_humid - list of BinderMB1Segment, humid may be []"""
         seg_temp = []
         seg_humid = []
         temp_prev = chamberprog.temperature
@@ -249,27 +258,25 @@ returns (seg_temp, seg_humid)
         seg_temp.append(Binder_MKFT115_MB1.Segment(temp_prev, 1))
         if humid_prev is not None:
             seg_humid.append(Binder_MKFT115_MB1.Segment(humid_prev, 1))
-        else:
-            seg_humid = None
         return (seg_temp, seg_humid)
 
     def load_prog(self, progno, chamberprog):
         """Load ChamberProg inside the chamber"""
         assert 0 <= progno < self.NPROG, "Incorrect Prog No"
-        nseg = len(chamberprog.segments)
-        assert nseg < 100, "Max. 100 segments allowed"
-        m = self.modbus
-        # clear existing program TBD
-        self._reset()
         seg_temp, seg_humid = self.convert_chamber2binder(chamberprog)
+        nseg = max(len(seg_temp), len(seg_humid))
+        assert nseg <= 100, "Max. 100 segments allowed"
         segments = [(self.P_TEMP, seg_temp)]
-        if seg_humid is not None:
+        if seg_humid:
             segments.append((self.P_HUMID, seg_humid))
 
+        m = self.modbus
+        self.delete_prog(progno)
+        self._reset()
         for segtype, segs in segments:
             m.write_single_register(self.ADDR_PROG_NO, progno)
             m.write_single_register(self.ADDR_PROG_TYPE, segtype)
-            m.write_single_register(self.ADDR_PROG_NSEG, nseg+1)
+            m.write_single_register(self.ADDR_PROG_NSEG, len(segs))
 
             for i, s in enumerate(iter(segs)):
                 m.write_single_register(self.ADDR_PROG_SEG, i)
@@ -302,7 +309,7 @@ class Binder_MKFT115_MB2(Binder):
     ADDR_PROGTIME_REM   = 0x10a8  # second, MSW, LSW
 
     ADDR_SET_TEMP       = 0x10b2  # RO float
-    ADDR_SET_HUMI       = 0x10b4  # RO float
+    ADDR_SET_HUMID      = 0x10b4  # RO float
     ADDR_SET_FAN        = 0x10b6  # RO float
     ADDR_CURR_TEMP      = 0x10d2  # float, like 0x10d0 & _PROCVAL_
     ADDR_CURR_HUMID     = 0x10d6  # float, like 0x10d4 & _PROCVAL_
@@ -402,7 +409,7 @@ kw - segment parametes:
                 bprog.last_temp = temp
             humid = kw.get('humidity', None)
             if humid is not None:
-                bprog.last_temp = humid
+                bprog.last_humid = humid
             anticond = kw.get('anticond', None)
             if anticond is None:
                 anticond = bprog.last_anticond
@@ -411,13 +418,15 @@ kw - segment parametes:
             self.operc = Binder_MKFT115_MB2.OP_ANTICOND if anticond else 0
             if not bprog.zHumid:
                 self.operc |= Binder_MKFT115_MB2.OP_HUMIDOFF
+            self.set_jumps()
+
+        def set_jumps(self, **kw):
             segjump = kw.get('segjump', 1)
             numjump = kw.get('numjump', 0)
             self.jumps = (segjump << 8) + numjump
 
     def __init__(self, modbus):
-        assert isinstance(modbus, Modbus), "Modbus instance expected"
-        self.modbus = modbus
+        super(Binder_MKFT115_MB2, self).__init__(modbus)
         self.logger = logging.getLogger('BinderMB2')
 
     def _pgm_ctrl(self, cmd):
@@ -560,6 +569,17 @@ Return title, list of dicts:
             operc |= self.OP_IDLEMODE
             self.modbus.write_single_register(self.ADDR_OPERC_MAN, operc)
 
+    def delete_prog(self, progno):
+        """Delete the program from the chamber
+N.B. progno is diplayed as progno+1 on the chamber"""
+        self.modbus.write_single_register(self.ADDR_PGM_PROGNO, progno)
+        self.modbus.write_single_register(self.ADDR_PGM_NSEG, self.NSEG)
+        status = self._pgm_ctrl(self.CMD_PGM_DELETE)
+        if status != 0:
+            msg = 'Error deleting prog %d, status %d' % (progno, status)
+            self.logger.error(msg)
+            raise ModbusError(msg)
+
     def get_temp(self):
         return self.modbus.read_float(self.ADDR_CURR_TEMP)
 
@@ -582,20 +602,16 @@ return temperature, humidity"""
     def load_prog(self, progno, chamberprog):
         """Load ChamberProg inside the chamber"""
         assert 0 <= progno < self.NPROG, "Incorrect Prog No"
-        nseg = len(chamberprog.segments)
-        assert nseg < self.NSEG, "Max. %d segments allowed" % self.NSEG
-        self.logger.info('Loading program %d, %d segments', progno, nseg)
         segments = self.convert_chamber2binder(chamberprog)
+        nseg = len(segments)
+        assert nseg <= self.NSEG, "Max. %d segments allowed" % self.NSEG
+        self.logger.info('Loading program %d, %d Binder segments',
+                         progno, nseg)
+
+        self.delete_prog(progno)  # may raise ModbusError
         m = self.modbus
         m.write_single_register(self.ADDR_PGM_PROGNO, progno)
-        m.write_single_register(self.ADDR_PGM_NSEG, self.NSEG)
-        status = self._pgm_ctrl(self.CMD_PGM_DELETE)
-        if status != 0:
-            self.logger.error('Error deleting prog %d, status %d',
-                              progno, status)
-            return
-        m.write_single_register(self.ADDR_PGM_PROGNO, progno)
-        m.write_single_register(self.ADDR_PGM_NSEG, nseg+1)
+        m.write_single_register(self.ADDR_PGM_NSEG, nseg)
         self._write_pgm_title(chamberprog.title)
         for i, seg in enumerate(segments):
             m.write_int_LE(
@@ -622,8 +638,9 @@ returns list of BinderMB2Segments"""
         segments = []
         cycle_start = None
         cycle_ind = 0 if len(chamberprog.cycles) > 0 else None
+        numrepeat = -1  # not in cycle
         for i, seg in enumerate(chamberprog.segments):
-            duration = seg['duration']
+            dur = seg['duration']
             kw = {key: seg[key]
                   for key in ('temperature', 'humidity', 'anticond')
                   if key in seg}
@@ -632,24 +649,22 @@ returns list of BinderMB2Segments"""
                seg is chamberprog.cycles[cycle_ind][0]):
                 assert cycle_start is None, "Nested cycles"
                 cycle_start = i
+                numrepeat = chamberprog.cycles[cycle_ind][1]
+            # if out of cycle or at least 1 passage, append segments
+            if numrepeat != 0:
+                bseg = self.Segment(dur, bprog, **kw)
+                segments.append(bseg)
             # check for cycle end
             if(cycle_ind is not None and
                seg is chamberprog.cycles[cycle_ind][2]):
                 assert cycle_start is not None, "Cycle end while not in cycle"
-                numrepeat = chamberprog.cycles[cycle_ind][1]
                 if numrepeat > 1:
-                    kw['numjump'] = numrepeat-1
-                    kw['segjump'] = cycle_start+1
-                # for numrepeat == 1 do nothing extra
-                elif numrepeat == 0:  # discard zero-repeat cycles
-                    segments = segments[:cycle_start]
+                    bseg.set_jumps(numjump=numrepeat-1, segjump=cycle_start+1)
+                numrepeat = -1
                 cycle_start = None
                 cycle_ind += 1
                 if len(chamberprog.cycles) == cycle_ind:
                     cycle_ind = None
-                if numrepeat == 0:
-                    continue
-            segments.append(self.Segment(duration, bprog, **kw))
         # the last segment
         assert cycle_start is None, "Unfinished cycle"
         segments.append(self.Segment(1, bprog))
@@ -662,28 +677,36 @@ BinderTypes = {bcls.mytype: bcls for bcls in (
     )}
 
 
-def getBinder(port):
+def getBinder(port, echo=None):
     """Try to open Modbus(port) and determine Binder instrument
+echo - open modbus with echo True/False; if None, try both
 returns Binder instance or None in case of failure"""
     logger = logging.getLogger('getBinder')
-    try:
-        m = Modbus(port)
-        logger.info('Opening serial %s', repr(m.ser))
-    except (FileNotFoundError, ModbusError):
-        logger.exception('Opening serial port failed')
-        m.ser.close()
-        return None
+    if echo is None:
+        echos = (False, True)
+    else:
+        echos = (bool(echo), )
 
     b = None
-    for bcls in BinderTypes.values():
+    for echo in echos:
         try:
-            b = bcls(m)
-            b.get_state()
-        except ModbusError:
-            if b is not None:
-                b.__del__()
-                b = None
-            continue
-        return b
-    m.ser.close()
+            m = Modbus(port, echo=echo)
+            logger.info('Using serial %s with echo %s', repr(m.ser), echo)
+        except (FileNotFoundError, ModbusError):
+            logger.exception('Opening serial port failed')
+            m.ser.close()
+            return None
+        for btype, bcls in BinderTypes.items():
+            try:
+                logger.debug('Trying chamber %s', btype)
+                b = bcls(m)
+                b.get_state()
+            except ModbusError:
+                logger.debug('failed')
+                if b is not None:
+                    b.__del__()
+                    b = None
+            else:
+                logger.debug('chamber is %s', btype)
+                return b
     return None
