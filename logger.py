@@ -428,7 +428,7 @@ q_resp - a queue with results to save
 timeout - interval for collecting data
 elogger - exception logger
 """
-        super(DataLogger, self).__init__()
+        super(DataLogger, self).__init__(name='Thread-DataLogger')
         self.q_resp = q_resp
         self.timeout = timeout
         self.elogger = elogger
@@ -481,7 +481,8 @@ if uubnum provided, the handler is removed when uubnum is removed"""
     def run(self):
         logger = logging.getLogger('logger')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         last_ts = datetime(2016, 1, 1)  # minus infinity
         logger.info('starting run()')
         while not self.stop.is_set() or self.records:
@@ -614,7 +615,7 @@ class QLogHandler(object):
 class QueDispatch(threading.Thread):
     """A simple dispatcher between queues with None as a sentinel"""
     def __init__(self, q_in, q_out, zLog=False, logname='QueDispatch'):
-        super(QueDispatch, self).__init__()
+        super(QueDispatch, self).__init__(name='Thread-QueDispatch')
         self.q_in, self.q_out = q_in, q_out
         self.zLog = zLog
         self.logger = logging.getLogger(logname)
@@ -622,7 +623,7 @@ class QueDispatch(threading.Thread):
     def run(self):
         tid = syscall(SYS_gettid)
         self.logger.info('Starting QueDispatch, name %s, tid %d',
-                         self.name, tid)
+                         threading.current_thread().name, tid)
         while True:
             item = self.q_in.get()
             if item is None:
@@ -639,12 +640,13 @@ Consume items from queue and display them"""
     def __init__(self, timer, q):
         self.timer, self.q = timer, q
         self.timeout = 0.5
-        super(QueView, self).__init__()
+        super(QueView, self).__init__(name='Thread-QueView')
 
     def run(self):
         logger = logging.getLogger('QueView')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         while True:
             if self.timer.stop.is_set():
                 logger.info('Timer stopped, stopping QueView')
@@ -662,12 +664,13 @@ Consume items from queue in, put them to queue out and display them"""
     def __init__(self, timer, q_in, q_out):
         self.timer, self.q_in, self.q_out = timer, q_in, q_out
         self.timeout = 0.5
-        super(QuePipeView, self).__init__()
+        super(QuePipeView, self).__init__(name='Thread-QuePipeView')
 
     def run(self):
         logger = logging.getLogger('QuePipeView')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         while True:
             if self.timer.stop.is_set():
                 logger.info('Timer stopped, stopping QueView')

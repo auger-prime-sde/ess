@@ -38,7 +38,7 @@ ctx - context object (i.e. ESS), used keys:
         critical_error - function to call to abort the test
 fplist - list of files/streams for output
 """
-        super(Evaluator, self).__init__()
+        super(Evaluator, self).__init__(name='Thread-Evaluator')
         self.timer = ctx.timer
         self.uubnums = ctx.uubnums
         self.dbISN = ctx.internalSNs
@@ -56,7 +56,8 @@ fplist - list of files/streams for output
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():

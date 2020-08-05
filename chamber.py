@@ -23,7 +23,7 @@ class Chamber(threading.Thread):
 binder - instance of Binder derivative
 timer - instance of Timer
 q_resp - queue to send response"""
-        super(Chamber, self).__init__()
+        super(Chamber, self).__init__(name='Thread-Chamber')
         assert isinstance(binder, Binder)
         self.binder = binder
         self.timer = timer
@@ -33,7 +33,8 @@ q_resp - queue to send response"""
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -284,7 +285,7 @@ class ESSprogram(threading.Thread):
     def __init__(self, jsonobj, timer, q_resp, essprog_macros=None):
         """Constructor
 jsonobj - either json string or json file"""
-        super(ESSprogram, self).__init__()
+        super(ESSprogram, self).__init__(name='Thread-ESSprogram')
         self.timer, self.q_resp = timer, q_resp
         self.starttime = self.stoptime = None
         if hasattr(jsonobj, 'read'):
@@ -608,7 +609,8 @@ return polyline approximation at the time t"""
     def run(self):
         logger = logging.getLogger('ESSprogram')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         if self.load:
             self.timer.add_immediate(
                 'binder.load_prog',

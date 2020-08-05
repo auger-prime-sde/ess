@@ -236,7 +236,7 @@ uubnum - UUB number
 timer - instance of timer
 q_resp - queue to send response
 """
-        super(UUBtsc, self).__init__()
+        super(UUBtsc, self).__init__(name='Thread-UUBtsc%04d' % uubnum)
         self.uubnum = uubnum
         self.timer = timer
         self.q_resp = q_resp
@@ -251,7 +251,8 @@ q_resp - queue to send response
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         self.logger.debug('Waiting for UUB being live')
         while self.internalSN is None:
             s = self.readSerialNum(self.TIMEOUT, self.TRIALS)
@@ -407,7 +408,7 @@ trigdelay - instance of TrigDelay
 trigger - bound method for trigger
 gener_param - generator of measurement paramters (see gener_funcparams)
 """
-        super(UUBdaq, self).__init__()
+        super(UUBdaq, self).__init__(name='Thread-UUBdaq')
         self.timer, self.ulisten = timer, ulisten
         self.q_resp, self.q_ndata = q_resp, q_ndata
         self.afg, self.splitmode, self.spliton = afg, splitmode, spliton
@@ -423,7 +424,8 @@ gener_param - generator of measurement paramters (see gener_funcparams)
     def run(self):
         logger = logging.getLogger('UUBdaq')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         # stop and clear ulisten
         self.ulisten.uubnums = set()
         self.ulisten.clear = True
@@ -518,7 +520,7 @@ class UUBlisten(threading.Thread):
     def __init__(self, q_ndata):
         """Constructor.
 q_ndata - a queue to send received data (NetscopeData instance)"""
-        super(UUBlisten, self).__init__()
+        super(UUBlisten, self).__init__(name='Thread-UUBlisten')
         self.q_ndata = q_ndata
         self.stop = threading.Event()
         self.done = threading.Event()
@@ -541,7 +543,8 @@ q_ndata - a queue to send received data (NetscopeData instance)"""
     def run(self):
         logger = logging.getLogger('UUBlisten')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((self.laddr, self.port))
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.RCVBUF)
@@ -732,7 +735,7 @@ class UUBtelnet(threading.Thread):
     """Class making telnet to UUBs and run netscope program"""
 
     def __init__(self, timer, uubnums, dloadfn=None):
-        super(UUBtelnet, self).__init__()
+        super(UUBtelnet, self).__init__(name='Thread-UUBtelnet')
         self.timer = timer
         self.uubnums = list(uubnums)
         self.telnets = [None] * len(self.uubnums)
@@ -901,7 +904,8 @@ return list of tuples with failed UUB/file or None"""
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():

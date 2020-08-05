@@ -81,7 +81,7 @@ class Timer(threading.Thread):
               'one': one_tick}
 
     def __init__(self, basetime):
-        super(Timer, self).__init__()
+        super(Timer, self).__init__(name='Thread-Timer')
         self.basetime = basetime
         self._clear()
         self.stop = threading.Event()
@@ -119,7 +119,8 @@ offset - an offset to basetime (seconds)
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         zTimerStop = False
         while not self.stop.is_set():
             # update self.tickers
@@ -308,12 +309,13 @@ class EvtDisp(threading.Thread):
     """Display event in the timer"""
     def __init__(self, timer):
         self.timer = timer
-        super(EvtDisp, self).__init__()
+        super(EvtDisp, self).__init__(name='Thread-EvtDisp')
 
     def run(self):
         logger = logging.getLogger('EvtDisp')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d', self.name, tid)
+        logger.debug('run start, name %s, tid %d',
+                     threading.current_thread().name, tid)
         timestamp = None
         while True:
             self.timer.evt.wait()

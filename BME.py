@@ -82,7 +82,7 @@ timer - instance of timer
 q_resp - queue to send response
 flags - 1: use RTC -or- 2: sync Arduino time
 """
-        super(BME, self).__init__()
+        super(BME, self).__init__(name='Thread-BME')
         self.timer = timer
         self.q_resp = q_resp
         # check that we are connected to BME
@@ -175,7 +175,8 @@ flags - 1: use RTC -or- 2: sync Arduino time
             self.logger.error('timer or q_resp instance not provided, exiting')
             return
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -344,7 +345,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
             raise SerialReadTimeout
         self.ser = s
         self._lock = threading.Lock()
-        super(PowerControl, self).__init__()
+        super(PowerControl, self).__init__(name='Thread-PowerCtrl')
         self.uubnums2del = []
         self.splitterMode = splitmode
         self.atimestamp = None  # time of the last zeroTime
@@ -602,13 +603,13 @@ May raise IndexError if appropriate record does not exist"""
             self.logger.warning(
                 'ramp voltage for UUB %04d less than minimal voltage',
                 uubnum)
-            volt = voltmin
+            raise IndexError
         voltmax = max(bv['volt_start'], bv['volt_end'])
         if volt > voltmax:
             self.logger.warning(
                 'ramp voltage for UUB %04d bigger than maximal voltage',
                 uubnum)
-            volt = voltmax
+            raise IndexError
         return volt
 
     def _boottime(self, uubnum):
@@ -627,7 +628,8 @@ May raise IndexError if appropriate record does not exist"""
         """Function running in a separate thread to read current zone
  transitions periodically"""
         tid = syscall(SYS_gettid)
-        self.logger.debug('readZone: name %s, tid %d', self.name, tid)
+        self.logger.debug('readZone: name %s, tid %d',
+                          threading.current_thread().name, tid)
         tout = self.rz_tout
         while tout:
             self.curzones.extend(self._readZones())
@@ -640,8 +642,10 @@ May raise IndexError if appropriate record does not exist"""
             self.logger.error('timer or q_resp instance not provided, exiting')
             return
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
-        self.rz_thread = threading.Thread(target=self.readZone)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
+        self.rz_thread = threading.Thread(
+            target=self.readZone, name='Thread-readZone')
         self.rz_thread.start()
         while True:
             self.timer.evt.wait()

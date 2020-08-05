@@ -30,7 +30,7 @@ class FLIR(threading.Thread):
 
     def __init__(self, port, timer, q_att, datadir, uubnum=0, imtype=None):
         """Detect baudrate, set termecho to off and switch baudrate to max"""
-        super(FLIR, self).__init__()
+        super(FLIR, self).__init__(name='Thread-FLIR')
         self.timer,  self.q_att, self.datadir = timer, q_att, datadir
         self.uubnum = uubnum
         self.logger = logging.getLogger('FLIR')
@@ -157,7 +157,8 @@ return the data block"""
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         snapshots = {}   # images stored during the session
         downloaded = []
         while True:

@@ -31,7 +31,7 @@ Developed for Rohde & Schwarz MHP4040 and for TTi CPX400SP."""
 port - serial port to connect
 kwargs - parameters for output voltage/current limit configuration
 """
-        super(PowerSupply, self).__init__()
+        super(PowerSupply, self).__init__(name='Thread-PowerSupply')
         self.timer = timer
         self.q_resp = q_resp
         logger = logging.getLogger('PowerSup')
@@ -86,7 +86,8 @@ kwargs - parameters for output voltage/current limit configuration
 
     def run(self):
         tid = syscall(SYS_gettid)
-        self.logger.debug('run start, name %s, tid %d', self.name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         while True:
             self.timer.evt.wait()
             if self.timer.stop.is_set():
@@ -200,7 +201,8 @@ add ts_start, ts_end, tdelta, duration, nstep to volt_ramp"""
 volt_ramp - dict with keys: volt_start, volt_end, volt_step, time_step
 ts_start - start time (now() if None)"""
         tid = syscall(SYS_gettid)
-        self.logger.debug('voltageRamp: name %s, tid %d', self.name, tid)
+        self.logger.debug('voltageRamp: name %s, tid %d',
+                          threading.current_thread().name, tid)
         assert self.uubch is not None, "Channel for voltage ramp not provided"
         ch = self.uubch
         if any([key not in volt_ramp
