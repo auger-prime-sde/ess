@@ -43,6 +43,7 @@ log - if True, write log recores"""
         assert ctx.phase in DBconnector.PHASES
         self.dbinfo = dbinfo
         self.logger = logging.getLogger('DBcon')
+        self.evaluators = None
         if log:
             dbfn = (ctx.datadir + 'db-%s' % ctx.phase +
                     ctx.basetime.strftime('-%Y%m%d%H%M.json'))
@@ -74,6 +75,8 @@ log - if True, write log recores"""
         if self.fp is not None:
             self._write_measrecords()
             self.process_qatt()
+            if self.evaluators is not None:
+                self.write_summary()
             self.fp.close()
             self.fp = None
 
@@ -93,6 +96,21 @@ log - if True, write log recores"""
             self.fp.write('\n')
         self.measpoint = DBconnector.EMPTY_MP.copy()
         self.measrecs = []
+
+    def write_summary(self):
+        """Generate summary records
+evaluators: dict{ typ: eval} -> calls eval(uubnum) to get summary"""
+        self.logger.info('writing summary')
+        uubnums = [uubnum for uubnum in self.ctx.uubnums
+                   if uubnum is not None and uubnum != VIRGINUUBNUM]
+        for uubnum in uubnums:
+            d = {'typ': 'summary',
+                 'uubnum': uubnum}
+            for typ, eval in self.evaluators.items():
+                d[typ] = eval.summary(uubnum)
+            json.dump(d, self.fp)
+            self.fp.write('\n')
+        self.evaluators = None
 
     def attach(self, name, filename, description=None, uubs=None,
                run=True, fieldname=None):
@@ -180,6 +198,12 @@ return True/False if successful or failure"""
             else:
                 self.logger.error(
                     'Pre-commit: q_att not empty but fp already closed')
+        if self.evaluators is not None:
+            if self.fp is not None:
+                self.write_summary()
+            else:
+                self.logger.error(
+                    'Summary not written and fp already closed')
         self.close()  # in case not closed yet
         self.logger.debug('Commiting to DB')
         self._boundary()

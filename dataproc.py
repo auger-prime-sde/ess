@@ -728,6 +728,7 @@ def make_DPfilter_ramp(uubnums):
 Check that for all UUBs and channels, all ramps are correct
 log failed or missing labels.
 res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
+    # same as in EvalRamp
     OK = 0
     MISSING = 0x4000
     FAILED = 0x2000

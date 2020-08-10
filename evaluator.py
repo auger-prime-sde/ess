@@ -15,8 +15,78 @@ except ImportError:
     zmq = None
 from threadid import syscall, SYS_gettid
 from UUB import VIRGINUUBNUM, uubnum2ip, isLive
+from dataproc import item2label
 
 ZMQPORT = 5555
+
+
+class EvalBase(object):
+    """Base class for a particular evaluator"""
+    # items of summary record
+    ITEMS = ('pon', 'ramp', 'noise', 'pulse', 'freq', 'flir')
+
+    def __init__(self, typ, uubnums):
+        self.typ = typ
+        self.logger = logging.getLogger('Eval%s' % typ.capitalize())
+        self.uubnums = uubnums
+
+    def summary(self, uubnum):
+        """return JSON string result for particular UUB"""
+        # default answer for base class
+        return 'notapplicable'
+
+    def write_rec(self, d):
+        """LogHandler.write_rec implentation"""
+        raise RuntimeError('Not implemented in base class')
+
+    def stop(self):
+        pass
+
+
+class EvalRamp(EvalBase):
+    """Eval ADC ramps"""
+    # same as in make_DPfilter_ramp
+    OK = 0
+    MISSING = 0x4000
+    FAILED = 0x2000
+
+    def __init__(self, uubnums, **kwargs):
+        super(EvalRamp, self).__init__('ramp', uubnums)
+        missing = kwargs.get('missing', None)
+        self.missing = 2 if missing is None else int(missing)
+        self.npoints = 0
+        self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
+                      for uubnum in uubnums}
+        self.logger.debug('creating instance with missing = %d', missing)
+
+    def write_rec(self, d):
+        """Count ADC ramp results, expects DPfilter_ramp applied"""
+        if 'meas_ramp' not in d:
+            return
+        for uubnum in self.uubnums:
+            label = item2label(typ='rampdb', uubnum=uubnum)
+            rampres = d[label]
+            stat = self.stats[uubnum]
+            if rampres == self.OK:
+                stat['ok'] += 1
+            elif rampres == self.MISSING:
+                stat['missing'] += 1
+            elif rampres & self.FAILED:
+                stat['failed'] += 1
+            else:
+                self.logger.error(
+                    'Wrong ADC ramp result 0x%04x for uubnum %04d',
+                    rampres, uubnum)
+        self.npoints += 1
+
+    def summary(self, uubnum):
+        stat = self.stats[uubnum]
+        if stat['failed'] > 0:
+            return 'failed'
+        elif stat['ok'] >= self.npoints - self.missing:
+            return 'passed'
+        else:
+            return 'error'
 
 
 class Evaluator(threading.Thread):

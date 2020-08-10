@@ -42,7 +42,7 @@ from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
-from evaluator import Evaluator
+from evaluator import Evaluator, EvalBase, EvalRamp
 from threadid import syscall, SYS_gettid
 from console import Console
 
@@ -647,6 +647,21 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.dl.add_handler(LogHandlerVoltramp(fn, self.basetime,
                                                    luubnums))
 
+        # evaluators
+        if 'evaluators' in d:
+            evaluators = {}
+            # ramp
+            param = d['evaluators'].get('ramp', False)
+            if param is not False:
+                evaluators['ramp'] = EvalRamp(luubnums, missing=param)
+                if dpfilter_ramp is None:
+                    dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
+                self.dl.add_handler(evaluators['ramp'], (dpfilter_ramp, ))
+            else:
+                evaluators['ramp'] = EvalBase('ramp', luubnums)
+            # <other evaluators TBD>
+            self.dbcon.evaluators = evaluators
+            
         # database
         if 'db' in d['dataloggers']:
             flabels = d['dataloggers']['db'].get('flabels', None)
