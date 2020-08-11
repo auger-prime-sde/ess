@@ -27,7 +27,8 @@ class EvalBase(object):
 
     def __init__(self, typ, uubnums):
         self.typ = typ
-        self.logger = logging.getLogger('Eval%s' % typ.capitalize())
+        self.label = 'Eval%s' % typ.capitalize()
+        self.logger = logging.getLogger(self.label)
         self.uubnums = uubnums
 
     def summary(self, uubnum):
@@ -77,6 +78,75 @@ class EvalRamp(EvalBase):
                 self.logger.error(
                     'Wrong ADC ramp result 0x%04x for uubnum %04d',
                     rampres, uubnum)
+        self.npoints += 1
+
+    def summary(self, uubnum):
+        stat = self.stats[uubnum]
+        if stat['failed'] > 0:
+            return 'failed'
+        elif stat['ok'] >= self.npoints - self.missing:
+            return 'passed'
+        else:
+            return 'error'
+
+
+class EvalNoise(EvalBase):
+    """Eval noise in ADC channels
+missing - number of missing points to be still accepted as passed
+chanoise - list of tuples (noise_min, noise_max, <channels>)
+  if noise_min/max is None, test passed by default;
+  missing channels passes by default
+ - if any channel fails => UUB fails
+ - elif any channel missing => missing point
+ - else => passes
+"""
+    def __init__(self, uubnums, **kwargs):
+        super(EvalNoise, self).__init__('noise', uubnums)
+        missing = kwargs.get('missing', None)
+        self.missing = 2 if missing is None else int(missing)
+        assert 'chanoise' in kwargs, 'chanoise is mandatory'
+        limits = {chan: (None, None) for chan in range(1, 11)}
+        for noise_min, noise_max, *chans in kwargs['chanoise']:
+            assert isinstance(noise_min, (type(None), int, float))
+            assert isinstance(noise_max, (type(None), int, float))
+            assert all([chan in range(1, 11) for chan in chans])
+            for chan in chans:
+                limits[chan] = (noise_min, noise_max)
+        # remove None, None limits
+        self.limits = {chan: minmax for chan, minmax in limits.items()
+                       if minmax != (None, None)}
+        self.npoints = 0
+        self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
+                      for uubnum in uubnums}
+        self.logger.debug('creating instance with missing = %d', missing)
+
+    def write_rec(self, d):
+        """Count noise results, expects noise_stat filter applied"""
+        if 'meas_noise' not in d:
+            return
+        for uubnum in self.uubnums:
+            item = {'functype': 'N', 'typ': 'noisemean', 'uubnum': uubnum}
+            passed = True
+            missing = False
+            for chan, minmax in self.limits.items():
+                label = item2label(item, chan=chan)
+                if label in d:
+                    val = d[label]
+                    if minmax[0] is not None:
+                        passed &= minmax[0] <= val
+                    if minmax[1] is not None:
+                        passed &= val <= minmax[1]
+                    if not passed:  # skip rest of for(chan, minmax)
+                        break
+                else:
+                    missing = True
+            stat = self.stats[uubnum]  # shortcut
+            if not passed:
+                stat['failed'] += 1
+            elif missing:
+                stat['missing'] += 1
+            else:
+                stat['ok'] += 1
         self.npoints += 1
 
     def summary(self, uubnum):

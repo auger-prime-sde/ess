@@ -42,11 +42,11 @@ from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
-from evaluator import Evaluator, EvalBase, EvalRamp
+from evaluator import Evaluator, EvalBase, EvalRamp, EvalNoise
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200731'
+VERSION = '20200810'
 
 
 class DetectUSB(object):
@@ -238,7 +238,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.splitgain = None
         self.starttime = None
         self.essprog = None
-        self.db = None
         self.grafana = None
         self.ed = None
         self.abort = False
@@ -659,6 +658,17 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 self.dl.add_handler(evaluators['ramp'], (dpfilter_ramp, ))
             else:
                 evaluators['ramp'] = EvalBase('ramp', luubnums)
+            # noise
+            if 'noise' in d['evaluators']:
+                evaluators['noise'] = EvalNoise(
+                    luubnums, **d['evaluators']['noise'])
+                if dpfilter_stat_noise is None:
+                    dpfilter_stat_noise = (make_DPfilter_stat('noise'),
+                                           'stat_noise')
+                self.dl.add_handler(evaluators['noise'],
+                                    (dpfilter_stat_noise, ))
+            else:
+                evaluators['noise'] = EvalBase('noise', luubnums)
             # <other evaluators TBD>
             self.dbcon.evaluators = evaluators
             
