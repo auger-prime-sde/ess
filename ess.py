@@ -42,7 +42,8 @@ from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
-from evaluator import Evaluator, EvalBase, EvalRamp, EvalNoise
+from evaluator import Evaluator
+from evaluator import EvalBase, EvalRamp, EvalNoise, EvalLinear, EvalVoltramp
 from threadid import syscall, SYS_gettid
 from console import Console
 
@@ -669,33 +670,48 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                                     (dpfilter_stat_noise, ))
             else:
                 evaluators['noise'] = EvalBase('noise', luubnums)
+            # pulse/linear
+            if 'pulse' in d['evaluators']:
+                evaluators['pulse'] = EvalLinear(
+                    luubnums, **d['evaluators']['pulse'])
+                if dpfilter_linear is None:
+                    dpfilter_linear = (make_DPfilter_linear(
+                        self.notcalc, self.splitgain), 'linear')
+                self.dl.add_handler(evaluators['pulse'],
+                                    (dpfilter_linear, ))
+            else:
+                evaluators['pulse'] = EvalBase('pulse', luubnums)
+            # power on/off with voltage ramp
+            if 'pon' in d['evaluators']:
+                evaluators['pon'] = EvalVoltramp(
+                    luubnums, **d['evaluators']['pon'])
+                self.dl.add_handler(evaluators['pon'])
+            else:
+                evaluators['pon'] = EvalBase('pon', luubnums)
             # <other evaluators TBD>
             self.dbcon.evaluators = evaluators
-            
+
         # database
         if 'db' in d['dataloggers']:
             flabels = d['dataloggers']['db'].get('flabels', None)
             for item in d['dataloggers']['db']['logitems']:
+                lh = self.dbcon.getLogHandler(item, flabels=flabels)
                 if item == 'ramp':
                     if dpfilter_ramp is None:
                         dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
-                    self.dl.add_handler(self.dbcon.getLogHandler(item),
-                                        (dpfilter_ramp, ))
+                    self.dl.add_handler(lh, (dpfilter_ramp, ))
                 elif item == 'cutoff':
                     if dpfilter_linear is None:
                         dpfilter_linear = (make_DPfilter_linear(
                             self.notcalc, self.splitgain), 'linear')
                     if dpfilter_cutoff is None:
                         dpfilter_cutoff = (make_DPfilter_cutoff(), 'cutoff')
-                    self.dl.add_handler(self.dbcon.getLogHandler(item),
-                                        (dpfilter_linear, dpfilter_cutoff))
+                    self.dl.add_handler(lh, (dpfilter_linear, dpfilter_cutoff))
                 elif item in ('gain', 'freqgain'):
                     if dpfilter_linear is None:
                         dpfilter_linear = (make_DPfilter_linear(
                             self.notcalc, self.splitgain), 'linear')
-                    self.dl.add_handler(
-                        self.dbcon.getLogHandler(item, flabels=flabels),
-                        (dpfilter_linear, ))
+                    self.dl.add_handler(lh, (dpfilter_linear, ))
                 elif item == 'noisestat':
                     if dpfilter_stat_pede is None:
                         dpfilter_stat_pede = (make_DPfilter_stat('pede'),
@@ -703,11 +719,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     if dpfilter_stat_noise is None:
                         dpfilter_stat_noise = (make_DPfilter_stat('noise'),
                                                'stat_noise')
-                    self.dl.add_handler(self.dbcon.getLogHandler(item),
-                                        (dpfilter_stat_pede,
-                                         dpfilter_stat_noise))
+                    self.dl.add_handler(
+                        lh, (dpfilter_stat_pede, dpfilter_stat_noise))
                 else:
-                    self.dl.add_handler(self.dbcon.getLogHandler(item))
+                    self.dl.add_handler(lh)
 
         # grafana: filters must be already created before
         if 'grafana' in d['dataloggers']:

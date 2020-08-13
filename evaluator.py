@@ -30,11 +30,20 @@ class EvalBase(object):
         self.label = 'Eval%s' % typ.capitalize()
         self.logger = logging.getLogger(self.label)
         self.uubnums = uubnums
+        self.stats = None
 
     def summary(self, uubnum):
         """return JSON string result for particular UUB"""
         # default answer for base class
-        return 'notapplicable'
+        if self.stats is None:
+            return 'notapplicable'
+        stat = self.stats[uubnum]
+        if stat['failed'] > 0:
+            return 'failed'
+        elif stat['ok'] >= self.npoints - self.missing:
+            return 'passed'
+        else:
+            return 'error'
 
     def write_rec(self, d):
         """LogHandler.write_rec implentation"""
@@ -79,15 +88,6 @@ class EvalRamp(EvalBase):
                     'Wrong ADC ramp result 0x%04x for uubnum %04d',
                     rampres, uubnum)
         self.npoints += 1
-
-    def summary(self, uubnum):
-        stat = self.stats[uubnum]
-        if stat['failed'] > 0:
-            return 'failed'
-        elif stat['ok'] >= self.npoints - self.missing:
-            return 'passed'
-        else:
-            return 'error'
 
 
 class EvalNoise(EvalBase):
@@ -149,14 +149,112 @@ chanoise - list of tuples (noise_min, noise_max, <channels>)
                 stat['ok'] += 1
         self.npoints += 1
 
-    def summary(self, uubnum):
-        stat = self.stats[uubnum]
-        if stat['failed'] > 0:
-            return 'failed'
-        elif stat['ok'] >= self.npoints - self.missing:
-            return 'passed'
-        else:
-            return 'error'
+
+class EvalLinear(EvalBase):
+    """Eval gain in ADC channels
+missing - number of missing points to be still accepted as passed
+chagain - list of tuples (gain_min, gain_max, <channels>)
+  if gain_min/max is None, test passed by default;
+  missing channels passes by default
+ - if any channel fails => UUB fails
+ - elif any channel missing => missing point
+ - else => passes
+"""
+    def __init__(self, uubnums, **kwargs):
+        super(EvalLinear, self).__init__('pulse', uubnums)
+        missing = kwargs.get('missing', None)
+        self.missing = 2 if missing is None else int(missing)
+        assert 'chagain' in kwargs, 'chagain is mandatory'
+        limits = {chan: (None, None) for chan in range(1, 11)}
+        for gain_min, gain_max, *chans in kwargs['chagain']:
+            assert isinstance(gain_min, (type(None), int, float))
+            assert isinstance(gain_max, (type(None), int, float))
+            assert all([chan in range(1, 11) for chan in chans])
+            for chan in chans:
+                limits[chan] = (gain_min, gain_max)
+        # remove None, None limits
+        self.limits = {chan: minmax for chan, minmax in limits.items()
+                       if minmax != (None, None)}
+        self.npoints = 0
+        self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
+                      for uubnum in uubnums}
+        self.logger.debug('creating instance with missing = %d', missing)
+
+    def write_rec(self, d):
+        """Count linear gain results, expects linear filter applied"""
+        if 'meas_pulse' not in d:
+            return
+        for uubnum in self.uubnums:
+            item = {'functype': 'P', 'typ': 'gain', 'uubnum': uubnum}
+            passed = True
+            missing = False
+            for chan, minmax in self.limits.items():
+                label = item2label(item, chan=chan)
+                if label in d:
+                    val = d[label]
+                    if minmax[0] is not None:
+                        passed &= minmax[0] <= val
+                    if minmax[1] is not None:
+                        passed &= val <= minmax[1]
+                    if not passed:  # skip rest of for(chan, minmax)
+                        break
+                else:
+                    missing = True
+            stat = self.stats[uubnum]  # shortcut
+            if not passed:
+                stat['failed'] += 1
+            elif missing:
+                stat['missing'] += 1
+            else:
+                stat['ok'] += 1
+        self.npoints += 1
+
+
+class EvalVoltramp(EvalBase):
+    """Evaluate power on/off test with voltage ramp
+<direction>_<state> - tuple (volt_min, volt_max);
+    direction of voltage ramp: up/down; expected state after ramp: on/off
+"""
+    def __init__(self, uubnums, **kwargs):
+        super(EvalVoltramp, self).__init__('voltramp', uubnums)
+        self.missing = 0
+        limits = {}
+        for direction in 'up', 'down':
+            for state in 'on', 'off':
+                key = direction + '_' + state
+                if key in kwargs:
+                    volt_min, volt_max = kwargs[key]
+                    assert isinstance(volt_min, (type(None), int, float))
+                    assert isinstance(volt_max, (type(None), int, float))
+                    limits[direction+state] = (volt_min, volt_max)
+        assert limits, 'No voltage ramp limits defined'
+        self.limits = limits
+        self.npoints = 0
+        self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
+                      for uubnum in uubnums}
+        self.logger.debug('creating instance')
+
+    def write_rec(self, d):
+        """Count voltage ramp results"""
+        if 'volt_ramp' not in d:
+            return
+        key = ''.join(d['volt_ramp'])
+        labeltemplate = 'voltramp' + key + '_u%04d'
+        volt_min, volt_max = self.limits[key]
+        for uubnum in self.uubnums:
+            passed = True
+            stat = self.stats[uubnum]  # shortcut
+            label = labeltemplate % uubnum
+            if label in d:
+                val = d[label]
+                if volt_min is not None:
+                    passed &= volt_min <= val
+                if volt_max is not None:
+                    passed &= val <= volt_max
+            else:
+                passed = False
+            stat['ok' if passed else 'failed'] += 1
+        self.npoints += 1
 
 
 class Evaluator(threading.Thread):

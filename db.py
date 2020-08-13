@@ -19,7 +19,8 @@ from UUB import VIRGINUUBNUM
 
 class DBconnector(object):
     """Connector to SDEU DB"""
-    LOGITEMS = ('ramp', 'noise', 'noisestat', 'gain', 'freqgain', 'cutoff')
+    LOGITEMS = ('ramp', 'noise', 'noisestat', 'gain', 'freqgain', 'cutoff',
+                'voltramp')
     PHASES = ('pretest', 'ess', 'burnin', 'combo')
     EMPTY_MP = {key: None for key in (
         'timestamp', 'meas_point', 'rel_time', 'set_temp', 'remark')}
@@ -303,7 +304,8 @@ flabels - list of frequencies to log for freqgain
             self.typs = (logitem, )
         elif logitem == 'ramp':
             self.skiprec = lambda d: 'db_ramp' not in d
-            self.typs = ('ramp', )
+        elif logitem == 'voltramp':
+            self.skiprec = lambda d: 'volt_ramp' not in d
         if logitem == 'freqgain':
             self.flabels = flabels
             self.typs = ('fgain', )
@@ -342,6 +344,18 @@ flabels - list of frequencies to log for freqgain
                        'mp': d['meas_point'],
                        'uubnum': uubnum,
                        'result': d[label]}
+                self.dbcon.measrecs.append(rec)
+            return  # fast track
+        elif self.logitem == 'voltramp':
+            vrtyp = ''.join(d['volt_ramp'])
+            labeltemplate = 'voltramp' + vrtyp + '_u%04d'
+            for uubnum in uubnums:
+                label = labeltemplate % uubnum
+                rec = {'typ': 'voltramp',
+                       'mp': d['meas_point'],
+                       'uubnum': uubnum,
+                       'vrtyp': vrtyp,
+                       'voltage': d.get(label, None)}
                 self.dbcon.measrecs.append(rec)
             return  # fast track
 
