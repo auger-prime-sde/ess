@@ -629,7 +629,7 @@ return polyline approximation at the time t"""
             if self.starttime is None or self.stoptime < timestamp:
                 dur = None
             else:
-                dur = (timestamp - self.starttime).total_seconds()
+                dur = int((timestamp - self.starttime).total_seconds() + 0.5)
                 if dur < 0:
                     dur = None
             res = {'timestamp': timestamp, 'rel_time': dur}
@@ -649,6 +649,7 @@ return polyline approximation at the time t"""
                 res['db_noisestat'] = res.pop('db_noise')
             if dur in self.timepoints:
                 res['meas_point'] = self.timepoints[dur]
+                res['events'] = ' '.join(flags.keys())
             if self.time_temp and dur is not None:
                 res['set_temp'] = self.polyline(dur, self.time_temp)
             if self.time_humid and dur is not None:

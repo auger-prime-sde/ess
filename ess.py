@@ -28,7 +28,7 @@ from logger import LogHandlerVoltramp, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
 from logger import makeDLhumid, makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
-from logger import makeDLfreqgain, makeDLcutoff
+from logger import makeDLfreqgain, makeDLcutoff, makeDLmeaspoint
 from logger import QueDispatch, QLogHandler, ExceptionLogger
 from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
@@ -47,7 +47,7 @@ from evaluator import EvalBase, EvalRamp, EvalNoise, EvalLinear, EvalVoltramp
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200810'
+VERSION = '20200911'
 
 
 class DetectUSB(object):
@@ -534,6 +534,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         dpfilter_ramp = None
         dpfilter_stat_pede = None
         dpfilter_stat_noise = None
+        # meas points
+        if d['dataloggers'].get('measpoint', False):
+            self.dl.add_handler(makeDLmeaspoint(self))
+
         # temperature
         if d['dataloggers'].get('temperature', False):
             dslist = self.bme.dslist() if self.bme else ()

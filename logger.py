@@ -1074,3 +1074,20 @@ uubnum - UUB to log"""
     formatstr = ' '.join(logdata) + '\n'
     return LogHandlerFile(fn, formatstr, prolog=prolog,
                           skiprec=lambda d: 'meas_freq' not in d)
+
+
+def makeDLmeaspoint(ctx):
+    """Create LogHandlerFile for list of measurement points
+ctx - context object, used keys: datadir + basetime + starttime"""
+    fn = ctx.datadir + ctx.basetime.strftime('measpoints-%Y%m%d.log')
+    prolog = """\
+# Measurement points
+# basetime {basetime:%Y-%m-%d %H:%M}
+# starttime {starttime:%Y-%m-%d %H:%M}
+# columns: timestamp | meas_point | rel_time | set_temp | events
+""".format(basetime=ctx.basetime, starttime=ctx.starttime)
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}', '{meas_point:4d}',
+               '{rel_time:5d}', '{set_temp:5.1f}', '{events:s}']
+    formatstr = ' '.join(logdata) + '\n'
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_point' not in d)
