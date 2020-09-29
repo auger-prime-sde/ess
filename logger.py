@@ -41,6 +41,7 @@ class ExceptionLogger(object):
             fp.write('--- /exception ---\n')
             for key, val in kwargs.items():
                 fp.write('%s = %s\n' % (key, repr(val)))
+        return count
 
 
 class MyFormatter(string.Formatter):
@@ -432,51 +433,66 @@ elogger - exception logger
         self.q_resp = q_resp
         self.timeout = timeout
         self.elogger = elogger
-        self.handlers = []  # (handler, key, uubnum)
-        self.filters = []   # (key, start, filterlist)
+        self.handlers = []  # (handler, keys, uubnum)
+        self.filters = []   # (key, start, filterlist), ordered by key
         self.records = {}
         self.stop = threading.Event()
         self.uubnums2del = []
 
-    def add_handler(self, handler, filterlist=None, uubnum=None):
+    def add_handler(self, handler, filterlists=None, uubnum=None):
         """Add handler and filters to apply for it
-filterlist - [(filter, filterlabel) or None, ...]
+filterlists - tuple of filterchains or None
+  - filterchain = [(filter, filterlabel) or None, ...] or None
+  - apply filters in filterchains and merge results
 Ignore None filters
 if uubnum provided, the handler is removed when uubnum is removed"""
-        if filterlist is None:
-            key = None
+        keyfilterlist = []
+        if filterlists is None:
+            keys = (None, )
         else:
-            filterlist = [f for f in filterlist if f is not None]
-            key = tuple([id(filt) for (filt, filtlabel) in filterlist])
-            if key == ():
-                key = None
-        self.handlers.append((handler, key, uubnum))
+            for filterchain in filterlists:
+                if filterchain is None:
+                    continue
+                # ignore None as (filter, filterlabel)
+                filterlist = [f for f in filterchain if f is not None]
+                if len(filterlist) > 0:
+                    key = tuple([id(filt) for (filt, filtlabel) in filterlist])
+                    keyfilterlist.append((key, filterlist))
+            if len(keyfilterlist) > 0:
+                keys = tuple([rec[0] for rec in keyfilterlist])
+            else:
+                keys = (None, )
+        self.handlers.append((handler, keys, uubnum))
         currkeys = [rec[0] for rec in self.filters]
-        if key is None or key in currkeys:
-            return
-        # insert new key into self.filter evenutally using parent/child chains
-        i = 0
         n = len(currkeys)
-        while True:
-            if i == n or key < currkeys[i]:
-                break
-            i += 1
-        # check if exists j < i so that currkeys[j] is a parent of key
-        for pkey in currkeys[i-1::-1]:
-            if key[:len(pkey)] == pkey:
-                start = pkey
-                filterlist = filterlist[len(pkey):]
-                break
-        else:
-            start = None
-        # modify ckey if key can be parent
-        for j in range(i, n):
-            ckey = currkeys[j]
-            if key == ckey[:len(key)]:
-                nfilt = len(ckey) - len(key)
-                cfiltlist = self.filters[j][2][-nfilt:]
-                self.filters[j] = (ckey, pkey, cfiltlist)
-        self.filters.insert(i, (key, start, filterlist))
+        for key, filterlist in keyfilterlist:
+            if key is None or key in currkeys:
+                continue
+            # insert new key into self.filter
+            #   evenutally using parent/child chains
+            for i in range(n):
+                if key < currkeys[i]:
+                    break
+            else:
+                i = n
+            # check if exists j < i so that currkeys[j] is a parent of key
+            for pkey in currkeys[i-1::-1]:
+                if key[:len(pkey)] == pkey:
+                    start = pkey
+                    filterlist = filterlist[len(pkey):]
+                    break
+            else:
+                start = None
+            # modify ckey if key can be parent
+            for j in range(i, n):
+                ckey = currkeys[j]
+                if key == ckey[:len(key)]:
+                    nfilt = len(ckey) - len(key)
+                    cfiltlist = self.filters[j][2][-nfilt:]
+                    self.filters[j] = (ckey, key, cfiltlist)
+            self.filters.insert(i, (key, start, filterlist))
+            currkeys.insert(i, key)
+            n += 1
 
     def run(self):
         logger = logging.getLogger('logger')
@@ -580,22 +596,34 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                             nrec = filt(nrec)
                         except Exception:
                             if self.elogger is not None:
-                                self.elogger.log(
+                                enum = self.elogger.log(
                                     filtlabel=filtlabel, nrec=nrec)
-                            logger.error('filter %s raised exception',
-                                         filtlabel)
+                            logger.error('filter %s raised exception %d',
+                                         filtlabel, enum)
+                            break
                     recs[key] = nrec
+                mergedrecs = {}
+                keyslist = [rec[1] for rec in self.handlers]
+                for keys in keyslist:
+                    if keys in mergedrecs:
+                        continue
+                    mrec = {}
+                    for key in keys:
+                        mrec.update(recs[key])
+                    mergedrecs[keys] = mrec
                 # logger.debug('Rec written to handlers: %s', repr(recs))
-                for h, key, uubnum in self.handlers:
+                for h, keys, uubnum in self.handlers:
                     try:
-                        h.write_rec(recs[key])
+                        h.write_rec(mergedrecs[keys])
                     except Exception:
                         if self.elogger is not None:
-                            self.elogger.log(h_label=h.label, rec=recs[key])
-                        logger.error('%s.write_rec raised exception', h.label)
+                            enum = self.elogger.log(
+                                h_label=h.label, mrec=mergedrecs[keys])
+                        logger.error('%s.write_rec raised exception %d',
+                                     h.label, enum)
 
         logger.info('run() finished, deleting handlers')
-        for h, key, uubnum in self.handlers:
+        for h, keys, uubnum in self.handlers:
             h.stop()
         self.handlers = None
 

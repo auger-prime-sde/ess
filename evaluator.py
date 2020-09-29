@@ -15,7 +15,7 @@ except ImportError:
     zmq = None
 from threadid import syscall, SYS_gettid
 from UUB import VIRGINUUBNUM, uubnum2ip, isLive
-from dataproc import item2label
+from dataproc import item2label, expo2float
 
 ZMQPORT = 5555
 
@@ -24,13 +24,30 @@ class EvalBase(object):
     """Base class for a particular evaluator"""
     # items of summary record
     ITEMS = ('pon', 'ramp', 'noise', 'pulse', 'freq', 'flir')
+    PROLOGTEMPLATE = """\
+# Evaluator log
+# basetime %s
+# evaluated UUBs: %s
+# columns: eval type | meas_point | UUBnum | result | comment
+"""
+    LOGFMT = "{typ:5} {meas_point:4d} {uubnum:04d} {result:7s} {comment:s}\n"
+    fplog = None
 
-    def __init__(self, typ, uubnums):
+    def __init__(self, typ, uubnums, ctx=None):
         self.typ = typ
         self.label = 'Eval%s' % typ.capitalize()
         self.logger = logging.getLogger(self.label)
         self.uubnums = uubnums
         self.stats = None
+        self.lastmp = -1  # last meas point processed
+        if EvalBase.fplog is None and ctx is not None:
+            fn = ctx.datadir + ctx.basetime.strftime('eval-%Y%m%d.log')
+            prolog = self.PROLOGTEMPLATE % (
+                ctx.basetime.strftime('%Y-%m-%d %H:%M'),
+                ', '.join(["%04d" % uubnum for uubnum in uubnums]))
+            fplog = open(fn, 'a')
+            fplog.write(prolog)
+            EvalBase.fplog = fplog
 
     def summary(self, uubnum):
         """return JSON string result for particular UUB"""
@@ -45,12 +62,56 @@ class EvalBase(object):
         else:
             return 'error'
 
-    def write_rec(self, d):
-        """LogHandler.write_rec implentation"""
+    def log(self, meas_point, uubnum, result, comment=''):
+        if self.fplog is None:
+            return
+        msg = self.LOGFMT.format(
+            typ=self.typ,
+            meas_point=meas_point, uubnum=uubnum, result=result,
+            comment=comment)
+        self.fplog.write(msg)
+        self.fplog.flush()
+
+    def dpfilter(self, d):
+        """DataProcessor filter implentation"""
         raise RuntimeError('Not implemented in base class')
 
     def stop(self):
         pass
+
+    def configure_gain(self, kwargs):
+        """Configure gain min/max intervals, mandatory parameter: gain
+gain - list of tuples (gain_min, gain_max, <channels>)
+  gain_min/max: float or None
+  channels numbered from 1 to 10
+  if gain_min/max is None, test passes by default;
+  missing channels passes by default"""
+        assert 'gain' in kwargs, 'gain is mandatory'
+        limits = {chan: (None, None) for chan in range(1, 11)}
+        for gain_min, gain_max, *chans in kwargs['gain']:
+            assert isinstance(gain_min, (type(None), int, float))
+            assert isinstance(gain_max, (type(None), int, float))
+            assert all([chan in range(1, 11) for chan in chans])
+            for chan in chans:
+                limits[chan] = (gain_min, gain_max)
+        self.limits_gain = {chan: minmax for chan, minmax in limits.items()
+                            if minmax != (None, None)}
+
+    def configure_hglgratio(self, kwargs):
+        """Configure HG/LG ratio
+hglgratio - list of tuples(ratio_min, ratio_max, hg_ch, lg_ch)
+  HG/LG channels numbered from 1 to 10
+  if ratio_min/max is None, test passes by default"""
+        assert 'hglgratio' in kwargs, 'hglgratio is mandatory'
+        limits = {}
+        for hglgratio_min, hglgratio_max, ch_hg, ch_lg in kwargs['hglgratio']:
+            assert isinstance(hglgratio_min, (type(None), int, float))
+            assert isinstance(hglgratio_max, (type(None), int, float))
+            assert all([chan in range(1, 11) for chan in (ch_hg, ch_lg)])
+            limits[(ch_hg, ch_lg)] = (hglgratio_min, hglgratio_max)
+        self.limits_hglgratio = {chans: minmax
+                                 for chans, minmax in limits.items()
+                                 if minmax != (None, None)}
 
 
 class EvalRamp(EvalBase):
@@ -61,7 +122,8 @@ class EvalRamp(EvalBase):
     FAILED = 0x2000
 
     def __init__(self, uubnums, **kwargs):
-        super(EvalRamp, self).__init__('ramp', uubnums)
+        ctx = kwargs.get('ctx', None)
+        super(EvalRamp, self).__init__('ramp', uubnums, ctx=ctx)
         missing = kwargs.get('missing', None)
         self.missing = 2 if missing is None else int(missing)
         self.npoints = 0
@@ -69,31 +131,40 @@ class EvalRamp(EvalBase):
                       for uubnum in uubnums}
         self.logger.debug('creating instance with missing = %d', missing)
 
-    def write_rec(self, d):
-        """Count ADC ramp results, expects DPfilter_ramp applied"""
-        if 'meas_ramp' not in d:
-            return
+    def dpfilter(self, res_in):
+        """Count ADC ramp results, expects DPfilter_ramp applied
+return: does not modify res_in"""
+        if 'meas_ramp' not in res_in:
+            return res_in
+        mp = res_in.get('meas_point', -1)
+        if mp <= self.lastmp:  # avoid calling filter twice to one meas point
+            self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
+            return res_in
+        self.lastmp = mp
         for uubnum in self.uubnums:
             label = item2label(typ='rampdb', uubnum=uubnum)
-            rampres = d[label]
+            rampres = res_in[label]
             stat = self.stats[uubnum]
             if rampres == self.OK:
                 stat['ok'] += 1
             elif rampres == self.MISSING:
                 stat['missing'] += 1
+                self.log(mp, uubnum, 'missing')
             elif rampres & self.FAILED:
                 stat['failed'] += 1
+                self.log(mp, uubnum, 'failed', 'rampres %04x' % rampres)
             else:
                 self.logger.error(
                     'Wrong ADC ramp result 0x%04x for uubnum %04d',
                     rampres, uubnum)
         self.npoints += 1
+        return res_in
 
 
 class EvalNoise(EvalBase):
     """Eval noise in ADC channels
 missing - number of missing points to be still accepted as passed
-chanoise - list of tuples (noise_min, noise_max, <channels>)
+noise - list of tuples (noise_min, noise_max, <channels>)
   if noise_min/max is None, test passed by default;
   missing channels passes by default
  - if any channel fails => UUB fails
@@ -101,113 +172,393 @@ chanoise - list of tuples (noise_min, noise_max, <channels>)
  - else => passes
 """
     def __init__(self, uubnums, **kwargs):
-        super(EvalNoise, self).__init__('noise', uubnums)
+        ctx = kwargs.get('ctx', None)
+        super(EvalNoise, self).__init__('noise', uubnums, ctx=ctx)
         missing = kwargs.get('missing', None)
         self.missing = 2 if missing is None else int(missing)
-        assert 'chanoise' in kwargs, 'chanoise is mandatory'
-        limits = {chan: (None, None) for chan in range(1, 11)}
-        for noise_min, noise_max, *chans in kwargs['chanoise']:
-            assert isinstance(noise_min, (type(None), int, float))
-            assert isinstance(noise_max, (type(None), int, float))
-            assert all([chan in range(1, 11) for chan in chans])
-            for chan in chans:
-                limits[chan] = (noise_min, noise_max)
-        # remove None, None limits
-        self.limits = {chan: minmax for chan, minmax in limits.items()
-                       if minmax != (None, None)}
+        self.limits = {}
+        for crit in ('noise', 'pede', 'pedestd'):
+            assert crit in kwargs, 'criterion %s is mandatory' % crit
+            limits = {chan: (None, None) for chan in range(1, 11)}
+            for noise_min, noise_max, *chans in kwargs[crit]:
+                assert isinstance(noise_min, (type(None), int, float))
+                assert isinstance(noise_max, (type(None), int, float))
+                assert all([chan in range(1, 11) for chan in chans])
+                for chan in chans:
+                    limits[chan] = (noise_min, noise_max)
+            # remove None, None limits
+            limits = {chan: minmax for chan, minmax in limits.items()
+                      if minmax != (None, None)}
+            self.limits[crit] = limits
         self.npoints = 0
         self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
                       for uubnum in uubnums}
         self.logger.debug('creating instance with missing = %d', missing)
 
-    def write_rec(self, d):
-        """Count noise results, expects noise_stat filter applied"""
-        if 'meas_noise' not in d:
-            return
+    def dpfilter(self, res_in):
+        """Count noise results, expects noise_stat filter applied
+return: res_in + evalnoise_u<uubnum>_c<chan>N"""
+        if 'meas_noise' not in res_in:
+            return res_in
+        mp = res_in.get('meas_point', -1)
+        if mp <= self.lastmp:  # avoid calling filter twice to one meas point
+            self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
+            return res_in
+        self.lastmp = mp
+        res_out = res_in.copy()
         for uubnum in self.uubnums:
-            item = {'functype': 'N', 'typ': 'noisemean', 'uubnum': uubnum}
-            passed = True
-            missing = False
-            for chan, minmax in self.limits.items():
-                label = item2label(item, chan=chan)
-                if label in d:
-                    val = d[label]
-                    if minmax[0] is not None:
-                        passed &= minmax[0] <= val
-                    if minmax[1] is not None:
-                        passed &= val <= minmax[1]
-                    if not passed:  # skip rest of for(chan, minmax)
-                        break
-                else:
-                    missing = True
+            failed = {chan: False for chan in range(1, 11)}
+            missing = {chan: False for chan in range(1, 11)}
+            comments = []
+            for crit, typ, mtyp in (('noise', 'noisemean', 'noise'),
+                                    ('pede', 'pedemean', 'pede'),
+                                    ('pedestd', 'pedestdev', None)):
+                item = {'functype': 'N', 'typ': typ, 'uubnum': uubnum}
+                for chan, minmax in self.limits[crit].items():
+                    label = item2label(item, chan=chan)
+                    if label in res_in:
+                        val = res_in[label]
+                        if minmax[0] is not None and val < minmax[0]:
+                            failed[chan] = True
+                            comments.append('min %s @ chan %d' % (crit, chan))
+                        if minmax[1] is not None and val > minmax[1]:
+                            failed[chan] = True
+                            comments.append('max %s @ chan %d' % (crit, chan))
+                    else:
+                        missing[chan] = True
+                        if mtyp is not None:
+                            comments.append('missing %s for chan %d' % (
+                                mtyp, chan))
+            comment = ', '.join(comments) if comments else ''
             stat = self.stats[uubnum]  # shortcut
-            if not passed:
+            if any(failed.values()):
                 stat['failed'] += 1
-            elif missing:
+                self.log(mp, uubnum, 'failed', comment)
+            elif any(missing.values()):
                 stat['missing'] += 1
+                self.log(mp, uubnum, 'missing', comment)
             else:
                 stat['ok'] += 1
+            for chan in range(1, 11):
+                label = item2label(typ='evalnoise', functype='N',
+                                   uubnum=uubnum, chan=chan)
+                if failed[chan]:
+                    res_out[label] = False
+                elif not missing[chan]:
+                    res_out[label] = True
         self.npoints += 1
+        return res_out
 
 
 class EvalLinear(EvalBase):
     """Eval gain in ADC channels
 missing - number of missing points to be still accepted as passed
-chagain - list of tuples (gain_min, gain_max, <channels>)
-  if gain_min/max is None, test passed by default;
-  missing channels passes by default
+mandatory paramters: gain, lin, hglgratio
  - if any channel fails => UUB fails
  - elif any channel missing => missing point
  - else => passes
 """
     def __init__(self, uubnums, **kwargs):
-        super(EvalLinear, self).__init__('pulse', uubnums)
+        ctx = kwargs.get('ctx', None)
+        super(EvalLinear, self).__init__('pulse', uubnums, ctx=ctx)
         missing = kwargs.get('missing', None)
         self.missing = 2 if missing is None else int(missing)
-        assert 'chagain' in kwargs, 'chagain is mandatory'
-        limits = {chan: (None, None) for chan in range(1, 11)}
-        for gain_min, gain_max, *chans in kwargs['chagain']:
-            assert isinstance(gain_min, (type(None), int, float))
-            assert isinstance(gain_max, (type(None), int, float))
-            assert all([chan in range(1, 11) for chan in chans])
-            for chan in chans:
-                limits[chan] = (gain_min, gain_max)
-        # remove None, None limits
-        self.limits = {chan: minmax for chan, minmax in limits.items()
-                       if minmax != (None, None)}
+        self.configure_gain(kwargs)
+        # lin: corr. coef. complement
+        lin = kwargs.get('lin', None)
+        assert isinstance(lin, (type(None), int, float))
+        self.lin = lin
+        self.configure_hglgratio(kwargs)
         self.npoints = 0
         self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
                       for uubnum in uubnums}
         self.logger.debug('creating instance with missing = %d', missing)
 
-    def write_rec(self, d):
-        """Count linear gain results, expects linear filter applied"""
-        if 'meas_pulse' not in d:
-            return
+    def dpfilter(self, res_in):
+        """Count linear gain results, expects linear filter applied
+return: res_in + evalpulse_u<uubnum>_c<chan>P
+               + hglgratio_u<uubnum>_c<ch_lg>P"""
+        if 'meas_pulse' not in res_in:
+            return res_in
+        mp = res_in.get('meas_point', -1)
+        if mp <= self.lastmp:  # avoid calling filter twice to one meas point
+            self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
+            return res_in
+        self.lastmp = mp
+        res_out = res_in.copy()
         for uubnum in self.uubnums:
+            failed = {chan: False for chan in range(1, 11)}
+            missing = {chan: False for chan in range(1, 11)}
+            comments = []
+            # check gain
             item = {'functype': 'P', 'typ': 'gain', 'uubnum': uubnum}
-            passed = True
-            missing = False
-            for chan, minmax in self.limits.items():
+            for chan, minmax in self.limits_gain.items():
                 label = item2label(item, chan=chan)
-                if label in d:
-                    val = d[label]
-                    if minmax[0] is not None:
-                        passed &= minmax[0] <= val
-                    if minmax[1] is not None:
-                        passed &= val <= minmax[1]
-                    if not passed:  # skip rest of for(chan, minmax)
-                        break
+                if label in res_in:
+                    val = res_in[label]
+                    if minmax[0] is not None and val < minmax[0]:
+                        failed[chan] = True
+                        comments.append('min gain @ chan %d' % chan)
+                    if minmax[1] is not None and val > minmax[1]:
+                        failed[chan] = True
+                        comments.append('max gain @ chan %d' % chan)
                 else:
-                    missing = True
+                    missing[chan] = True
+                    comments.append('missing gain for chan %d' % chan)
+            # check high gain/low gain ratio
+            for (ch_hg, ch_lg), minmax in self.limits_hglgratio.items():
+                val_hg = res_in.get(item2label(item, chan=ch_hg), None)
+                val_lg = res_in.get(item2label(item, chan=ch_lg), None)
+                try:
+                    ratio = val_hg / val_lg
+                except (TypeError, ZeroDivisionError):
+                    self.logger.warning(
+                        'cannot calculate HG/LG gain ratio, ' +
+                        'mp %4d, uubnum %04d, HG chan %d, LG chan %d' % (
+                            mp, uubnum, ch_hg, ch_lg))
+                    continue
+                label = item2label(functype='P', typ='hglgratio',
+                                   uubnum=uubnum, chan=ch_lg)
+                res_out[label] = ratio
+                if minmax[0] is not None and ratio < minmax[0]:
+                    failed[ch_hg] = True
+                    failed[ch_lg] = True
+                    comments.append('min HG/LG ratio @ chans %d/%d' % (
+                        ch_hg, ch_lg))
+                if minmax[1] is not None and ratio > minmax[1]:
+                    failed[ch_hg] = True
+                    failed[ch_lg] = True
+                    comments.append('max HG/LG ratio @ chans %d/%d' % (
+                        ch_hg, ch_lg))
+            # check lin (corr. coef. complement)
+            if self.lin is not None:
+                item = {'functype': 'P', 'typ': 'lin', 'uubnum': uubnum}
+                for chan in range(1, 11):
+                    label = item2label(item, chan=chan)
+                    if label in res_in:
+                        if missing[chan]:
+                            self.logger.warning(
+                                'gain missing but lin present, ' +
+                                'mp %4d, uubnum %04d, chan %d' % (
+                                    mp, uubnum, chan))
+                        val = res_in[label]
+                        if val > self.lin:
+                            failed[chan] = True
+                            comments.append('lin @ chan %d' % chan)
+                    elif not missing[chan]:
+                        self.logger.warning(
+                            'lin missing but gain present, ' +
+                            'mp %4d, uubnum %04d, chan %d' % (
+                                mp, uubnum, chan))
+                        missing[chan] = True
+                        comments.append('missing lin for chan %d' % chan)
+            comment = ', '.join(comments) if comments else ''
             stat = self.stats[uubnum]  # shortcut
-            if not passed:
+            if any(failed.values()):
                 stat['failed'] += 1
-            elif missing:
+                self.log(mp, uubnum, 'failed', comment)
+            elif any(missing.values()):
                 stat['missing'] += 1
+                self.log(mp, uubnum, 'missing', comment)
+            else:
+                stat['ok'] += 1
+            for chan in range(1, 11):
+                label = item2label(typ='evalpulse', functype='P',
+                                   uubnum=uubnum, chan=chan)
+                if failed[chan]:
+                    res_out[label] = False
+                elif not missing[chan]:
+                    res_out[label] = True
+        self.npoints += 1
+        return res_out
+
+
+class EvalFreq(EvalBase):
+    """Eval frequency gain and cut-off frequency in ADC channels"""
+    def __init__(self, uubnums, **kwargs):
+        ctx = kwargs.get('ctx', None)
+        super(EvalFreq, self).__init__('freq', uubnums, ctx=ctx)
+        missing = kwargs.get('missing', None)
+        self.missing = 2 if missing is None else int(missing)
+        self.flabels = {flabel: expo2float(flabel)
+                        for flabel in kwargs['flabels']}
+        self.configure_gain(kwargs)
+        # frequency dependent decay
+        assert 'freqdep' in kwargs, 'freqdep is mandatory'
+        freqdep = dict(kwargs['freqdep'])
+        assert set(self.flabels.keys()) == set(freqdep.keys())
+        assert all([isinstance(val, (type(None), int, float))
+                    for val in freqdep.values()])
+        self.freqdep = freqdep
+        # flin: corr. coef. complement per frequency
+        assert 'flin' in kwargs, 'flin is mandatory'
+        flin = dict(kwargs['flin'])
+        assert set(self.flabels.keys()) == set(flin.keys())
+        assert all([isinstance(val, (type(None), int, float))
+                    for val in flin.values()])
+        self.flin = flin
+        self.configure_hglgratio(kwargs)
+        # cut-off frequency
+        cutoff = kwargs.get('cutoff', None)
+        if cutoff is not None or cutoff != (None, None):
+            assert all([isinstance(val, (type(None), int, float))
+                        for val in cutoff])
+            self.cutoff = cutoff[:2]
+        else:
+            self.cutoff = None
+        self.npoints = 0
+        self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
+                      for uubnum in uubnums}
+        self.logger.debug('creating instance with missing = %d', missing)
+
+    def dpfilter(self, res_in):
+        """Count frequency gain results, expects cut-off filter applied
+return: res_in + evalfgain_u<uubnum>_c<chan>_f<flabel>F
+               + hglgratio_u<uubnum>_c<ch_lg>_f<flabel>F
+               + evalcutoff_u<uubnum>_c<chan>F"""
+        if 'meas_freq' not in res_in:
+            return res_in
+        mp = res_in.get('meas_point', -1)
+        if mp <= self.lastmp:  # avoid calling filter twice to one meas point
+            self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
+            return res_in
+        self.lastmp = mp
+        res_out = res_in.copy()
+        anyfailed = anymissing = False
+        for uubnum in self.uubnums:
+            comments = []
+            for flabel, freq in self.flabels.items():
+                failed = {chan: False for chan in range(1, 11)}
+                missing = {chan: False for chan in range(1, 11)}
+                item = {'functype': 'F', 'typ': 'fgain', 'uubnum': uubnum,
+                        'flabel': flabel}
+                ffactor = self.freqdep[flabel]
+                # check fgain
+                if ffactor is not None:
+                    for chan, minmax in self.limits_gain.items():
+                        label = item2label(item, chan=chan)
+                        if label in res_in:
+                            val = res_in[label]
+                            if minmax[0] is not None \
+                               and val < ffactor*minmax[0]:
+                                failed[chan] = True
+                                comments.append(
+                                    'min fgain @ freq %.2fMHz chan %d' % (
+                                        freq/1e6, chan))
+                            if minmax[1] is not None \
+                               and val > ffactor*minmax[1]:
+                                failed[chan] = True
+                                comments.append(
+                                    'max fgain @ freq %.2fMHz chan %d' % (
+                                        freq/1e6, chan))
+                        else:
+                            missing[chan] = True
+                            comments.append(
+                                'missing fgain @ freq %.2fMHz chan %d' % (
+                                    freq/1e6, chan))
+                # check HG/LG ratio
+                for (ch_hg, ch_lg), minmax in self.limits_hglgratio.items():
+                    val_hg = res_in.get(item2label(item, chan=ch_hg), None)
+                    val_lg = res_in.get(item2label(item, chan=ch_lg), None)
+                    try:
+                        ratio = val_hg / val_lg
+                    except (TypeError, ZeroDivisionError):
+                        self.logger.warning(
+                            'cannot calculate HG/LG gain ratio, ' +
+                            'mp %4d, uubnum %04d, HG chan %d, LG chan %d' % (
+                                mp, uubnum, ch_hg, ch_lg))
+                        continue
+                    label = item2label(functype='F', typ='hglgratio',
+                                       uubnum=uubnum, flabel=flabel,
+                                       chan=ch_lg)
+                    res_out[label] = ratio
+                    if minmax[0] is not None and ratio < minmax[0]:
+                        failed[ch_hg] = True
+                        failed[ch_lg] = True
+                        comments.append(
+                            'min HG/LG ratio @ freq %.2fMHz chans %d/%d' % (
+                                freq/1e6, ch_hg, ch_lg))
+                    if minmax[1] is not None and ratio > minmax[1]:
+                        failed[ch_hg] = True
+                        failed[ch_lg] = True
+                        comments.append(
+                            'max HG/LG ratio @ freq %.2fMHz chans %d/%d' % (
+                                freq/1e6, ch_hg, ch_lg))
+
+                # check flin
+                if self.flin[flabel] is not None:
+                    lin = self.flin[flabel]
+                    item = {'functype': 'F', 'typ': 'flin', 'uubnum': uubnum,
+                            'flabel': flabel}
+                    for chan in range(1, 11):
+                        label = item2label(item, chan=chan)
+                        if label in res_in:
+                            if missing[chan]:
+                                self.logger.warning((
+                                    'fgain missing but flin present, ' +
+                                    'mp %4d, uubnum %04d, freq %.2fMHz' +
+                                    ' chan %d') % (mp, uubnum, freq/1e6, chan))
+                            val = res_in[label]
+                            if val > lin:
+                                failed[chan] = True
+                                comments.append(
+                                    'flin @ freq %.2fMHz chan %d' % (
+                                        freq/1e6, chan))
+                        elif not missing[chan]:
+                            self.logger.warning((
+                                'flin missing but fgain present, ' +
+                                'mp %4d, uubnum %04d, freq %.2fMHz' +
+                                ' chan %d') % (mp, uubnum, freq/1e6, chan))
+                            missing[chan] = True
+                            comments.append(
+                                'missing flin for freq %.2fMHz chan %d' % (
+                                    freq/1e6, chan))
+                for chan in range(1, 11):
+                    label = item2label(typ='evalfgain', functype='F',
+                                       uubnum=uubnum, flabel=flabel, chan=chan)
+                    if failed[chan]:
+                        res_out[label] = False
+                    elif not missing[chan]:
+                        res_out[label] = True
+                if any(failed.values()):
+                    anyfailed = True
+                if any(missing.values()):
+                    anymissing = True
+            # check cut-off frequency
+            if self.cutoff is not None:
+                item = {'typ': 'cutoff', 'uubnum': uubnum}
+                cutmin, cutmax = self.cutoff
+                for chan in range(1, 11):
+                    label = item2label(item, chan=chan)
+                    if label in res_in:
+                        val = res_in[label]
+                        passed = True
+                        if cutmin is not None and val < cutmin:
+                            passed = False
+                            comments.append('min cut-off @ chan %d' % chan)
+                        if cutmax is not None and val > cutmax:
+                            passed = False
+                            comments.append('max cut-off @ chan %d' % chan)
+                        label = item2label(typ='evalcutoff', functype='F',
+                                           uubnum=uubnum, chan=chan)
+                        res_out[label] = passed
+                        if not passed:
+                            anyfailed = True
+                    else:
+                        anymissing = True
+                        comments.append('missing cut-off for chan %d' % chan)
+            stat = self.stats[uubnum]  # shortcut
+            comment = ', '.join(comments)
+            if anyfailed:
+                stat['failed'] += 1
+                self.log(mp, uubnum, 'failed', comment)
+            elif anymissing:
+                stat['missing'] += 1
+                self.log(mp, uubnum, 'missing', comment)
             else:
                 stat['ok'] += 1
         self.npoints += 1
+        return res_out
 
 
 class EvalVoltramp(EvalBase):
@@ -216,7 +567,8 @@ class EvalVoltramp(EvalBase):
     direction of voltage ramp: up/down; expected state after ramp: on/off
 """
     def __init__(self, uubnums, **kwargs):
-        super(EvalVoltramp, self).__init__('voltramp', uubnums)
+        ctx = kwargs.get('ctx', None)
+        super(EvalVoltramp, self).__init__('voltramp', uubnums, ctx=ctx)
         self.missing = 0
         limits = {}
         for direction in 'up', 'down':
@@ -234,27 +586,43 @@ class EvalVoltramp(EvalBase):
                       for uubnum in uubnums}
         self.logger.debug('creating instance')
 
-    def write_rec(self, d):
+    def dpfilter(self, res_in):
         """Count voltage ramp results"""
-        if 'volt_ramp' not in d:
+        if 'volt_ramp' not in res_in:
             return
-        key = ''.join(d['volt_ramp'])
+        mp = res_in.get('meas_point', -1)
+        if mp <= self.lastmp:  # avoid calling filter twice to one meas point
+            self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
+            return res_in
+        self.lastmp = mp
+        res_out = res_in.copy()
+        key = ''.join(res_in['volt_ramp'])
         labeltemplate = 'voltramp' + key + '_u%04d'
         volt_min, volt_max = self.limits[key]
         for uubnum in self.uubnums:
             passed = True
             stat = self.stats[uubnum]  # shortcut
             label = labeltemplate % uubnum
-            if label in d:
-                val = d[label]
-                if volt_min is not None:
-                    passed &= volt_min <= val
-                if volt_max is not None:
-                    passed &= val <= volt_max
+            if label in res_in:
+                val = res_in[label]
+                if volt_min is not None and val < volt_min:
+                    passed = False
+                    comment = 'volt_min'
+                elif volt_max is not None and val > volt_max:
+                    passed = False
+                    comment = 'volt_max'
             else:
                 passed = False
-            stat['ok' if passed else 'failed'] += 1
+                comment = 'voltage missing'
+            if passed:
+                stat['ok'] += 1
+            else:
+                self.log(mp, uubnum, 'failed', comment)
+                stat['failed'] += 1
+            label = 'evalpon' + key + '_u%04d' % uubnum
+            res_out[label] = passed
         self.npoints += 1
+        return res_out
 
 
 class Evaluator(threading.Thread):

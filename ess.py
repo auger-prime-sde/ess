@@ -42,12 +42,12 @@ from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
-from evaluator import Evaluator
-from evaluator import EvalBase, EvalRamp, EvalNoise, EvalLinear, EvalVoltramp
+from evaluator import Evaluator, EvalBase
+from evaluator import EvalRamp, EvalNoise, EvalLinear, EvalFreq, EvalVoltramp
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200911'
+VERSION = '20200916'
 
 
 class DetectUSB(object):
@@ -534,6 +534,12 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         dpfilter_ramp = None
         dpfilter_stat_pede = None
         dpfilter_stat_noise = None
+        dpfilter_eval_ramp = None
+        dpfilter_eval_noise = None
+        dpfilter_eval_pulse = None
+        dpfilter_eval_freq = None
+        dpfilter_eval_pon = None
+
         # meas points
         if d['dataloggers'].get('measpoint', False):
             self.dl.add_handler(makeDLmeaspoint(self))
@@ -581,9 +587,9 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     if uubnum == VIRGINUUBNUM:
                         continue
                     self.dl.add_handler(makeDLstat(self, uubnum, 'pede'),
-                                        (dpfilter_stat_pede, ), uubnum)
+                                        ((dpfilter_stat_pede, ), ), uubnum)
                     self.dl.add_handler(makeDLstat(self, uubnum, 'noise'),
-                                        (dpfilter_stat_noise, ), uubnum)
+                                        ((dpfilter_stat_noise, ), ), uubnum)
 
         # amplitudes of halfsines
         if 'ampli' in d['dataloggers']:
@@ -610,7 +616,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 if uubnum == VIRGINUUBNUM:
                     continue
                 self.dl.add_handler(makeDLlinear(self, uubnum),
-                                    (dpfilter_linear, ), uubnum)
+                                    ((dpfilter_linear, ), ), uubnum)
 
         # freqgain
         if 'freqgain' in d['dataloggers']:
@@ -622,7 +628,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 if uubnum == VIRGINUUBNUM:
                     continue
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
-                                    (dpfilter_linear, ), uubnum)
+                                    ((dpfilter_linear, ), ), uubnum)
 
         # cut-off
         if d['dataloggers'].get('cutoff', False):
@@ -635,7 +641,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 if uubnum == VIRGINUUBNUM:
                     continue
                 self.dl.add_handler(makeDLcutoff(self, uubnum),
-                                    (dpfilter_linear, dpfilter_cutoff), uubnum)
+                                    ((dpfilter_linear, dpfilter_cutoff), ),
+                                    uubnum)
 
         # ramp
         if d['dataloggers'].get('ramp', False):
@@ -643,56 +650,76 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
             fn = self.datadir + self.basetime.strftime('ramp-%Y%m%d.log')
             lh = LogHandlerRamp(fn, self.basetime, luubnums)
-            self.dl.add_handler(lh, (dpfilter_ramp, ))
+            self.dl.add_handler(lh, ((dpfilter_ramp, ), ))
 
         # power on/off - voltage ramp
         if d['dataloggers'].get('voltramp', False):
             fn = self.datadir + self.basetime.strftime('voltramp-%Y%m%d.log')
             self.dl.add_handler(LogHandlerVoltramp(fn, self.basetime,
                                                    luubnums))
+        # build DP filters for database if not instantiated yet
+        if 'db' in d['dataloggers']:
+            logitems = d['dataloggers']['db']['logitems']
+            if 'ramp' in logitems and dpfilter_ramp is None:
+                dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
+            if 'noisestat' in logitems and dpfilter_stat_pede is None:
+                dpfilter_stat_pede = (make_DPfilter_stat('pede'), 'stat_pede')
+            if 'noisestat' in logitems and dpfilter_stat_noise is None:
+                dpfilter_stat_noise = (
+                    make_DPfilter_stat('noise'), 'stat_noise')
+            if (('gain' in logitems or 'freqgain' in logitems) and
+                    dpfilter_linear is None):
+                dpfilter_linear = (make_DPfilter_linear(
+                    self.notcalc, self.splitgain), 'linear')
+            if 'cutoff' in logitems and dpfilter_linear is None:
+                dpfilter_linear = (make_DPfilter_linear(
+                    self.notcalc, self.splitgain), 'linear')
+            if 'cutoff' in logitems and dpfilter_cutoff is None:
+                dpfilter_cutoff = (make_DPfilter_cutoff(), 'cutoff')
 
         # evaluators
         if 'evaluators' in d:
             evaluators = {}
             # ramp
-            param = d['evaluators'].get('ramp', False)
-            if param is not False:
-                evaluators['ramp'] = EvalRamp(luubnums, missing=param)
-                if dpfilter_ramp is None:
-                    dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
-                self.dl.add_handler(evaluators['ramp'], (dpfilter_ramp, ))
+            if 'ramp' in d['evaluators'] and dpfilter_ramp is not None:
+                evaluators['ramp'] = EvalRamp(
+                    luubnums, ctx=self, **d['evaluators']['ramp'])
+                dpfilter_eval_ramp = (evaluators['ramp'].dpfilter, 'eval_ramp')
             else:
                 evaluators['ramp'] = EvalBase('ramp', luubnums)
             # noise
-            if 'noise' in d['evaluators']:
+            if ('noise' in d['evaluators'] and
+                    dpfilter_stat_pede is not None and
+                    dpfilter_stat_noise is not None):
                 evaluators['noise'] = EvalNoise(
-                    luubnums, **d['evaluators']['noise'])
-                if dpfilter_stat_noise is None:
-                    dpfilter_stat_noise = (make_DPfilter_stat('noise'),
-                                           'stat_noise')
-                self.dl.add_handler(evaluators['noise'],
-                                    (dpfilter_stat_noise, ))
+                    luubnums, ctx=self, **d['evaluators']['noise'])
+                dpfilter_eval_noise = (evaluators['noise'].dpfilter,
+                                       'eval_noise')
             else:
                 evaluators['noise'] = EvalBase('noise', luubnums)
             # pulse/linear
-            if 'pulse' in d['evaluators']:
+            if 'pulse' in d['evaluators'] and dpfilter_linear is not None:
                 evaluators['pulse'] = EvalLinear(
-                    luubnums, **d['evaluators']['pulse'])
-                if dpfilter_linear is None:
-                    dpfilter_linear = (make_DPfilter_linear(
-                        self.notcalc, self.splitgain), 'linear')
-                self.dl.add_handler(evaluators['pulse'],
-                                    (dpfilter_linear, ))
+                    luubnums, ctx=self, **d['evaluators']['pulse'])
+                dpfilter_eval_pulse = (evaluators['pulse'].dpfilter,
+                                       'eval_pulse')
             else:
                 evaluators['pulse'] = EvalBase('pulse', luubnums)
+            # frequency/cutoff
+            if 'freq' in d['evaluators'] and dpfilter_cutoff is not None:
+                evaluators['freq'] = EvalFreq(
+                    luubnums, ctx=self, **d['evaluators']['freq'])
+                dpfilter_eval_freq = (evaluators['freq'].dpfilter,
+                                      'eval_freq')
+            else:
+                evaluators['freq'] = EvalBase('cutoff', luubnums)
             # power on/off with voltage ramp
             if 'pon' in d['evaluators']:
                 evaluators['pon'] = EvalVoltramp(
-                    luubnums, **d['evaluators']['pon'])
-                self.dl.add_handler(evaluators['pon'])
+                    luubnums, ctx=self, **d['evaluators']['pon'])
+                dpfilter_eval_pon = (evaluators['pon'].dpfilter, 'eval_pon')
             else:
                 evaluators['pon'] = EvalBase('pon', luubnums)
-            # <other evaluators TBD>
             self.dbcon.evaluators = evaluators
 
         # database
@@ -701,30 +728,23 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             for item in d['dataloggers']['db']['logitems']:
                 lh = self.dbcon.getLogHandler(item, flabels=flabels)
                 if item == 'ramp':
-                    if dpfilter_ramp is None:
-                        dpfilter_ramp = (make_DPfilter_ramp(luubnums), 'ramp')
-                    self.dl.add_handler(lh, (dpfilter_ramp, ))
-                elif item == 'cutoff':
-                    if dpfilter_linear is None:
-                        dpfilter_linear = (make_DPfilter_linear(
-                            self.notcalc, self.splitgain), 'linear')
-                    if dpfilter_cutoff is None:
-                        dpfilter_cutoff = (make_DPfilter_cutoff(), 'cutoff')
-                    self.dl.add_handler(lh, (dpfilter_linear, dpfilter_cutoff))
-                elif item in ('gain', 'freqgain'):
-                    if dpfilter_linear is None:
-                        dpfilter_linear = (make_DPfilter_linear(
-                            self.notcalc, self.splitgain), 'linear')
-                    self.dl.add_handler(lh, (dpfilter_linear, ))
-                elif item == 'noisestat':
-                    if dpfilter_stat_pede is None:
-                        dpfilter_stat_pede = (make_DPfilter_stat('pede'),
-                                              'stat_pede')
-                    if dpfilter_stat_noise is None:
-                        dpfilter_stat_noise = (make_DPfilter_stat('noise'),
-                                               'stat_noise')
                     self.dl.add_handler(
-                        lh, (dpfilter_stat_pede, dpfilter_stat_noise))
+                        lh, ((dpfilter_ramp, dpfilter_eval_ramp), ))
+                elif item == 'noisestat':
+                    self.dl.add_handler(
+                        lh, ((dpfilter_stat_pede, dpfilter_stat_noise,
+                              dpfilter_eval_noise), ))
+                elif item == 'gain':
+                    self.dl.add_handler(
+                        lh, ((dpfilter_linear, dpfilter_eval_pulse), ))
+                elif item == 'freqgain':
+                    self.dl.add_handler(lh, ((dpfilter_linear, ), ))
+                elif item == 'cutoff':
+                    self.dl.add_handler(
+                        lh, ((dpfilter_linear, dpfilter_cutoff,
+                              dpfilter_eval_freq), ))
+                elif item == 'volt_ramp':
+                    self.dl.add_handler(lh, ((dpfilter_eval_pon, ), ))
                 else:
                     self.dl.add_handler(lh)
 
@@ -733,17 +753,20 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             lh = LogHandlerGrafana(
                 self.starttime, self.uubnums, d['dataloggers']['grafana'])
             self.dl.add_handler(
-                lh, (dpfilter_linear, dpfilter_cutoff,
-                     dpfilter_stat_pede, dpfilter_stat_noise))
+                lh, ((dpfilter_stat_pede, dpfilter_stat_noise),
+                     (dpfilter_linear, dpfilter_cutoff)))
 
         # pickle: filters must be already created before
         if d['dataloggers'].get('pickle', False):
             fn = self.datadir + dt.strftime('pickle-%Y%m%d')
             lh = LogHandlerPickle(fn)
             self.dl.add_handler(
-                lh, (dpfilter_linear, dpfilter_cutoff,
-                     dpfilter_stat_pede, dpfilter_stat_noise))
-
+                lh, ((dpfilter_ramp, dpfilter_eval_ramp),
+                     (dpfilter_stat_pede, dpfilter_stat_noise,
+                      dpfilter_eval_noise),
+                     (dpfilter_linear, dpfilter_eval_pulse),
+                     (dpfilter_linear, dpfilter_cutoff, dpfilter_eval_freq),
+                     (dpfilter_eval_pon, )))
         self.dl.start()
 
     def removeUUB(self, uubnum, logger=None):
