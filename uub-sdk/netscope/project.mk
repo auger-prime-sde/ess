@@ -1,3 +1,2 @@
 
-ELF := build/netscope.elf
-SRCS := netscope.c
+FPGAVERSIONS := 14120220 14120420

@@ -2,9 +2,9 @@
    Petr Tobiska
    based on scope.c by R. Assiro
 
-   version 2020-04-21
 */
 
+#define VERSION "2020-10-20"
 #define TRIG_EXT
 //#define TRIG_SB
 //#define TRIG_SB_MULTI
@@ -102,6 +102,26 @@ uint8_t _workbuf[WBUFSIZE + 8];
 #define endbuf (workbuf + WBUFSIZE)
 
 /* functions */
+
+void printver() {
+  fputs("netscope v" VERSION
+#ifdef BUFALIGN
+	" BUFALIGN"
+#endif
+#ifdef REALTIME
+	" REALTIME"
+#endif
+#if defined(TRIG_EXT)
+	" TRIG_EXT"
+#elif defined(TRIG_SB)
+	" TRIG_SB"
+#elif defined(TRIG_SB_MULTI)
+	" TRIG_SB_MULTI"
+#elif defined(TRIG_COMPAT_SB)
+	" TRIG_COMPAT_SB"
+#endif
+	"\n", stderr);
+}
 
 /*
  * open socket for sending data
@@ -376,10 +396,11 @@ int main(int argc, char ** argv) {
   int datasock, controlsock;
   long long duration;
 
+  printver();
   // check workbuf vs _workbuf position
 #ifdef BUFALIGN     
   if(workbuf < _workbuf || workbuf >= _workbuf + 8
-     || (uintptr_t)workbuf & 7 != 4) {
+     || ((uintptr_t)workbuf & 7) != 4) {
     fprintf(stderr, "workbuf alignment problem: _workbuf = %p, workbuf = %p\n",
 	    (void *)_workbuf, (void*)workbuf);
     exit(-1); }

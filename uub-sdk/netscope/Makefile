@@ -6,6 +6,10 @@
 # project specific configuration (src, elf etc.)
 include project.mk
 
+
+ELFS = $(patsubst %,build/netscope-%.elf,$(FPGAVERSIONS))
+SRCS := netscope.c
+
 OBJDIR := build
 OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(SRCS))
 C_DEPS := $(patsubst %.o,%.d,$(OBJS))
@@ -23,7 +27,7 @@ CFLAGS += -MT$@ -MMD -MP -MF$(@:%.o=%.d) -MT$(@:%.o=%.d)
 ELFSIZE = $(ELF:%=%.size)
 
 # All Target
-all: $(ELF) $(ELFSIZE)
+all: $(ELFS)
 
 # dependency rules
 ifneq ($(MAKECMDGOALS),clean)
@@ -32,19 +36,21 @@ ifneq ($(strip $(C_DEPS)),)
 endif
 endif
 
-$(OBJDIR)/%.o: %.c | $(OBJDIR)
-	$(CC) $(CFLAGS)  -o $@ $<
+# $(OBJDIR)/%.o: %.c | $(OBJDIR)
+# 	$(CC) $(CFLAGS) -I$(FPGAVER) -o $@ $<
 
 $(OBJDIR):
 	mkdir $@
 
-$(ELF): $(OBJS)
-	arm-xilinx-linux-gnueabi-gcc -o $@ $< $(LIBS)
+build/netscope-%.elf : $(SRCS) | $(OBJDIR)
+	$(CC) $(CFLAGS) -I$* -I. -o $(OBJDIR)/netscope.o netscope.c
+	$(CC) -o $@ $(OBJDIR)/netscope.o $(LIBS)
+	rm $(OBJDIR)/netscope.o
 
 $(ELFSIZE): $(ELF)
-	arm-xilinx-linux-gnueabi-size $< | tee $@
+	@echo arm-xilinx-linux-gnueabi-size $< | tee $@
 
 clean:
-	rm -f $(ELF) $(ELFSIZE) $(OBJS) $(C_DEPS)
+	rm -f $(ELFS) $(ELFSIZE) $(OBJS) $(C_DEPS)
 
 .PHONY: all clean
