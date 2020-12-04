@@ -54,17 +54,17 @@ return (flabel, freq) or raise ValueError"""
         freq = item['freq']
         flabel = float2expo(freq)
     else:
-        raise ValueError('Neither flabel nor freq present in %s', repr(item))
+        raise ValueError('Neither flabel nor freq present in ' + repr(item))
     return flabel, freq
 
 
-class DirectGain(object):
+class DirectGain:
     """Gain if not splitter in chain"""
     def gainUUB(self, splitmode, uubnum, chan, flabel=""):
         return 1.0
 
 
-class SplitterGain(object):
+class SplitterGain:
     """Gain of Stastny's splitter"""
     # mapping UUB chan to splitchan + high gain (True)
     UUB2SPLIT = (None,  # placeholder to allow chan 1 .. 10
@@ -97,9 +97,9 @@ channels: [A-F][0-9] ... splitter, on AFG chan A
             self.mdomap = {ch+1: str(splitch)
                            for ch, splitch in enumerate(mdochans)
                            if splitch is not None and (
-                                   len(splitch) == 2 and
-                                   splitch[0] in 'ABCDEFR' and
-                                   splitch[1] in '0123456789')}
+                               len(splitch) == 2 and
+                               splitch[0] in 'ABCDEFR' and
+                               splitch[1] in '0123456789')}
             if any([splitch[0] in 'ABCDEF'
                     for splitch in self.mdomap.values()]):
                 assert self.pregains[0] is not None
@@ -275,7 +275,7 @@ dp_ctx - context with configuration (dict)
     logger.debug('finished')
 
 
-LABEL_DOC = """ Label to item (and back) conversion
+LABEL_DOC = r""" Label to item (and back) conversion
 label = attr1_attr2 ... _attrn<functype>
 attr are (optional, but in this order):
   attr          re in label   python in item       meaning
@@ -329,7 +329,7 @@ kwargs and item are merged, item is not modified"""
             svolt = 'v%03d' % int(kwargs['voltage'] * 200.)
         else:
             svolt = 'v%03d' % int(kwargs['voltage'] * 100.)
-        if(svolt[-1] == '0'):
+        if svolt[-1] == '0':
             svolt = svolt[:-1]
         attr.append(svolt)
     if functype == 'F':
@@ -411,7 +411,7 @@ def label2item(label):
     return d
 
 
-class DP_pede(object):
+class DP_pede:
     """Data processor workhorse to calculate pedestals"""
     # parameters
     BINSTART = 0
@@ -445,7 +445,7 @@ q_resp - a logger queue
         self.q_resp.put(res)
 
 
-class DP_hsampli(object):
+class DP_hsampli:
     """Data processor workhorse to calculate amplitude of half-sines"""
 
     def __init__(self, q_resp, hswidth, notcalc, chans, **kwargs):
@@ -490,7 +490,7 @@ kwargs: splitmode, voltage (fixed paramters)"""
         self.q_resp.put(res)
 
 
-class DP_store(object):
+class DP_store:
     """Data processor workhorse to store 2048x10 data"""
 
     def __init__(self, datadir):
@@ -506,7 +506,7 @@ class DP_store(object):
         np.savetxt(fn, item['yall'], fmt='% 5d')
 
 
-class DP_freq(object):
+class DP_freq:
     """Data processor workhorse to calculate amplitude of sines
 for functype F"""
 
@@ -554,7 +554,7 @@ kwargs: freq, splitmode, voltage (fixed paramters)"""
         self.q_resp.put(res)
 
 
-class DP_ramp(object):
+class DP_ramp:
     """Data processor workhorse to checking test ramp"""
     CHS = tuple(range(10))
 
@@ -641,6 +641,20 @@ or
     keys = ('functype', 'uubnum', 'chan', 'flabel')
     outtypes = {'P': ('gain', 'lin'),
                 'F': ('fgain', 'flin')}
+    hglgtype = {'P': 'hglgratio', 'F': 'fhglgratio'}
+
+    HGLGCHANS = ((2, 1), (4, 3), (6, 5), (10, 9))
+    logger = logging.getLogger('dpfilter_linear')
+
+    def iter_hglg(uubnums, flabels):
+        """Iterate over keys for HG/LG calculation"""
+        for uubnum in uubnums:
+            for ch_hg, ch_lg in HGLGCHANS:
+                yield (('P', uubnum, ch_hg), ('P', uubnum, ch_lg))
+            for flabel in flabels:
+                for ch_hg, ch_lg in HGLGCHANS:
+                    yield (('F', uubnum, ch_hg, flabel),
+                           ('F', uubnum, ch_lg, flabel))
 
     def filter_linear(res_in):
         data = {}
@@ -666,6 +680,9 @@ or
                 data[key] = []
             data[key].append((volt, adcvalue))
         res_out = res_in.copy()
+        gains = {}
+        uubnums = set()
+        flabels = set()
         for key, xy in data.items():
             # xy = [[v1, adc1], [v2, adc2] ....]
             xy = np.array(xy)
@@ -682,6 +699,23 @@ or
             for typ, value in zip(outtypes[key[0]], (slope, coeff)):
                 label = item2label(item, typ=typ)
                 res_out[label] = value
+            gains[key] = slope
+            uubnums.add(key[1])  # uubnum
+            if len(key) == 4:
+                flabels.add(key[3])  # flabel
+        # calculate HG/LG ratio
+        for key_hg, key_lg in iter_hglg(uubnums, flabels):
+            try:
+                ratio = gains[key_hg] / gains[key_lg]
+            except (KeyError, ZeroDivisionError):
+                logger.warning(
+                    'cannot calculate HG/LG ratio, ' +
+                    'uubnum %04d, HG chan %d, LG chan %d' % (
+                        key_hg[1], key_hg[2], key_lg[2]))
+            else:
+                item = dict(zip(keys, key_lg))
+                label = item2label(item, typ=hglgtype[key_lg[0]])
+                res_out[label] = ratio
         return res_out
     return filter_linear
 

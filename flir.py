@@ -200,7 +200,7 @@ return the data block"""
                         self.logger.error('image <%s> not stored', imagename)
                         imagelist = []
                 else:
-                    imagelist = snapshots.keys()
+                    imagelist = list(snapshots.keys())
                 for image in imagelist:
                     fname = image + self.typ[1]
                     self.getfile('images/' + fname, self.datadir + fname)

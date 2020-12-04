@@ -29,6 +29,7 @@ from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
 from logger import makeDLhumid, makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain, makeDLcutoff, makeDLmeaspoint
+from logger import makeDLhglgratio, makeDLfhglgratio
 from logger import QueDispatch, QLogHandler, ExceptionLogger
 from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
@@ -50,7 +51,7 @@ from console import Console
 VERSION = '20200916'
 
 
-class DetectUSB(object):
+class DetectUSB:
     """Try to detect USB devices in devlist"""
     re_TTYUSB = re.compile(r'ttyUSB\d+')
     re_TTYACM = re.compile(r'ttyACM\d+')
@@ -109,8 +110,7 @@ class DetectUSB(object):
                         self.devices[devclass].remove(port)
                         self.logger.info('%s found at %s', dev, port)
                         break
-                    else:
-                        self.logger.debug('%s not at %s', dev, port)
+                    self.logger.debug('%s not at %s', dev, port)
                 else:
                     self.failed.append(dev)
                     self.logger.debug('%s not found', dev)
@@ -126,8 +126,7 @@ class DetectUSB(object):
                         self.devices['usbtmc'].remove(fn)
                         self.logger.info('%s found as %s', dev, fn)
                         break
-                    else:
-                        self.logger.debug('%s not %s', dev, fn)
+                    self.logger.debug('%s not %s', dev, fn)
                 else:
                     self.failed.append(dev)
                     self.logger.debug('%s not found', dev)
@@ -151,7 +150,7 @@ class DetectUSB(object):
                         self.found['chamber'] = port
                         self.found[blabel] = port
                         break
-                    elif btype in binderlist:
+                    if btype in binderlist:
                         self.found[blabel] = port
                         binderlist.remove(btype)
                         if not binderlist:
@@ -210,6 +209,7 @@ class DetectUSB(object):
             if re_resp.match(resp) is not None:
                 tmcid = int(DetectUSB.re_USBTMC.match(fn).groupdict()['tmcid'])
                 return tmcid
+            return None
         except Exception:
             self.logger.exception('_check_tmc %s', fn)
             return None
@@ -218,7 +218,7 @@ class DetectUSB(object):
                 os.close(fd)
 
 
-class ESS(object):
+class ESS:
     """ESS process implementation"""
 
     def __init__(self, jsfn, jsdata=None):
@@ -242,6 +242,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.grafana = None
         self.ed = None
         self.abort = False
+        self.logger = logging.getLogger('ESS')
 
         if jsfn is not None:
             with open(jsfn, 'r') as fp:
@@ -607,7 +608,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 self.dl.add_handler(makeDLfampli(
                     self, uubnum, d['dataloggers']['fampli']), uubnum=uubnum)
 
-        # gain/linearity
+        # gain/linearity & HG/LG ratio
         if d['dataloggers'].get('linearity', False):
             if dpfilter_linear is None:
                 dpfilter_linear = (make_DPfilter_linear(
@@ -617,8 +618,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     continue
                 self.dl.add_handler(makeDLlinear(self, uubnum),
                                     ((dpfilter_linear, ), ), uubnum)
+                self.dl.add_handler(makeDLhglgratio(self, uubnum),
+                                    ((dpfilter_linear, ), ), uubnum)
 
-        # freqgain
+        # freqgain & HG/LG ratio per frequency
         if 'freqgain' in d['dataloggers']:
             if dpfilter_linear is None:
                 dpfilter_linear = (make_DPfilter_linear(
@@ -628,6 +631,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 if uubnum == VIRGINUUBNUM:
                     continue
                 self.dl.add_handler(makeDLfreqgain(self, uubnum, freqs),
+                                    ((dpfilter_linear, ), ), uubnum)
+                self.dl.add_handler(makeDLfhglgratio(self, uubnum, freqs),
                                     ((dpfilter_linear, ), ), uubnum)
 
         # cut-off
@@ -743,7 +748,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                     self.dl.add_handler(
                         lh, ((dpfilter_linear, dpfilter_cutoff,
                               dpfilter_eval_freq), ))
-                elif item == 'volt_ramp':
+                elif item == 'voltramp':
                     self.dl.add_handler(lh, ((dpfilter_eval_pon, ), ))
                 else:
                     self.dl.add_handler(lh)
@@ -925,19 +930,18 @@ if __name__ == '__main__':
             js = js.replace('$'+key, str(val))
         ess = ESS(jsfn=None, jsdata=js)
 
-    logger = logging.getLogger('ESS')
-    logger.info('ESSprogram started, waiting for timerstop.')
+    ess.logger.info('ESSprogram started, waiting for timerstop.')
     con = Console(locs={'ess': ess}, stopme=ess.timerstop.isSet)
     con.start()
     del con  # calls con.stop()
-    logger.info('Stopping everything.')
+    ess.logger.info('Stopping everything.')
     ess.stop()
     if not ess.abort and ess.dbcon.files is not None:
-        logger.info('Uploading results to SDEU DB.')
+        ess.logger.info('Uploading results to SDEU DB.')
         res = ess.dbcon.commit()
         msg = 'Upload of results to SDEU DB ' + (
             'successful.' if res else 'failed.')
         ess.evaluator.writeMsg([msg])
     ess.fp_msg.close()
     ess.evaluator.stopZMQ()
-    logger.info('Done. Everything stopped.')
+    ess.logger.info('Done. Everything stopped.')

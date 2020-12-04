@@ -17,7 +17,7 @@ from dataproc import label2item, item2label
 from UUB import VIRGINUUBNUM
 
 
-class DBconnector(object):
+class DBconnector:
     """Connector to SDEU DB"""
     LOGITEMS = ('ramp', 'noise', 'noisestat', 'gain', 'freqgain', 'cutoff',
                 'voltramp')
@@ -107,8 +107,8 @@ evaluators: dict{ typ: eval} -> calls eval(uubnum) to get summary"""
         for uubnum in uubnums:
             d = {'typ': 'summary',
                  'uubnum': uubnum}
-            for typ, eval in self.evaluators.items():
-                d[typ] = eval.summary(uubnum)
+            for typ, evalit in self.evaluators.items():
+                d[typ] = evalit.summary(uubnum)
             json.dump(d, self.fp)
             self.fp.write('\n')
         self.evaluators = None
@@ -192,7 +192,7 @@ return dict {uubnum: '0123456789ab'}"""
         """Commit logged records to DB
 return True/False if successful or failure"""
         if self.files is None:
-            return
+            return False
         if not self.ctx.q_att.empty():
             if self.fp is not None:
                 self.process_qatt()
@@ -277,7 +277,7 @@ return True/False if successful or failure"""
         return LogHandlerDB(logitem, self, self.ctx.uubnums, flabels)
 
 
-class LogHandlerDB(object):
+class LogHandlerDB:
     def __init__(self, logitem, dbcon, uubnums, flabels=None):
         """Constructor.
 logitem - item to log, from DBconnector.LOGITEMS
@@ -291,29 +291,43 @@ flabels - list of frequencies to log for freqgain
             self.skiprec = lambda d: 'db_noise' not in d
             self.typs = ('pede', 'noise')
             self.typemap = {'pede': 'pede', 'noise': 'noise'}
+            self.evaltyp = ('', 'N')
         elif logitem == 'noisestat':
             self.skiprec = lambda d: 'db_noisestat' not in d
             self.typs = ('pedemean', 'pedestdev', 'noisemean', 'noisestdev')
             self.typemap = {'pedemean': 'pede', 'pedestdev': 'pedesig',
                             'noisemean': 'noise', 'noisestdev': 'noisesig'}
+            self.evaltyp = ('evalnoise', 'N')
         elif logitem == 'gain':
             self.skiprec = lambda d: 'db_pulse' not in d
             self.typs = ('gain', )
-        elif logitem in ('freqgain', 'cutoff'):
+            self.evaltyp = ('evalpulse', 'P')
+        elif logitem == 'freqgain':
             self.skiprec = lambda d: 'db_freq' not in d
-            self.typs = (logitem, )
+            self.typs = ('fgain', )
+            self.flabels = flabels
+            self.evaltyp = ('evalfgain', 'F')
+        elif logitem == 'cutoff':
+            self.skiprec = lambda d: 'db_freq' not in d
+            self.typs = ('cutoff', )
+            self.evaltyp = ('evalcutoff', 'F')
         elif logitem == 'ramp':
             self.skiprec = lambda d: 'db_ramp' not in d
         elif logitem == 'voltramp':
             self.skiprec = lambda d: 'volt_ramp' not in d
+
+        # item2key
         if logitem == 'freqgain':
-            self.flabels = flabels
-            self.typs = ('fgain', )
             self.item2key = lambda item: (item['uubnum'], item['flabel'])
         elif logitem in ('noise', 'noisestat'):
             self.item2key = lambda item: (item['uubnum'], item['typ'])
         else:
             self.item2key = lambda item: item['uubnum']
+        # item2ekey
+        if logitem == 'noisestat':
+            self.item2ekey = lambda item: item['uubnum']
+        else:
+            self.item2ekey = self.item2key
         self.label = 'LogHandlerDB:' + logitem
 
     def write_rec(self, d):
@@ -327,8 +341,7 @@ flabels - list of frequencies to log for freqgain
              self.dbcon.measpoint[key] is None})
         uubnums = [uubnum for uubnum in self.uubnums if uubnum is not None]
         if self.logitem in ('gain', 'cutoff'):
-            values = {uubnum: [None] * 11
-                      for uubnum in uubnums}
+            values = {uubnum: [None] * 11 for uubnum in uubnums}
         elif self.logitem in ('noise', 'noisestat'):
             values = {(uubnum, typ): [None] * 11
                       for uubnum in uubnums
@@ -349,52 +362,86 @@ flabels - list of frequencies to log for freqgain
         elif self.logitem == 'voltramp':
             vrtyp = ''.join(d['volt_ramp'])
             labeltemplate = 'voltramp' + vrtyp + '_u%04d'
+            elabeltemplate = 'evalpon' + vrtyp + '_u%04d'
             for uubnum in uubnums:
                 label = labeltemplate % uubnum
+                elabel = elabeltemplate % uubnum
                 rec = {'typ': 'voltramp',
                        'mp': d['meas_point'],
                        'uubnum': uubnum,
                        'vrtyp': vrtyp,
-                       'voltage': d.get(label, None)}
+                       'voltage': d.get(label, None),
+                       'eval': d.get(elabel, None)}
                 self.dbcon.measrecs.append(rec)
             return  # fast track
 
+        # prepare evals
+        if self.logitem == 'freqgain':
+            evals = {(uubnum, flabel): [None] * 11
+                     for uubnum in uubnums
+                     for flabel in self.flabels}
+        else:
+            evals = {uubnum: [None] * 11 for uubnum in uubnums}
+
         for label, value in d.items():
             item = label2item(label)
-            if item.get('typ', None) not in self.typs:
-                continue
-            key = self.item2key(item)
-            if key in values:
-                values[key][item['chan']] = value
+            typ = item.get('typ', None)
+            ftyp = item.get('functype', None)
+            if typ in self.typs:
+                key = self.item2key(item)
+                if key in values:
+                    values[key][item['chan']] = value
+            elif (typ, ftyp) == self.evaltyp:
+                key = self.item2ekey(item)
+                if key in evals:
+                    evals[key][item['chan']] = value
         if self.logitem in ('noise', 'noisestat'):
             for uubnum in uubnums:
+                ieval = LogHandlerDB.eval2int(evals[uubnum][1:])
                 for typ in self.typs:
                     if not all([value is None
                                 for value in values[(uubnum, typ)]]):
                         rec = {'typ': self.typemap[typ],
                                'mp': d['meas_point'],
                                'uubnum': uubnum,
-                               'values': values[(uubnum, typ)][1:]}
+                               'values': values[(uubnum, typ)][1:],
+                               'eval': ieval}
                         self.dbcon.measrecs.append(rec)
         elif self.logitem == 'freqgain':
             for uubnum in uubnums:
                 for flabel in self.flabels:
                     if not all([value is None
                                 for value in values[(uubnum, flabel)]]):
+                        ieval = LogHandlerDB.eval2int(
+                            evals[(uubnum, flabel)][1:])
                         rec = {'typ': 'freqgain',
                                'mp': d['meas_point'],
                                'uubnum': uubnum,
                                'flabel': flabel,
                                'values': values[(uubnum, flabel)][1:]}
+                        if not all([res is None
+                                    for res in evals[(uubnum, flabel)]]):
+                            rec['eval'] = evals[(uubnum, flabel)][1:]
                         self.dbcon.measrecs.append(rec)
         else:
             for uubnum in uubnums:
                 if not all([value is None for value in values[uubnum]]):
+                    ieval = LogHandlerDB.eval2int(evals[uubnum][1:])
                     rec = {'typ': self.typs[0],
                            'mp': d['meas_point'],
                            'uubnum': uubnum,
-                           'values': values[uubnum][1:]}
+                           'values': values[uubnum][1:],
+                           'eval': ieval}
                     self.dbcon.measrecs.append(rec)
+
+    @staticmethod
+    def eval2int(reslist):
+        """Convert eval. result to 3bit integer
+reslist - tuple of 10 results (None/True/False)
+return integer value for DB"""
+        EVAL2INT = {None: 0, True: 1, False: 2}
+        return sum([EVAL2INT[res] << (3*i)
+                    for i, res in enumerate(reslist)])
 
     def stop(self):
         pass

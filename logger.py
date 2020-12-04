@@ -20,7 +20,7 @@ from threadid import syscall, SYS_gettid
 NOTCALC = '9999.99'  # number not calculated as overflow expected
 
 
-class ExceptionLogger(object):
+class ExceptionLogger:
     """Log exception details into separate file"""
     fn_template = '{datadir:s}/exception_{count:04d}'
 
@@ -72,7 +72,7 @@ class MyFormatter(string.Formatter):
             return self.missing
 
 
-class LogHandlerFile(object):
+class LogHandlerFile:
     def __init__(self, filename, formatstr, prolog='', skiprec=None,
                  missing='~', missing_keys=None):
         self.f = None
@@ -113,7 +113,7 @@ d - dictionary key: value"""
         self.stop()
 
 
-class LogHandlerRamp(object):
+class LogHandlerRamp:
     prolog = """\
 # Ramp test results
 # date %s
@@ -158,7 +158,7 @@ class LogHandlerRamp(object):
         self.stop()
 
 
-class LogHandlerPickle(object):
+class LogHandlerPickle:
     """LogHandler saving all records as pickles to file."""
     def __init__(self, filename=None):
         self.fp = None
@@ -181,7 +181,7 @@ class LogHandlerPickle(object):
         self.stop()
 
 
-class LogHandlerGrafana(object):
+class LogHandlerGrafana:
     """LogHandler delivering data to Grafana database"""
     TEMP_KEYS = (('set_temp', 'temp_set'),
                  ('chamber_temp', 'temp_chamber'),
@@ -370,7 +370,7 @@ return list of 10 values (or None) or None if no data available"""
         pass
 
 
-class LogHandlerVoltramp(object):
+class LogHandlerVoltramp:
     """LogHandler for voltage ramp power on/off checks"""
     prolog = """\
 # Power on/off test with voltage ramp up/down with expected state at end on/off
@@ -438,6 +438,7 @@ elogger - exception logger
         self.records = {}
         self.stop = threading.Event()
         self.uubnums2del = []
+        self.logger = logging.getLogger('logger')
 
     def add_handler(self, handler, filterlists=None, uubnum=None):
         """Add handler and filters to apply for it
@@ -463,6 +464,8 @@ if uubnum provided, the handler is removed when uubnum is removed"""
             else:
                 keys = (None, )
         self.handlers.append((handler, keys, uubnum))
+        self.logger.debug('adding handler %s with filters %s',
+                          handler.label, repr(keys))
         currkeys = [rec[0] for rec in self.filters]
         n = len(currkeys)
         for key, filterlist in keyfilterlist:
@@ -495,12 +498,11 @@ if uubnum provided, the handler is removed when uubnum is removed"""
             n += 1
 
     def run(self):
-        logger = logging.getLogger('logger')
         tid = syscall(SYS_gettid)
-        logger.debug('run start, name %s, tid %d',
-                     threading.current_thread().name, tid)
+        self.logger.debug('run start, name %s, tid %d',
+                          threading.current_thread().name, tid)
         last_ts = datetime(2016, 1, 1)  # minus infinity
-        logger.info('starting run()')
+        self.logger.info('starting run()')
         while not self.stop.is_set() or self.records:
             while self.uubnums2del:
                 uubnum = self.uubnums2del.pop()
@@ -512,7 +514,9 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                         nhandlers.append(rec)
                 self.handlers = nhandlers
                 # remove unused filters
-                nfilterkeys = set([rec[1] for rec in self.handlers])
+                nfilterkeys = set([chain
+                                   for rec in self.handlers
+                                   for chain in rec[1]])
                 self.filters = [rec for rec in self.filters
                                 if rec[0] in nfilterkeys]
             if self.records:
@@ -535,7 +539,7 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                 try:
                     ts = newrec.pop('timestamp')
                 except AttributeError:
-                    logger.debug('Wrong record: %s', repr(newrec))
+                    self.logger.debug('Wrong record: %s', repr(newrec))
                     continue
 
                 if 'log_timeout' in newrec:
@@ -561,13 +565,14 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                         recalc = False
                     else:
                         newrec['tend'] = tend
-                    logger.debug(
+                    self.logger.debug(
                         'Added new record %s',
                         datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
                     self.records[ts] = newrec
                 else:
-                    logger.info('Discarding an old record %s',
-                                datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
+                    self.logger.info(
+                        'Discarding an old record %s',
+                        datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
                     continue
                 # eventually increase tend for newer records
                 if recalc:
@@ -580,8 +585,8 @@ if uubnum provided, the handler is removed when uubnum is removed"""
             expts = [ts for ts, rec in self.records.items()
                      if rec['tend'] <= tnow]
             for ts in sorted(expts):
-                logger.debug('write rec for ts = %s',
-                             datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
+                self.logger.debug('write rec for ts = %s',
+                                  datetime.strftime(ts, "%Y-%m-%d %H:%M:%S"))
                 if ts > last_ts:
                     last_ts = ts
                 rec = self.records.pop(ts)
@@ -595,11 +600,12 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                         try:
                             nrec = filt(nrec)
                         except Exception:
+                            msg = 'filter %s raised exception' % filtlabel
                             if self.elogger is not None:
                                 enum = self.elogger.log(
                                     filtlabel=filtlabel, nrec=nrec)
-                            logger.error('filter %s raised exception %d',
-                                         filtlabel, enum)
+                                msg += ' %04d' % enum
+                            self.logger.error(msg)
                             break
                     recs[key] = nrec
                 mergedrecs = {}
@@ -609,20 +615,25 @@ if uubnum provided, the handler is removed when uubnum is removed"""
                         continue
                     mrec = {}
                     for key in keys:
-                        mrec.update(recs[key])
+                        try:
+                            mrec.update(recs[key])
+                        except Exception:
+                            self.elogger.log(
+                                mrec=mrec, key=key, recs=recs)
                     mergedrecs[keys] = mrec
                 # logger.debug('Rec written to handlers: %s', repr(recs))
                 for h, keys, uubnum in self.handlers:
                     try:
                         h.write_rec(mergedrecs[keys])
                     except Exception:
+                        msg = '%s.write_rec raised exception' % h.label
                         if self.elogger is not None:
                             enum = self.elogger.log(
                                 h_label=h.label, mrec=mergedrecs[keys])
-                        logger.error('%s.write_rec raised exception %d',
-                                     h.label, enum)
+                            msg += ' %04d' % enum
+                        self.logger.error(msg)
 
-        logger.info('run() finished, deleting handlers')
+        self.logger.info('run() finished, deleting handlers')
         for h, keys, uubnum in self.handlers:
             h.stop()
         self.handlers = None
@@ -633,7 +644,7 @@ if uubnum provided, the handler is removed when uubnum is removed"""
         super(DataLogger, self).join(timeout)
 
 
-class QLogHandler(object):
+class QLogHandler:
     """A simple dispatcher of log records"""
     def handle(self, record):
         logger = logging.getLogger(record.name)
@@ -1047,6 +1058,31 @@ uubnum - UUB to log"""
                           skiprec=lambda d: 'meas_pulse' not in d)
 
 
+def makeDLhglgratio(ctx, uubnum):
+    """Create LogHandlerFile for HG/LG ratio
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log"""
+    CHANPAIRS = ((1, 2), (3, 4), (5, 6), (9, 10))
+    fn = ctx.datadir + ('hglgratio_u%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# HG/LG ratio
+# UUB #%04d, date %s
+# columns: timestamp | meas_point | set_temp""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+               '{meas_point:4d}', '{set_temp:5.1f}']
+    itemr = {'functype': 'P', 'typ': 'hglgratio', 'uubnum': uubnum}
+    prolog += ''.join([' | gain.ch%d/gain.ch%d' % (ch_hg, ch_lg)
+                       for (ch_lg, ch_hg) in CHANPAIRS])
+    logdata += ['{%s:5.1f}' % item2label(itemr, chan=ch_lg)
+                for (ch_lg, ch_hg) in CHANPAIRS]
+    prolog += '\n'
+    formatstr = ' '.join(logdata) + '\n'
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_pulse' not in d)
+
+
 def makeDLfreqgain(ctx, uubnum, freqs):
     """Create LogHandlerFile for gain and corr. coeff
 ctx - context object, used keys: datadir + basetime + chans
@@ -1076,6 +1112,38 @@ freqs - list of frequencies to log"""
             logdata += ['{%s:%s}' % (item2label(itemr, chan=chan, typ=typ),
                                      fmt)
                         for chan in ctx.chans]
+        loglines.append(' '.join(logdata) + '\n')
+    formatstr = ''.join(loglines)
+    return LogHandlerFile(fn, formatstr, prolog=prolog,
+                          skiprec=lambda d: 'meas_freq' not in d)
+
+
+def makeDLfhglgratio(ctx, uubnum, freqs):
+    """Create LogHandlerFile for HG/LG ratio
+ctx - context object, used keys: datadir + basetime + chans
+uubnum - UUB to log
+freqs - list of frequencies to log"""
+    CHANPAIRS = ((1, 2), (3, 4), (5, 6), (9, 10))
+    fn = ctx.datadir + ('fhglgratio_u%04d' % uubnum) +\
+        ctx.basetime.strftime('-%Y%m%d.log')
+    prolog = """\
+# HG/LG ratio
+# UUB #%04d, date %s
+# columns: timestamp | meas_point | set_temp | flabel | freq [MHz]""" % (
+        uubnum, ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | gain.ch%d/gain.ch%d' % (ch_hg, ch_lg)
+                       for (ch_lg, ch_hg) in CHANPAIRS])
+    prolog += '\n'
+    itemr = {'functype': 'F', 'typ': 'fhglgratio', 'uubnum': uubnum}
+    loglines = []
+    for freq in freqs:
+        flabel = float2expo(freq, manlength=3)
+        itemr['flabel'] = flabel
+        logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
+                   '{meas_point:4d}', '{set_temp:5.1f}',
+                   '%-4s %6.2f' % (flabel, freq/1e6)]
+        logdata += ['{%s:5.1f}' % item2label(itemr, chan=ch_lg)
+                    for (ch_lg, ch_hg) in CHANPAIRS]
         loglines.append(' '.join(logdata) + '\n')
     formatstr = ''.join(loglines)
     return LogHandlerFile(fn, formatstr, prolog=prolog,

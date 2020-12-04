@@ -276,7 +276,7 @@ state - required state: 'ON' | 'OFF' | 0 | 1 | False | True
                 self.logger.error(
                     'Error reading HMP voltage/current at ch%d :' +
                     'respv "%s", respi "%s"', ch, repr(respv), repr(respi))
-                return None
+                return (None, None)
             m = re.match(PowerSupply.re_hmp_val, respv)
             voltage = float(m.groups()[0])
             m = re.match(PowerSupply.re_hmp_val, respi)

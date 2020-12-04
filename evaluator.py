@@ -20,7 +20,7 @@ from dataproc import item2label, expo2float
 ZMQPORT = 5555
 
 
-class EvalBase(object):
+class EvalBase:
     """Base class for a particular evaluator"""
     # items of summary record
     ITEMS = ('pon', 'ramp', 'noise', 'pulse', 'freq', 'flir')
@@ -39,6 +39,7 @@ class EvalBase(object):
         self.logger = logging.getLogger(self.label)
         self.uubnums = uubnums
         self.stats = None
+        self.npoints = self.missing = 0
         self.lastmp = -1  # last meas point processed
         if EvalBase.fplog is None and ctx is not None:
             fn = ctx.datadir + ctx.basetime.strftime('eval-%Y%m%d.log')
@@ -57,10 +58,9 @@ class EvalBase(object):
         stat = self.stats[uubnum]
         if stat['failed'] > 0:
             return 'failed'
-        elif stat['ok'] >= self.npoints - self.missing:
+        if stat['ok'] >= self.npoints - self.missing:
             return 'passed'
-        else:
-            return 'error'
+        return 'error'
 
     def log(self, meas_point, uubnum, result, comment=''):
         if self.fplog is None:
@@ -72,46 +72,64 @@ class EvalBase(object):
         self.fplog.write(msg)
         self.fplog.flush()
 
-    def dpfilter(self, d):
+    def dpfilter(self, res_in):
         """DataProcessor filter implentation"""
         raise RuntimeError('Not implemented in base class')
 
     def stop(self):
         pass
 
-    def configure_gain(self, kwargs):
-        """Configure gain min/max intervals, mandatory parameter: gain
-gain - list of tuples (gain_min, gain_max, <channels>)
-  gain_min/max: float or None
+    def configure_minmax(self, typ, kwargs):
+        """Configure min/max intervals for quantity <typ>
+kwargs[typ] - list of tuples (val_min, val_max, <channels>)
+  value: float or None
   channels numbered from 1 to 10
-  if gain_min/max is None, test passes by default;
+  if value is None, test passes by default;
   missing channels passes by default"""
-        assert 'gain' in kwargs, 'gain is mandatory'
+        assert typ in kwargs, '%s is mandatory' % typ
         limits = {chan: (None, None) for chan in range(1, 11)}
-        for gain_min, gain_max, *chans in kwargs['gain']:
-            assert isinstance(gain_min, (type(None), int, float))
-            assert isinstance(gain_max, (type(None), int, float))
+        for val_min, val_max, *chans in kwargs[typ]:
+            assert isinstance(val_min, (type(None), int, float))
+            assert isinstance(val_max, (type(None), int, float))
             assert all([chan in range(1, 11) for chan in chans])
             for chan in chans:
-                limits[chan] = (gain_min, gain_max)
-        self.limits_gain = {chan: minmax for chan, minmax in limits.items()
+                limits[chan] = (val_min, val_max)
+        self.limits[typ] = {chan: minmax for chan, minmax in limits.items()
                             if minmax != (None, None)}
 
-    def configure_hglgratio(self, kwargs):
-        """Configure HG/LG ratio
-hglgratio - list of tuples(ratio_min, ratio_max, hg_ch, lg_ch)
-  HG/LG channels numbered from 1 to 10
-  if ratio_min/max is None, test passes by default"""
-        assert 'hglgratio' in kwargs, 'hglgratio is mandatory'
-        limits = {}
-        for hglgratio_min, hglgratio_max, ch_hg, ch_lg in kwargs['hglgratio']:
-            assert isinstance(hglgratio_min, (type(None), int, float))
-            assert isinstance(hglgratio_max, (type(None), int, float))
-            assert all([chan in range(1, 11) for chan in (ch_hg, ch_lg)])
-            limits[(ch_hg, ch_lg)] = (hglgratio_min, hglgratio_max)
-        self.limits_hglgratio = {chans: minmax
-                                 for chans, minmax in limits.items()
-                                 if minmax != (None, None)}
+    def check_minmax(self, res_in, typ, uubnum, failed, missing, comments,
+                     flabel=None, freq=None):
+        FUNCTYPE = {'noisemean': 'N',
+                    'pedemean': 'N',
+                    'pedestdev': 'N',
+                    'gain': 'P',
+                    'lin': 'P',
+                    'hglgratio': 'P',
+                    'cutoff': None}
+        item = {'typ': typ, 'uubnum': uubnum}
+        freqstr = ''
+        if flabel is not None:
+            item['functype'] = 'F'
+            item['flabel'] = flabel
+            freqstr = ' freq %.2fMHz' % (freq/1e6)
+        elif FUNCTYPE[typ] is not None:
+            item['functype'] = FUNCTYPE[typ]
+        for chan, minmax in self.limits[typ].items():
+            label = item2label(item, chan=chan)
+            if label in res_in:
+                val = res_in[label]
+                if minmax[0] is not None and val < minmax[0]:
+                    failed[chan] = True
+                    comments.append('min %s @%s chan %d' % (
+                        typ, freqstr, chan))
+                if minmax[1] is not None and val > minmax[1]:
+                    failed[chan] = True
+                    comments.append('max %s @%s chan %d' % (
+                        typ, freqstr, chan))
+            else:
+                missing[chan] = True
+                comments.append('missing %s for%s chan %d' % (
+                    typ, freqstr, chan))
 
 
 class EvalRamp(EvalBase):
@@ -177,19 +195,8 @@ noise - list of tuples (noise_min, noise_max, <channels>)
         missing = kwargs.get('missing', None)
         self.missing = 2 if missing is None else int(missing)
         self.limits = {}
-        for crit in ('noise', 'pede', 'pedestd'):
-            assert crit in kwargs, 'criterion %s is mandatory' % crit
-            limits = {chan: (None, None) for chan in range(1, 11)}
-            for noise_min, noise_max, *chans in kwargs[crit]:
-                assert isinstance(noise_min, (type(None), int, float))
-                assert isinstance(noise_max, (type(None), int, float))
-                assert all([chan in range(1, 11) for chan in chans])
-                for chan in chans:
-                    limits[chan] = (noise_min, noise_max)
-            # remove None, None limits
-            limits = {chan: minmax for chan, minmax in limits.items()
-                      if minmax != (None, None)}
-            self.limits[crit] = limits
+        for crit in ('noisemean', 'pedemean', 'pedestdev'):
+            self.configure_minmax(crit, kwargs)
         self.npoints = 0
         self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
                       for uubnum in uubnums}
@@ -210,25 +217,9 @@ return: res_in + evalnoise_u<uubnum>_c<chan>N"""
             failed = {chan: False for chan in range(1, 11)}
             missing = {chan: False for chan in range(1, 11)}
             comments = []
-            for crit, typ, mtyp in (('noise', 'noisemean', 'noise'),
-                                    ('pede', 'pedemean', 'pede'),
-                                    ('pedestd', 'pedestdev', None)):
-                item = {'functype': 'N', 'typ': typ, 'uubnum': uubnum}
-                for chan, minmax in self.limits[crit].items():
-                    label = item2label(item, chan=chan)
-                    if label in res_in:
-                        val = res_in[label]
-                        if minmax[0] is not None and val < minmax[0]:
-                            failed[chan] = True
-                            comments.append('min %s @ chan %d' % (crit, chan))
-                        if minmax[1] is not None and val > minmax[1]:
-                            failed[chan] = True
-                            comments.append('max %s @ chan %d' % (crit, chan))
-                    else:
-                        missing[chan] = True
-                        if mtyp is not None:
-                            comments.append('missing %s for chan %d' % (
-                                mtyp, chan))
+            for crit in self.limits.keys():
+                self.check_minmax(res_in, crit, uubnum,
+                                  failed, missing, comments)
             comment = ', '.join(comments) if comments else ''
             stat = self.stats[uubnum]  # shortcut
             if any(failed.values()):
@@ -263,12 +254,9 @@ mandatory paramters: gain, lin, hglgratio
         super(EvalLinear, self).__init__('pulse', uubnums, ctx=ctx)
         missing = kwargs.get('missing', None)
         self.missing = 2 if missing is None else int(missing)
-        self.configure_gain(kwargs)
-        # lin: corr. coef. complement
-        lin = kwargs.get('lin', None)
-        assert isinstance(lin, (type(None), int, float))
-        self.lin = lin
-        self.configure_hglgratio(kwargs)
+        self.limits = {}
+        for crit in ('gain', 'lin', 'hglgratio'):
+            self.configure_minmax(crit, kwargs)
         self.npoints = 0
         self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
                       for uubnum in uubnums}
@@ -276,8 +264,7 @@ mandatory paramters: gain, lin, hglgratio
 
     def dpfilter(self, res_in):
         """Count linear gain results, expects linear filter applied
-return: res_in + evalpulse_u<uubnum>_c<chan>P
-               + hglgratio_u<uubnum>_c<ch_lg>P"""
+return: res_in + evalpulse_u<uubnum>_c<chan>P"""
         if 'meas_pulse' not in res_in:
             return res_in
         mp = res_in.get('meas_point', -1)
@@ -290,68 +277,9 @@ return: res_in + evalpulse_u<uubnum>_c<chan>P
             failed = {chan: False for chan in range(1, 11)}
             missing = {chan: False for chan in range(1, 11)}
             comments = []
-            # check gain
-            item = {'functype': 'P', 'typ': 'gain', 'uubnum': uubnum}
-            for chan, minmax in self.limits_gain.items():
-                label = item2label(item, chan=chan)
-                if label in res_in:
-                    val = res_in[label]
-                    if minmax[0] is not None and val < minmax[0]:
-                        failed[chan] = True
-                        comments.append('min gain @ chan %d' % chan)
-                    if minmax[1] is not None and val > minmax[1]:
-                        failed[chan] = True
-                        comments.append('max gain @ chan %d' % chan)
-                else:
-                    missing[chan] = True
-                    comments.append('missing gain for chan %d' % chan)
-            # check high gain/low gain ratio
-            for (ch_hg, ch_lg), minmax in self.limits_hglgratio.items():
-                val_hg = res_in.get(item2label(item, chan=ch_hg), None)
-                val_lg = res_in.get(item2label(item, chan=ch_lg), None)
-                try:
-                    ratio = val_hg / val_lg
-                except (TypeError, ZeroDivisionError):
-                    self.logger.warning(
-                        'cannot calculate HG/LG gain ratio, ' +
-                        'mp %4d, uubnum %04d, HG chan %d, LG chan %d' % (
-                            mp, uubnum, ch_hg, ch_lg))
-                    continue
-                label = item2label(functype='P', typ='hglgratio',
-                                   uubnum=uubnum, chan=ch_lg)
-                res_out[label] = ratio
-                if minmax[0] is not None and ratio < minmax[0]:
-                    failed[ch_hg] = True
-                    failed[ch_lg] = True
-                    comments.append('min HG/LG ratio @ chans %d/%d' % (
-                        ch_hg, ch_lg))
-                if minmax[1] is not None and ratio > minmax[1]:
-                    failed[ch_hg] = True
-                    failed[ch_lg] = True
-                    comments.append('max HG/LG ratio @ chans %d/%d' % (
-                        ch_hg, ch_lg))
-            # check lin (corr. coef. complement)
-            if self.lin is not None:
-                item = {'functype': 'P', 'typ': 'lin', 'uubnum': uubnum}
-                for chan in range(1, 11):
-                    label = item2label(item, chan=chan)
-                    if label in res_in:
-                        if missing[chan]:
-                            self.logger.warning(
-                                'gain missing but lin present, ' +
-                                'mp %4d, uubnum %04d, chan %d' % (
-                                    mp, uubnum, chan))
-                        val = res_in[label]
-                        if val > self.lin:
-                            failed[chan] = True
-                            comments.append('lin @ chan %d' % chan)
-                    elif not missing[chan]:
-                        self.logger.warning(
-                            'lin missing but gain present, ' +
-                            'mp %4d, uubnum %04d, chan %d' % (
-                                mp, uubnum, chan))
-                        missing[chan] = True
-                        comments.append('missing lin for chan %d' % chan)
+            for crit in self.limits.keys():
+                self.check_minmax(res_in, crit, uubnum,
+                                  failed, missing, comments)
             comment = ', '.join(comments) if comments else ''
             stat = self.stats[uubnum]  # shortcut
             if any(failed.values()):
@@ -382,39 +310,35 @@ class EvalFreq(EvalBase):
         self.missing = 2 if missing is None else int(missing)
         self.flabels = {flabel: expo2float(flabel)
                         for flabel in kwargs['flabels']}
-        self.configure_gain(kwargs)
+        self.limits = {}
         # frequency dependent decay
-        assert 'freqdep' in kwargs, 'freqdep is mandatory'
-        freqdep = dict(kwargs['freqdep'])
-        assert set(self.flabels.keys()) == set(freqdep.keys())
-        assert all([isinstance(val, (type(None), int, float))
-                    for val in freqdep.values()])
-        self.freqdep = freqdep
+        self.freqdep = self.configure_freq('freqdep', kwargs)
         # flin: corr. coef. complement per frequency
-        assert 'flin' in kwargs, 'flin is mandatory'
-        flin = dict(kwargs['flin'])
-        assert set(self.flabels.keys()) == set(flin.keys())
-        assert all([isinstance(val, (type(None), int, float))
-                    for val in flin.values()])
-        self.flin = flin
-        self.configure_hglgratio(kwargs)
+        self.flin = self.configure_freq('flin', kwargs)
+        # fgain_min/max(chan, flabel) = gain_min/max(chan) * freqdep(flabel)
+        self.configure_minmax('gain', kwargs)
+        self.configure_minmax('fhglgratio', kwargs)
         # cut-off frequency
-        cutoff = kwargs.get('cutoff', None)
-        if cutoff is not None or cutoff != (None, None):
-            assert all([isinstance(val, (type(None), int, float))
-                        for val in cutoff])
-            self.cutoff = cutoff[:2]
-        else:
-            self.cutoff = None
+        self.configure_minmax('cutoff', kwargs)
         self.npoints = 0
         self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
                       for uubnum in uubnums}
         self.logger.debug('creating instance with missing = %d', missing)
 
+    def configure_freq(self, typ, kwargs):
+        """Expect dependence on frequency
+kwargs[typ] - list of tuples (flabel, value)
+return dict{flabel: value}"""
+        assert typ in kwargs, 'freqdep is mandatory'
+        d = dict(kwargs[typ])
+        assert set(self.flabels.keys()) == set(d.keys())
+        assert all([isinstance(val, (type(None), int, float))
+                    for val in d.values()])
+        return d
+
     def dpfilter(self, res_in):
         """Count frequency gain results, expects cut-off filter applied
 return: res_in + evalfgain_u<uubnum>_c<chan>_f<flabel>F
-               + hglgratio_u<uubnum>_c<ch_lg>_f<flabel>F
                + evalcutoff_u<uubnum>_c<chan>F"""
         if 'meas_freq' not in res_in:
             return res_in
@@ -430,89 +354,25 @@ return: res_in + evalfgain_u<uubnum>_c<chan>_f<flabel>F
             for flabel, freq in self.flabels.items():
                 failed = {chan: False for chan in range(1, 11)}
                 missing = {chan: False for chan in range(1, 11)}
-                item = {'functype': 'F', 'typ': 'fgain', 'uubnum': uubnum,
-                        'flabel': flabel}
-                ffactor = self.freqdep[flabel]
                 # check fgain
-                if ffactor is not None:
-                    for chan, minmax in self.limits_gain.items():
-                        label = item2label(item, chan=chan)
-                        if label in res_in:
-                            val = res_in[label]
-                            if minmax[0] is not None \
-                               and val < ffactor*minmax[0]:
-                                failed[chan] = True
-                                comments.append(
-                                    'min fgain @ freq %.2fMHz chan %d' % (
-                                        freq/1e6, chan))
-                            if minmax[1] is not None \
-                               and val > ffactor*minmax[1]:
-                                failed[chan] = True
-                                comments.append(
-                                    'max fgain @ freq %.2fMHz chan %d' % (
-                                        freq/1e6, chan))
-                        else:
-                            missing[chan] = True
-                            comments.append(
-                                'missing fgain @ freq %.2fMHz chan %d' % (
-                                    freq/1e6, chan))
+                ffactor = self.freqdep[flabel]
+                self.limits['fgain'] = {chan: [None, None]
+                                        for chan in range(1, 11)}
+                for chan, minmax in self.limits['gain'].items():
+                    for i, val in enumerate(minmax):
+                        if val is not None:
+                            self.limits['fgain'][chan][i] = ffactor * val
+                self.check_minmax(res_in, 'fgain', uubnum,
+                                  failed, missing, comments, flabel, freq)
                 # check HG/LG ratio
-                for (ch_hg, ch_lg), minmax in self.limits_hglgratio.items():
-                    val_hg = res_in.get(item2label(item, chan=ch_hg), None)
-                    val_lg = res_in.get(item2label(item, chan=ch_lg), None)
-                    try:
-                        ratio = val_hg / val_lg
-                    except (TypeError, ZeroDivisionError):
-                        self.logger.warning(
-                            'cannot calculate HG/LG gain ratio, ' +
-                            'mp %4d, uubnum %04d, HG chan %d, LG chan %d' % (
-                                mp, uubnum, ch_hg, ch_lg))
-                        continue
-                    label = item2label(functype='F', typ='hglgratio',
-                                       uubnum=uubnum, flabel=flabel,
-                                       chan=ch_lg)
-                    res_out[label] = ratio
-                    if minmax[0] is not None and ratio < minmax[0]:
-                        failed[ch_hg] = True
-                        failed[ch_lg] = True
-                        comments.append(
-                            'min HG/LG ratio @ freq %.2fMHz chans %d/%d' % (
-                                freq/1e6, ch_hg, ch_lg))
-                    if minmax[1] is not None and ratio > minmax[1]:
-                        failed[ch_hg] = True
-                        failed[ch_lg] = True
-                        comments.append(
-                            'max HG/LG ratio @ freq %.2fMHz chans %d/%d' % (
-                                freq/1e6, ch_hg, ch_lg))
-
+                self.check_minmax(res_in, 'fhglgratio', uubnum,
+                                  failed, missing, comments, flabel, freq)
                 # check flin
-                if self.flin[flabel] is not None:
-                    lin = self.flin[flabel]
-                    item = {'functype': 'F', 'typ': 'flin', 'uubnum': uubnum,
-                            'flabel': flabel}
-                    for chan in range(1, 11):
-                        label = item2label(item, chan=chan)
-                        if label in res_in:
-                            if missing[chan]:
-                                self.logger.warning((
-                                    'fgain missing but flin present, ' +
-                                    'mp %4d, uubnum %04d, freq %.2fMHz' +
-                                    ' chan %d') % (mp, uubnum, freq/1e6, chan))
-                            val = res_in[label]
-                            if val > lin:
-                                failed[chan] = True
-                                comments.append(
-                                    'flin @ freq %.2fMHz chan %d' % (
-                                        freq/1e6, chan))
-                        elif not missing[chan]:
-                            self.logger.warning((
-                                'flin missing but fgain present, ' +
-                                'mp %4d, uubnum %04d, freq %.2fMHz' +
-                                ' chan %d') % (mp, uubnum, freq/1e6, chan))
-                            missing[chan] = True
-                            comments.append(
-                                'missing flin for freq %.2fMHz chan %d' % (
-                                    freq/1e6, chan))
+                linmax = self.flin[flabel]
+                self.limits['flin'] = {chan: (None, linmax)
+                                       for chan in range(1, 11)}
+                self.check_minmax(res_in, 'flin', uubnum,
+                                  failed, missing, comments, flabel, freq)
                 for chan in range(1, 11):
                     label = item2label(typ='evalfgain', functype='F',
                                        uubnum=uubnum, flabel=flabel, chan=chan)
@@ -525,28 +385,21 @@ return: res_in + evalfgain_u<uubnum>_c<chan>_f<flabel>F
                 if any(missing.values()):
                     anymissing = True
             # check cut-off frequency
-            if self.cutoff is not None:
-                item = {'typ': 'cutoff', 'uubnum': uubnum}
-                cutmin, cutmax = self.cutoff
-                for chan in range(1, 11):
-                    label = item2label(item, chan=chan)
-                    if label in res_in:
-                        val = res_in[label]
-                        passed = True
-                        if cutmin is not None and val < cutmin:
-                            passed = False
-                            comments.append('min cut-off @ chan %d' % chan)
-                        if cutmax is not None and val > cutmax:
-                            passed = False
-                            comments.append('max cut-off @ chan %d' % chan)
-                        label = item2label(typ='evalcutoff', functype='F',
-                                           uubnum=uubnum, chan=chan)
-                        res_out[label] = passed
-                        if not passed:
-                            anyfailed = True
-                    else:
-                        anymissing = True
-                        comments.append('missing cut-off for chan %d' % chan)
+            failed = {chan: False for chan in range(1, 11)}
+            missing = {chan: False for chan in range(1, 11)}
+            self.check_minmax(res_in, 'cutoff', uubnum, failed, missing,
+                              comments)
+            for chan in range(1, 11):
+                label = item2label(typ='evalcutoff', functype='F',
+                                   uubnum=uubnum, chan=chan)
+                if failed[chan]:
+                    res_out[label] = False
+                elif not missing[chan]:
+                    res_out[label] = True
+            if any(failed.values()):
+                anyfailed = True
+            if any(missing.values()):
+                anymissing = True
             stat = self.stats[uubnum]  # shortcut
             comment = ', '.join(comments)
             if anyfailed:
@@ -587,9 +440,10 @@ class EvalVoltramp(EvalBase):
         self.logger.debug('creating instance')
 
     def dpfilter(self, res_in):
-        """Count voltage ramp results"""
+        """Count voltage ramp results
+return: res_in + evalpon<vrtyp>_u<uubnum>"""
         if 'volt_ramp' not in res_in:
-            return
+            return res_in
         mp = res_in.get('meas_point', -1)
         if mp <= self.lastmp:  # avoid calling filter twice to one meas point
             self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
@@ -803,21 +657,20 @@ Raise AssertionError in a non-allowed situation"""
         tid = syscall(SYS_gettid)
         self.logger.debug('Checkin UUB order, name %s, tid %d',
                           threading.current_thread().name, tid)
-        uubset_all = set([uubnum for uubnum in self.uubnums
-                          if uubnum is not None])
+        uubset_all = {uubnum for uubnum in self.uubnums if uubnum is not None}
         maxind = max([i for i, uubnum in enumerate(self.uubnums)
                       if uubnum is not None])
         uub2ip = {uubnum: uubnum2ip(uubnum) for uubnum in uubset_all}
-        uubset_exp = set([uubnum for uubnum in uubset_all
-                          if isLive(uub2ip[uubnum], self.logger)])
+        uubset_exp = {uubnum for uubnum in uubset_all
+                      if isLive(uub2ip[uubnum], self.logger)}
         uubnums = []  # tested order of UUBs
         portmask = 1  # raw ports to switch off
         for n in range(9, -1, -1):  # expected max number of live UUBs
             self.pc.switchRaw(False, portmask)
             portmask <<= 1
             sleep(Evaluator.TOUT_ORD)
-            uubset_real = set([uubnum for uubnum in uubset_all
-                               if isLive(uub2ip[uubnum], self.logger)])
+            uubset_real = {uubnum for uubnum in uubset_all
+                           if isLive(uub2ip[uubnum], self.logger)}
             self.logger.debug(
                 'n = %d, UUBs still live = %s', n,
                 ', '.join(['%04d' % uubnum for uubnum in uubset_real]))
