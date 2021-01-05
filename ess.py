@@ -43,12 +43,12 @@ from afg import AFG, RPiTrigger
 from power import PowerSupply
 from flir import FLIR
 from db import DBconnector
-from evaluator import Evaluator, EvalBase
+from evaluator import Evaluator, EvalBase, EvalFLIR
 from evaluator import EvalRamp, EvalNoise, EvalLinear, EvalFreq, EvalVoltramp
 from threadid import syscall, SYS_gettid
 from console import Console
 
-VERSION = '20200916'
+VERSION = '20210104'
 
 
 class DetectUSB:
@@ -166,7 +166,7 @@ class DetectUSB:
             for port in self.devices['ttyUSB']:
                 self.logger.debug('Detecting flir on %s', port)
                 try:
-                    flir = FLIR(port, None, None, None)
+                    flir = FLIR(port, None, None, None, None)
                     self.found['flir'] = port
                     self.devices['ttyUSB'].remove(port)
                     self.logger.info('flir found at %s', port)
@@ -407,8 +407,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             port = d['ports']['flir']
             uubnum = d.get('flir.uubnum', 0)
             imtype = str(d['flir.imtype']) if 'flir.imtype' in d else None
-            self.flir = FLIR(port, self.timer, self.q_att, self.datadir,
-                             uubnum, imtype)
+            flireval = d['evaluators'].get('flir', None)
+            self.flir = FLIR(port, self.timer, self.q_resp, self.q_att,
+                             self.datadir, uubnum, imtype, flireval,
+                             self.elogger)
             self.flir.start()
 
         # chamber
@@ -725,6 +727,12 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
                 dpfilter_eval_pon = (evaluators['pon'].dpfilter, 'eval_pon')
             else:
                 evaluators['pon'] = EvalBase('pon', luubnums)
+            # flir
+            if 'flir' in d['evaluators']:
+                fuubnum = d.get('flir.uubnum', 0)
+                evaluators['flir'] = EvalFLIR('flir', (fuubnum, ))
+            else:
+                evaluators['flir'] = EvalBase('flir', luubnums)
             self.dbcon.evaluators = evaluators
 
         # database

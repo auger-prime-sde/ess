@@ -1,8 +1,7 @@
 {
   "phase": "pretest",
-  "tester": "Petr Tobiska",
-  "datadir1": "data/pretest-%Y%m%d-u$UUBNSTR/",
-  "datadir": "data/pretest/",
+  "tester": "$TESTER",
+  "datadir": "data/pretest-%Y%m%d-u$UUBNSTR/",
   "logging": {
     "level": 10,
     "format": "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
@@ -16,11 +15,12 @@
   "tickers": {
     "essprogram": "config/prog_pretest.json",
     "essprogram.macros" : { "chmac": "fw_setenv ethaddr $MACADDR",
-			    "imstart": "imstart_u$UUBNSTR",
-			    "imfinal": "imfinal_u$UUBNSTR" },
+			    "imstart": "rawstart_u$UUBNSTR",
+			    "imfinal": "rawfinal_u$UUBNSTR",
+			    "imeval": "flireval_u$UUBNSTR" },
     "startprog": 0 },
   "power": {
-    "uubch": 4,
+    "uubch": 1,
     "ch0": [ 24, 0.5 ]},
   "trigger": "RPi",
     "n_dp": 2,
@@ -33,11 +33,30 @@
               "client_key": "dbcred/auger-pretest.key",
               "urlSN": "/engine-sdeu/internalSN?",
               "urlCommit": "/engine-sdeu/commit"},
+  "evaluators": {
+    "ramp": {
+      "missing": 0 },
+    "noise": {
+      "missing": 0,
+      "noisemean": [[ 0.5, 0.75, 1, 3, 5, 7, 8],
+                    [ 0.6, 0.75, 9],
+	            [ 1.2, 2.5, 2, 4, 6, 10 ]],
+      "pedemean": [[ 200.0, 300.0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 ]],
+      "pedestdev": [[ 0.02, 0.2, 1, 3, 5, 7, 8, 9 ],
+		    [ 0.1, 1.5, 2, 4, 6, 10 ]] },
+    "flir": {
+      "fn_points": "config/points.csv",
+      "fn_componentsmm": "config/componentsmm.csv",
+      "fn_pixpoints": "config/pixpoints.csv",
+      "fn_complimits": "config/complimits.csv",
+      "score": [2000., 2000., 25.0, 25.0, 25.0, 25.0],
+      "width": 4.0 }},
   "dataloggers": {
     "ramp": true,
     "pede": true,
     "pedestatcount": 100,
     "pickle": true,
-    "db": { "logitems": [ "noisestat" ]}},
+    "measpoint": true,
+    "db": { "logitems": [ "noisestat", "ramp" ]}},
   "uubnums": [ 3840, $UUBNUM ]
 }

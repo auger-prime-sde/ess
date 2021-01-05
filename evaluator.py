@@ -479,6 +479,46 @@ return: res_in + evalpon<vrtyp>_u<uubnum>"""
         return res_out
 
 
+class EvalFLIR(EvalBase):
+    """Evaluator for FLIR result"""
+    def __init__(self, uubnums, **kwargs):
+        ctx = kwargs.get('ctx', None)
+        super(EvalFLIR, self).__init__('flir', uubnums, ctx=ctx)
+        self.missing = 0
+        self.stats = {uubnum: {'ok': 0, 'missing': 0, 'failed': 0}
+                      for uubnum in uubnums}
+        self.logger.debug('creating instance')
+
+    def dpfilter(self, res_in):
+        """Accumulate FLIR evaluation result
+checks for keys: flireval_u%04d - True/False/None
+return: does not modify res_in"""
+        if 'meas_flir' not in res_in:
+            return res_in
+        mp = res_in.get('meas_point', -1)
+        if mp <= self.lastmp:  # avoid calling filter twice to one meas point
+            self.logger.error('Duplicate call of dpfilter at measpoint %d', mp)
+            return res_in
+        self.lastmp = mp
+        for uubnum in self.uubnums:
+            label = item2label(typ='flireval', uubnum=uubnum)
+            if label in res_in:
+                res = res_in[label]
+                stat = self.stats[uubnum]
+                if res is True:
+                    stat['ok'] += 1
+                elif res is False:
+                    stat['failed'] += 1
+                    self.log(mp, uubnum, 'failed')
+                elif res is None:
+                    stat['missing'] += 1
+                    self.log(mp, uubnum, 'missing')
+                else:
+                    self.logger.error('wrong FLIR result ' + repr(res))
+        self.npoints += 1
+        return res_in
+
+
 class Evaluator(threading.Thread):
     """Evaluator for check internal SN & removeUUB"""
     ISN_SEVERITY_STRICT = 0   # require all UUBs correctly
