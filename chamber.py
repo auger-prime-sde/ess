@@ -469,9 +469,9 @@ jsonobj - either json string or json file"""
                         ttime += dur
                     if 'log_timeout' in tp:
                         log_timeout = int(self._macro(tp['log_timeout']))
-                        if mptime not in ap.lto or \
-                           log_timeout > ap.lto[mptime]:
-                            ap.lto[mptime] = log_timeout
+                        if ttime not in ap.lto or \
+                           log_timeout > ap.lto[ttime]:
+                            ap.lto[ttime] = log_timeout
                     if "login" in tp:
                         ap.lis[ttime] = self._macro(tp["login"])
                     if "logout" in tp:
@@ -505,12 +505,15 @@ jsonobj - either json string or json file"""
                         ftime += dur
                     if 'log_timeout' in fp:
                         log_timeout = int(self._macro(fp['log_timeout']))
-                        if mptime not in ap.lto or \
-                           log_timeout > ap.lto[mptime]:
-                            ap.lto[mptime] = log_timeout
+                        if ftime not in ap.lto or \
+                           log_timeout > ap.lto[ftime]:
+                            ap.lto[ftime] = log_timeout
                     flags = {key: self._macro(fp[key])
-                             for key in ('imagename', 'attname', 'description',
-                                         'snapshot', 'download', 'delete')
+                             for key in (
+                                 'snapshot', 'download', 'delete',
+                                 'imagename', 'db', 'rawname', 'evalname',
+                                 'evaltitle', 'evalimname', 'bgimage',
+                                 'description')
                              if key in fp}
                     if 'snapshot' in flags:
                         assert 'imagename' in flags, \

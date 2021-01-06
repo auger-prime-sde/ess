@@ -553,6 +553,7 @@ fplist - list of files/streams for output
             self.zmqsocket = self.zmqcontext.socket(zmq.PUB)
             self.zmqsocket.bind("tcp://127.0.0.1:%d" % ZMQPORT)
         self.logger = logging.getLogger('Evaluator')
+        self._lock_msg = threading.Lock()
 
     def run(self):
         tid = syscall(SYS_gettid)
@@ -743,13 +744,14 @@ Raise AssertionError in a non-allowed situation"""
             timestamp = datetime.now()
         ts = timestamp.strftime('%Y-%m-%dT%H:%M:%S | ')
         spacer = ' ' * len(ts)
-        for line in msglines:
-            msg = ts + line + '\n'
-            ts = spacer
-            for fp in self.fplist:
-                fp.write(msg)
-            if zmq is not None:
-                self.zmqsocket.send_string(msg)
+        with self._lock_msg:
+            for line in msglines:
+                msg = ts + line + '\n'
+                ts = spacer
+                for fp in self.fplist:
+                    fp.write(msg)
+                if zmq is not None:
+                    self.zmqsocket.send_string(msg)
 
     def join(self, timeout=None):
         while self.thrs:

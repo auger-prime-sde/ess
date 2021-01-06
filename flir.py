@@ -46,20 +46,24 @@ class FLIR(threading.Thread):
                            br'(?P<size>..)(?P<chksum>..)(?P<data>.*)\r\nOK>',
                            re.DOTALL)
     re_baudrate = re.compile(br'.*\r\n(?P<baudrate>\d+)\r\nOK>', re.DOTALL)
-    eval_title_template = 'Temperature increase [deg.C]' + \
-        ' on UUB #{uubnum:04d} ({timestamp:%Y-%m-%d}): {res}'
+    eval_title_template = 'UUB #{uubnum:04d} @{timestamp:%Y-%m-%d}: {res}' + \
+        ' (temperature [deg.C])'
     eval_imname = 'flirtemp_{uubnum:04d}.png'
     eval_draw_type = 'temp'
     eval_draw_clim = (0.0, 15.0)
     COLDHOT = {'irad': (1, 2), 'arad': (3, 4), 'temp': (5, 6)}
     FLIR_RES = {True: 'PASSED', False: 'FAILED', None: 'system error'}
 
-    def __init__(self, port, timer, q_resp, q_att, datadir, uubnum=0,
-                 imtype=None, flireval=None, elogger=None):
+    def __init__(self, port, uubnum=0, imtype=None, flireval=None, ctx=None):
         """Detect baudrate, set termecho to off and switch baudrate to max"""
         super(FLIR, self).__init__(name='Thread-FLIR')
-        self.timer, self.q_resp, self.q_att = timer, q_resp, q_att
-        self.datadir, self.elogger = datadir, elogger
+        if ctx is None:
+            self.timer = self.q_resp = self.q_att = self.datadir = None
+            self.evaluator = self.elogger = None
+        else:
+            self.timer, self.datadir = ctx.timer, ctx.datadir
+            self.q_resp, self.q_att = ctx.q_resp, ctx.q_att
+            self.evaluator, self.elogger = ctx.evaluator, ctx.elogger
         self.uubnum = uubnum
         self.logger = logging.getLogger('FLIR')
         self.ser = s = None   # avoid NameError on isinstance(s, Serial) check
@@ -86,7 +90,9 @@ class FLIR(threading.Thread):
         self.typ = (imtype, FLIR.IMTYPES[imtype])
         self.fe = None
         if flireval is not None:
-            self.fe = FlirEval(datadir, timer.basetime, uubnum, **flireval)
+            self.fe = FlirEval(self.datadir, self.timer.basetime,
+                               uubnum, **flireval)
+        self.snapshots = {}   # images stored during the session
 
     def __del__(self):
         if isinstance(self.ser, Serial) and self.ser.isOpen():
@@ -193,9 +199,9 @@ return True/False or None in case of error + full image name"""
                     self.fe.rad2temperature(self.fe.bgimage)
             else:
                 arr = rad - self.fe.bgimage
-                self.fe.board.saveImage(
-                    arr, imfname, title=title, clim=self.eval_draw_clim,
-                    drawComps=comps)
+            self.fe.board.saveImage(
+                arr, imfname, title=title, clim=self.eval_draw_clim,
+                drawComps=comps)
         except Exception:
             msg = 'FLIR eval raised exception'
             if self.elogger is not None:
@@ -227,7 +233,7 @@ return flags, rec or None, None in case of inconsistency"""
         cflags['imagename'] = imagename
         if cflags['snapshot']:
             rec = {}
-            db = flags['db']
+            db = flags.get('db', None)
             if db is None:
                 rec['db'] = None
             else:
@@ -253,7 +259,8 @@ return flags, rec or None, None in case of inconsistency"""
                 self.logger.error('Both bgimage and evaluation required')
                 return None, None
             rec['bgimage'] = bgimage
-            for key in ('description', 'evaltitle', 'evalimname'):
+            rec['description'] = flags.get('description', '')
+            for key in ('evaltitle', 'evalimname'):
                 if key in flags:
                     rec[key] = flags[key]
         else:
@@ -292,7 +299,6 @@ return flags, rec or None, None in case of inconsistency"""
         tid = syscall(SYS_gettid)
         self.logger.debug('run start, name %s, tid %d',
                           threading.current_thread().name, tid)
-        snapshots = {}   # images stored during the session
         downloaded = []
         while True:
             self.timer.evt.wait()
@@ -337,24 +343,24 @@ return flags, rec or None, None in case of inconsistency"""
                 self.snapshot(imagename)
                 self.logger.info('Image %s stored', imagename)
                 rec['timestamp'] = timestamp
-                snapshots[imagename] = rec
+                self.snapshots[imagename] = rec
             if flags['download']:
                 if imagename is not None:
-                    if imagename in snapshots:
+                    if imagename in self.snapshots:
                         imagelist = (imagename, )
                     else:
                         self.logger.error('image <%s> not stored', imagename)
                         imagelist = []
                 else:
-                    imagelist = list(snapshots.keys())
+                    imagelist = list(self.snapshots.keys())
                 for image in imagelist:
                     fname = image + self.typ[1]
                     self.getfile('images/' + fname, self.datadir + fname)
                     downloaded.append(image)
-                    rec = snapshots.pop(image)
+                    rec = self.snapshots.pop(image)
                     arec = {'uubs': (self.uubnum, ),
                             'run': True}
-                    if 'description' in flags:
+                    if 'description' in rec:
                         arec['description'] = rec['description']
                     if rec['db'] in ('raw', 'both'):
                         arec['name'] = rec['rawname']
@@ -362,17 +368,14 @@ return flags, rec or None, None in case of inconsistency"""
                         self.q_att.put(arec)
                     if rec['bgimage']:
                         self.fe.readFFF(self.datadir + fname, True)
-                    elif 'evalname' in flags:
+                    elif 'evalname' in rec:
                         res, efname = self._evalFFF(
                             self.datadir + fname, timestamp,
                             rec.get('evalimname', None),
                             rec.get('evaltitle', None))
-                        self.timer.add_immediate(
-                            'message',
-                            'FLIR evaluation: ' + FLIR.FLIR_RES[res])
-                        if efname is not None:
-                            im = PIL.Image.open(efname)
-                            im.show()
+                        if self.evaluator is not None:
+                            self.evaluator.writeMsg(
+                                ('FLIR evaluation: ' + FLIR.FLIR_RES[res], ))
                         label = item2label(typ='flireval',
                                            uubnum=self.uubnum)
                         self.q_resp.put({
@@ -383,9 +386,12 @@ return flags, rec or None, None in case of inconsistency"""
                             arec['name'] = rec['evalname']
                             arec['filename'] = efname
                             self.q_att.put(arec)
+                        if efname is not None:
+                            im = PIL.Image.open(efname)
+                            im.show()
             if flags['delete']:
                 if imagename is not None:
-                    if imagename in snapshots:
+                    if imagename in self.snapshots:
                         self.logger.warning(
                             'image %s to be deleted not downloaded', imagename)
                         imagelist = (imagename, )
@@ -758,10 +764,10 @@ yield tuple (label, pxmin, pymin, pxmax, pymax)"""
                 # if text is None:
                 #     text = label
                 text = label
-                plt.text(pxmax+1, pymin, text, color=color,
+                plt.text(pxmin, pymin-1, text, color=color,
                          fontsize=8,
                          horizontalalignment='left',
-                         verticalalignment='baseline')
+                         verticalalignment='top')
                 # pxc = (pxmin+pxmax)/2
                 # pyc = (pymin+pymax)/2
                 # plt.text(pxc, pyc, text, color=color,

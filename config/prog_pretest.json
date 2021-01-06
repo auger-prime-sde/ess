@@ -1,7 +1,7 @@
 {
  "macros": {
     "uubinit_cmds": [
-      "tftp -g -r uubprog_02.tgz -l uubprog.tgz 192.168.31.254",
+      "tftp -g -r uubprog_03.tgz -l uubprog.tgz 192.168.31.254",
       "tar zxf uubprog.tgz",
       "source ./run.sh" ],
     "meas_ramp_params": [{
@@ -48,6 +48,7 @@
       "meas.ramp": "meas_ramp_params",
       "meas.noise": "meas_noisestat_params",
       "flir": [{ "offset": -10,
+		 "log_timeout": 30,
 		 "imagename": "imfinal",
 		 "description": "FLIR image taken after warm up",
 		 "db": "eval",
@@ -56,6 +57,6 @@
 	         "download": true,
 		 "delete": true }]
     },
-    { "stop": 10 }
+    { "stop": 20 }
   ]
 }

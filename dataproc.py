@@ -600,6 +600,8 @@ others: uubnum, chan, splitmode, voltage, flabel (optional), functype
                  'functype')
 
     def filter_stat(res_in):
+        if 'meas_noise' not in res_in:
+            return res_in
         data = {}
         for label, value in res_in.items():
             d = label2item(label)
@@ -657,6 +659,8 @@ or
                            ('F', uubnum, ch_lg, flabel))
 
     def filter_linear(res_in):
+        if 'meas_freq' not in res_in or 'meas_pulse' not in res_in:
+            return res_in
         data = {}
         for label, adcvalue in res_in.items():
             d = label2item(label)
@@ -735,6 +739,8 @@ output items:
     M = np.matmul(np.linalg.inv(np.matmul(X.T, X)), X.T)
 
     def filter_cutoff(res_in):
+        if 'meas_freq' not in res_in:
+            return res_in
         data = {}
         for label, value in res_in.items():
             d = label2item(label)
@@ -771,15 +777,17 @@ res_out = {'timestamp', 'missing': <list>, 'failed': <list>}"""
         "check if label present in <d> for all chans and replace them by one"
         labels = [item2label(functype='R', uubnum=uubnum, chan=ch+1)
                   for ch in range(10)]
+        bitmap = sum([1 << ch for ch, label in enumerate(labels)
+                      if label in d])
         if all([label in d for label in labels]):
             for label in labels:
                 d.remove(label)
             d.append(item2label(functype='R', uubnum=uubnum))
-        bitmap = sum([1 << ch for ch, label in enumerate(labels)
-                      if label in d])
         return bitmap
 
     def filter_ramp(res_in):
+        if 'meas_ramp' not in res_in:
+            return res_in
         data = {item2label(functype='R', uubnum=uubnum, chan=ch+1): None
                 for uubnum in uubnums
                 for ch in range(10)}

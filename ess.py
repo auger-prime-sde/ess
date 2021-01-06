@@ -24,7 +24,7 @@ from serial import Serial, SerialException
 from timer import Timer, periodic_ticker, EvtDisp
 from binder import BinderTypes, getBinder
 from logger import LogHandlerRamp, LogHandlerPickle, LogHandlerGrafana
-from logger import LogHandlerVoltramp, DataLogger
+from logger import LogHandlerVoltramp, LogHandlerDummy, DataLogger
 from logger import makeDLtemperature, makeDLslowcontrol, makeDLcurrents
 from logger import makeDLhumid, makeDLpedenoise, makeDLstat
 from logger import makeDLhsampli, makeDLfampli, makeDLlinear
@@ -166,7 +166,7 @@ class DetectUSB:
             for port in self.devices['ttyUSB']:
                 self.logger.debug('Detecting flir on %s', port)
                 try:
-                    flir = FLIR(port, None, None, None, None)
+                    flir = FLIR(port)
                     self.found['flir'] = port
                     self.devices['ttyUSB'].remove(port)
                     self.logger.info('flir found at %s', port)
@@ -402,17 +402,6 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.bme = BME(port, self.timer, self.q_resp)
             self.bme.start()
 
-        # FLIR
-        if 'flir' in d['ports']:
-            port = d['ports']['flir']
-            uubnum = d.get('flir.uubnum', 0)
-            imtype = str(d['flir.imtype']) if 'flir.imtype' in d else None
-            flireval = d['evaluators'].get('flir', None)
-            self.flir = FLIR(port, self.timer, self.q_resp, self.q_att,
-                             self.datadir, uubnum, imtype, flireval,
-                             self.elogger)
-            self.flir.start()
-
         # chamber
         if 'chamber' in d['ports']:
             port = d['ports']['chamber']
@@ -504,6 +493,15 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         self.evaluator = Evaluator(self, (sys.stdout, self.fp_msg))
         self.evaluator.start()
 
+        # FLIR
+        if 'flir' in d['ports']:
+            port = d['ports']['flir']
+            uubnum = d.get('flir.uubnum', 0)
+            imtype = str(d['flir.imtype']) if 'flir.imtype' in d else None
+            flireval = d['evaluators'].get('flir', None)
+            self.flir = FLIR(port, uubnum, imtype, flireval, self)
+            self.flir.start()
+
         # tickers
         if 'meas.thp' in d['tickers']:
             thp_period = d['tickers'].get('meas.thp', 30)
@@ -542,6 +540,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         dpfilter_eval_pulse = None
         dpfilter_eval_freq = None
         dpfilter_eval_pon = None
+        dpfilter_eval_flir = None
 
         # meas points
         if d['dataloggers'].get('measpoint', False):
@@ -730,7 +729,10 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             # flir
             if 'flir' in d['evaluators']:
                 fuubnum = d.get('flir.uubnum', 0)
-                evaluators['flir'] = EvalFLIR('flir', (fuubnum, ))
+                evaluators['flir'] = EvalFLIR((fuubnum, ))
+                dpfilter_eval_flir = (evaluators['flir'].dpfilter, 'eval_flir')
+                self.dl.add_handler(LogHandlerDummy(),
+                                    ((dpfilter_eval_flir, ), ))
             else:
                 evaluators['flir'] = EvalBase('flir', luubnums)
             self.dbcon.evaluators = evaluators

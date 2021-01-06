@@ -421,6 +421,19 @@ class LogHandlerVoltramp:
         self.stop()
 
 
+class LogHandlerDummy:
+    """Dummy log handler, just to trigger DP filter"""
+
+    def __init__(self):
+        self.label = "LogHandlerDummy"
+
+    def write_rec(self, d):
+        pass
+
+    def stop(self):
+        pass
+
+
 class DataLogger(threading.Thread):
     """Thread to save all results"""
     def __init__(self, q_resp, timeout=10, elogger=None):
@@ -1176,12 +1189,16 @@ def makeDLmeaspoint(ctx):
     """Create LogHandlerFile for list of measurement points
 ctx - context object, used keys: datadir + basetime + starttime"""
     fn = ctx.datadir + ctx.basetime.strftime('measpoints-%Y%m%d.log')
+    if ctx.starttime is not None:
+        starttime = ctx.starttime.strftime('%Y-%m-%d %H:%M')
+    else:
+        starttime = 'N/A'
     prolog = """\
 # Measurement points
 # basetime {basetime:%Y-%m-%d %H:%M}
-# starttime {starttime:%Y-%m-%d %H:%M}
+# starttime {starttime:s}
 # columns: timestamp | meas_point | rel_time | set_temp | events
-""".format(basetime=ctx.basetime, starttime=ctx.starttime)
+""".format(basetime=ctx.basetime, starttime=starttime)
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}', '{meas_point:4d}',
                '{rel_time:5d}', '{set_temp:5.1f}', '{events:s}']
     formatstr = ' '.join(logdata) + '\n'
