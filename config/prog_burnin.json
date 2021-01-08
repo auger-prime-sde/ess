@@ -1,0 +1,94 @@
+{
+  "macros": {
+    "uubinit_cmds": [
+      "tftp -g -r uubprog_03.tgz -l uubprog.tgz 192.168.31.254",
+      "tar zxf uubprog.tgz",
+      "source ./run.sh" ],
+    "meas_ramp_params": [{
+      "offset": -90,
+      "db": true }],
+    "meas_noise_params": [{
+      "offset": -90,
+      "db": true,
+      "log_timeout": 20,
+      "count": 100 }],
+    "timer_sc_1": [{ "offset": 0,
+		     "recs": [[ "meas.sc", "periodic", "meas.sc",
+				null, [1.0]]]}],
+    "timer_sc_30": [{ "offset": 0,
+		      "recs": [[ "meas.sc", "periodic", "meas.sc",
+				 null, [30.0]]]}]
+  },
+  "progno": 6,
+  "load": true,
+  "title": "Burnin",
+  "stop_manual": true,
+  "temperature": 20.0,
+  "anticond": false,
+  "program": [
+    { "duration": 90,
+      "timer": "timer_sc_1",
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "eval": [{ "offset": 0, "message": "Powering UUBs on for check"},
+	       { "offset": 81, "checkISN": 0 },
+	       { "offset": 83, "orderUUB": true }]},
+    { "duration": 90,
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "eval": [{ "offset": 0, "message": "Powering UUBs on for test"}],
+      "telnet": [{ "offset": -5, "cmds": "uubinit_cmds" }]},
+
+    { "duration": 180,
+      "timer": "timer_sc_30",
+      "eval": [{ "offset": 0, "message": "Plateau at 20 deg.C, measurement in 1:30"}],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noise_params" },
+
+    { "duration": 600,
+      "eval": [{ "offset": 0, "message": "Ramp down to -20 deg.C (10:00)"}],
+      "temperature": -20},
+      
+    { "duration": 360,
+      "startcycle": 23,
+      "eval": [{ "offset": 0, "message": "Plateau at -20 deg.C, measurement in 4:30"}],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noise_params"},
+
+    { "duration": 600,
+      "eval": [{ "offset": 0, "message": "Ramp up to 70 deg.C (22:30)"}],
+      "temperature": 20,
+      "anticond": true},
+    { "duration": 750,
+      "anticond": false,
+      "temperature": 70},
+
+    { "duration": 360,
+      "eval": [{ "offset": 0, "message": "Plateau at 70 deg.C, measurement in 4:30"}],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noise_params"},
+
+    { "duration": 1530,
+      "endcycle": true,
+      "eval": [{ "offset": 0, "message": "Ramp down to -20 deg.C (25:30)"}],
+      "temperature": -20},
+
+    { "duration": 360,
+      "eval": [{ "offset": 0, "message": "Plateau at -20 deg.C, measurement in 4:30"}],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noise_params"},
+
+    { "duration": 600,
+      "anticond": true,
+      "eval": [{ "offset": 0, "message": "Ramp up to 20 deg.C (10:00)"}],
+      "temperature": 20},
+
+    { "duration": 360,
+      "eval": [{ "offset": 0, "message": "Plateau at 20 deg.C, measurement in 4:30"}],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noise_params" },
+
+    { "duration": 30,
+      "power": [{ "offset": -1, "pcoff": true }]},
+
+    { "stop": 30 }
+  ]
+}

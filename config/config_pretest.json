@@ -7,8 +7,6 @@
     "format": "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
     "filename": "pretest.log" },
   "comment": "Pretest",
-  "lowgains": [ 1, 3, 5, 7, 8, 9 ],
-  "highgains": [ 2, 4, 6, 10 ],
   "ports": {
     "power": "/dev/ttyACM0",
     "flir": "/dev/ttyUSB0" },

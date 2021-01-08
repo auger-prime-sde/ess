@@ -293,7 +293,8 @@ return flags, rec or None, None in case of inconsistency"""
 
     def deleteimage(self, imagename):
         """Delete <image> in dir images/"""
-        self._send_recv('rm images/%s%s' % (imagename, self.typ[1]))
+        self._send_recv('rm images/%s%s' % (imagename, self.typ[1]),
+                        timeout=5)
 
     def run(self):
         tid = syscall(SYS_gettid)

@@ -1,0 +1,54 @@
+{
+  "macros": {
+    "uubinit_cmds": [
+      "tftp -g -r uubprog_03.tgz -l uubprog.tgz 192.168.31.254",
+      "tar zxf uubprog.tgz",
+      "source ./run.sh" ],
+    "meas_ramp_params": [{
+      "offset": 0,
+      "db": true }],
+    "meas_noise_params": [{
+      "offset": 0,
+      "db": true,
+      "count": 100 }],
+    "meas_pulse_params": [{
+      "offset": 0,
+      "db": true,
+      "voltages": [ 0.1, 0.2, 0.4, 0.8, 1.6 ],
+      "splitmodes": [ 0, 3 ],
+      "count": 10 }],
+    "meas_freq_params": [{
+      "offset": 0,
+      "db": true,
+      "log_timeout": 120,
+      "freqs": [ 10e6, 20e6, 30e6, 40e6, 50e6, 59e6, 70e6 ],
+      "voltages": [ 0.1, 0.3, 0.8 ],
+      "splitmodes": [ 0, 1 ],
+      "count": 10 }]
+  },
+  "progno": 4,
+  "load": false,
+  "program": [
+    { "duration": 90,
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "eval": [{ "offset": 0,
+		 "message": "Powering UUBs on"},
+	       { "offset": 84, "checkISN": 8 }],
+      "telnet": [{ "offset": 85, "cmds": "uubinit_cmds" }]},
+
+    { "duration": 90,
+      "eval": [{ "offset": 0,
+		 "message": "Measuring ramp/pulse/freq/noise" }],
+      "meas.ramp": "meas_ramp_params",
+      "meas.noise": "meas_noise_params",
+      "meas.pulse": "meas_pulse_params",
+      "meas.freq": "meas_freq_params" },
+
+    { "duration": 10,
+      "eval": [{ "offset": 0,
+		 "orderUUB": false }],
+      "power": [{ "offset": -1, "pcoff": true }]},
+
+    { "stop": 10 }
+  ]
+}

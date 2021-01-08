@@ -1,0 +1,67 @@
+{
+  "CONFIG_COMMENT":
+      "for setup2: afg3, auger-test2.{key,crt}, splitter2-202005; for setup1: afg2, auger-test.{key,crt}, splitter1-202005",
+  "CONFIG_VERSION": "20210107",
+  "phase": "burnin",
+  "tester": "$TESTER",
+  "datadir": "data/databurnin-%Y%m%d/",
+  "logging": {
+    "level": 10,
+    "format": "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    "filename": "test.log" },
+  "comment": "Burn-in",
+  "devlist": [ "powercontrol", "power_cpx", "trigdelay", "BME", "chamber" ],
+  "tickers": {
+    "meas.thp": 30,
+    "meas.sc": 30,
+    "essprogram": "config/prog_burnin.json",
+    "startprog": 50 },
+  "power": {"ch1": [ 24.0, 7, true ]},
+  "pc_limits": [[ null, 30.0, 250.0, 600.0 ]],
+  "trigger": "TrigDelay",
+  "trigdelay": { "N": 0, "R": 0, "P": 0, "F": 30 },
+  "n_dp": 2,
+  "stopstate": "manual",
+  "dbinfo": { "host_addr": "auger-sdeu.farm.particle.cz",
+              "host_port": 443,
+              "server_cert": "dbcred/certchain.pem",
+              "client_cert": "dbcred/auger-test2.crt",
+              "client_key": "dbcred/auger-test2.key",
+              "urlSN": "/engine-sdeu/internalSN?",
+              "urlCommit": "/engine-sdeu/commit"},
+  "evaluators": {
+    "ramp": {
+      "missing": 0 },
+    "noise": {
+      "missing": 0,
+      "noisemean": [[ 0.4, 0.75, 1, 3, 5, 7, 8],
+                    [ 0.5, 0.75, 9],
+	            [ 1.2, 2.5, 2, 4, 6, 10 ]],
+      "pedemean": [[ 200.0, 300.0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 ]],
+      "pedestdev": [[ 0.02, 0.2, 1, 3, 5, 7, 8, 9 ],
+		    [ 0.1, 1.5, 2, 4, 6, 10 ]] }
+  },
+  "dataloggers": {
+    "measpoint": true,
+    "temperature": true,
+    "humid": true,
+    "slowcontrol": true,
+    "currents": true,
+    "ramp": true,
+    "pede": true,
+    "pedestatcount": 100,
+    "grafana": { "host_addr": "auger-sdeu.farm.particle.cz",
+		 "host_port": 443,
+		 "server_cert": "dbcred/certchain.pem",
+		 "client_cert": "dbcred/auger-test2.crt",
+		 "client_key": "dbcred/auger-test2.key",
+		 "urlInit": "/engine-grafana/init?",
+		 "urlSetStarttime":
+		     "/engine-grafana/set_starttime/{runid:d}/{starttime:s}",
+		 "urlWriteRec": "/engine-grafana/write_rec/{runid:d}",
+		 "flabels": [ "71", "72", "73", "74", "75", "759", "77" ],
+		 "fmtdatetime": "%Y%m%d%H%M%S"},
+    "db": { "logitems": [ "ramp", "noisestat" ]},
+    "pickle": true },
+  "uubnums": $UUBNUMS
+}
