@@ -21,7 +21,7 @@
   "power": {"ch1": [ 24.0, 7, true ]},
   "pc_limits": [[ null, 30.0, 250.0, 600.0 ]],
   "trigger": "TrigDelay",
-  "trigdelay": { "N": 0, "R": 0, "P": 0, "F": 30 },
+  "trigdelay": { "N": 0, "R": 0, "P": 0, "F": 40 },
   "splitter": {"calibration": "config/splitter2-202005.json"},
   "n_dp": 2,
   "dbinfo": { "host_addr": "auger-sdeu.farm.particle.cz",
