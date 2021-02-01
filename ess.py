@@ -31,7 +31,8 @@ from logger import makeDLhsampli, makeDLfampli, makeDLlinear
 from logger import makeDLfreqgain, makeDLcutoff, makeDLmeaspoint
 from logger import makeDLhglgratio, makeDLfhglgratio
 from logger import QueDispatch, QLogHandler, ExceptionLogger
-from BME import BME, TrigDelay, PowerControl, readSerRE, SerialReadTimeout
+from BME import BME, RPiDS, TrigDelay, PowerControl
+from BME import readSerRE, SerialReadTimeout
 from UUB import UUBdaq, UUBlisten, UUBtelnet, UUBtsc
 from UUB import uubnum2mac, VIRGINUUBNUM
 from chamber import Chamber, ESSprogram
@@ -228,6 +229,7 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
         # clear conditional members to None
         self.ps = None
         self.bme = None
+        self.rpids = None
         self.flir = None
         self.chamber = None
         self.td = None
@@ -402,6 +404,11 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.bme = BME(port, self.timer, self.q_resp)
             self.bme.start()
 
+        # rpiDS
+        if d['ports'].get('rpiDS', False):
+            self.rpids = RPiDS(self.timer, self.q_resp)
+            self.rpids.start()
+
         # chamber
         if 'chamber' in d['ports']:
             port = d['ports']['chamber']
@@ -548,10 +555,16 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # temperature
         if d['dataloggers'].get('temperature', False):
-            dslist = self.bme.dslist() if self.bme else ()
+            bmelist = self.bme.bmelist() if self.bme else ()
+            dslist = []
+            if self.bme:
+                dslist.extend(self.bme.dslist())
+            if self.rpids:
+                dslist.extend(self.rpids.dslist())
             self.dl.add_handler(
                 makeDLtemperature(
-                    self, luubnums, 'meas.sc' in d['tickers'], dslist))
+                    self, luubnums, 'meas.sc' in d['tickers'],
+                    bmelist, dslist))
 
         # humidity
         if d['dataloggers'].get('humid', False):
@@ -840,6 +853,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
             self.ps.join()
         if self.bme is not None:
             self.bme.join()
+        if self.rpids is not None:
+            self.rpids.join()
         if self.flir is not None:
             self.flir.join()
         if self.chamber is not None:

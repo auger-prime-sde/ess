@@ -9,8 +9,10 @@
   "comment": "Pretest",
   "ports": {
     "power": "/dev/ttyACM0",
-    "flir": "/dev/ttyUSB0" },
+    "flir": "/dev/ttyUSB0",
+    "rpiDS": true },
   "tickers": {
+    "meas.thp": 30,
     "essprogram": "config/prog_pretest.json",
     "essprogram.macros" : { "chmac": "fw_setenv ethaddr $MACADDR",
 			    "imstart": "rawstart_u$UUBNSTR",
@@ -50,6 +52,7 @@
       "score": [2000.0, 2000.0, 25.0, 25.0, 25.0, 25.0],
       "width": 4.0 }},
   "dataloggers": {
+    "temperature": true,
     "ramp": true,
     "pede": true,
     "pedestatcount": 100,

@@ -736,17 +736,20 @@ Consume items from queue in, put them to queue out and display them"""
 
 
 # predefined LogHandlers
-def makeDLtemperature(ctx, uubnums, sc=False, dslist=()):
+def makeDLtemperature(ctx, uubnums, sc=False, bmelist=(), dslist=()):
     """Create LogHandlerFile for temperatures
 ctx - context object, used keys: datadir + basetime
 uubnums - list of UUB numbers to log
 sc - if True, log also temperatures from SlowControl
+bmelist - list of BMEs (int 1 or 2)
 dslist - list of DS18B20 labels to log (integers in label 'DS%d')"""
     prolog = """\
 # Temperature measurement: BME + chamber + Zynq
 # date %s
-# columns: timestamp | set.temp | BME1.temp | BME2.temp | chamber.temp""" % (
+# columns: timestamp | set.temp""" % (
         ctx.basetime.strftime('%Y-%m-%d'))
+    prolog += ''.join([' | BME%d.temp' % i for i in bmelist])
+    prolog += ' | chamber.temp'
     prolog += ''.join([' | DS%d.temp' % i for i in dslist])
     prolog += ''.join([' | UUB-%04d.zynq_temp' % uubnum
                        for uubnum in uubnums])
@@ -754,11 +757,9 @@ dslist - list of DS18B20 labels to log (integers in label 'DS%d')"""
         prolog += ''.join(
             [' | UUB-%04d.sc_temp' % uubnum for uubnum in uubnums])
     prolog += '\n'
-    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{set_temp:6.1f}',
-               '{bme_temp1:7.2f}',
-               '{bme_temp2:7.2f}',
-               '{chamber_temp:7.2f}']
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}', '{set_temp:6.1f}']
+    logdata += ['{bme_temp%d:7.2f}' % i for i in bmelist]
+    logdata.append('{chamber_temp:7.2f}')
     logdata += ['{ds%d_temp:5.1f}' % i for i in dslist]
     logdata += ['{zynq%04d_temp:5.1f}' % uubnum for uubnum in uubnums]
     if sc:

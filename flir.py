@@ -369,7 +369,7 @@ return flags, rec or None, None in case of inconsistency"""
                         self.q_att.put(arec)
                     if rec['bgimage']:
                         self.fe.readFFF(self.datadir + fname, True)
-                    elif 'evalname' in rec:
+                    elif rec['evalname'] is not None:
                         res, efname = self._evalFFF(
                             self.datadir + fname, timestamp,
                             rec.get('evalimname', None),

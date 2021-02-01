@@ -114,10 +114,12 @@ kwargs - parameters for output voltage/current limit configuration
 
             if 'meas.sc' in flags and self.q_resp is not None:
                 voltage, current = self.readVoltCurr()
-                self.q_resp.put({'timestamp': timestamp,
-                                 'meas_sc': True,
-                                 'ps_u': voltage,
-                                 'ps_i': current})
+                rec = {'timestamp': timestamp, 'meas_sc': True}
+                if voltage is not None:
+                    rec['ps_u'] =  voltage
+                if current is not None:
+                    rec['ps_i'] =  current
+                self.q_resp.put(rec)
 
             if 'power' in flags and 'volt_ramp' in flags['power']:
                 live_vr = [thr for ts, thr in self.vramps
