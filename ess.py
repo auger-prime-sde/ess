@@ -568,8 +568,9 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 
         # humidity
         if d['dataloggers'].get('humid', False):
+            bmelist = self.bme.bmelist() if self.bme else ()
             scuubs = d['dataloggers']['humid']  # True or list of UUBs
-            self.dl.add_handler(makeDLhumid(self, luubnums, scuubs))
+            self.dl.add_handler(makeDLhumid(self, luubnums, scuubs, bmelist))
 
         # slow control measured values
         if d['dataloggers'].get('slowcontrol', False):

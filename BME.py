@@ -3,11 +3,13 @@
 # communication with BME280 on arduino
 #
 
+import os
 import re
 import math
 import threading
 import logging
 import glob
+import mmap
 from time import sleep
 from datetime import datetime, timedelta
 from serial import Serial
@@ -22,29 +24,38 @@ class SerialReadTimeout(AssertionError):
     pass
 
 
-def readSerRE(ser, r, timeout=2, logger=None):
+def readSerRE(ser, r, buf=None, timeout=2, logger=None):
     """Try to read regexp 're' from serial with timeout
 r - compiled regexp
+buf - if not None, initial buffer content
 timeout - timeout in s after which SerialReadTimeout exception is raised
 return response from serial or raise SerialReadTimeout exception"""
     TIME_STEP = 0.01   # timestep between successive read trials
-    resp = ser.read(ser.inWaiting())
-    if r.match(resp):
+    if buf is None:
+        buf = bytearray()
+    buf += ser.read(ser.inWaiting())
+    m = r.match(buf)
+    if m:
+        resp = buf[m.start():m.end()]
+        del buf[:m.end()]
         if logger is not None:
-            logger.debug("serial %s read %s" % (ser.port, repr(resp)))
+            logger.debug("serial %s read %s" % (ser.port, bytes(resp)))
         return resp
     tend = datetime.now() + timedelta(seconds=timeout)
     while datetime.now() < tend:
         if ser.inWaiting() > 0:
-            resp += ser.read(ser.inWaiting())
-            if r.match(resp):
+            buf += ser.read(ser.inWaiting())
+            m = r.match(buf)
+            if m:
+                resp = buf[m.start():m.end()]
+                del buf[:m.end()]
                 if logger is not None:
-                    logger.debug("serial %s read %s" % (ser.port, repr(resp)))
+                    logger.debug("serial %s read %s" % (ser.port, bytes(resp)))
                 return resp
         sleep(TIME_STEP)
     if logger is not None:
         logger.debug("serial %s timed out, partial read %s" % (
-            ser.port, repr(resp)))
+            ser.port, bytes(buf)))
     raise SerialReadTimeout
 
 
@@ -363,6 +374,10 @@ class PowerControl(threading.Thread):
     re_zones = re.compile(rb'.*?(([0-9][+-][0-7]:\d+\s)*)\s*OK', re.DOTALL)
     re_zone = re.compile(rb'(?P<port>[0-9])(?P<dir>[+-])(?P<zone>[0-7]):' +
                          rb'(?P<atics>\d+)')
+    re_fastadc_st = re.compile(rb'pin = (?P<port>[0-9]); ' +
+                               rb'offset = (?P<offset>-?\d+(\.\d*)); ' +
+                               rb'slope = (?P<slope>-?\d+(\.\d*))\r\n')
+    re_fastadc_en = re.compile(rb'@*OK')
     RZ_TOUT = 30.  # [s] default timeout for rz_tout
     TICK = 0.0004  # [s] Arduino time tick
     NCHANS = 10   # number of channel
@@ -373,6 +388,14 @@ class PowerControl(threading.Thread):
               '{uubnum:04d} {dir:1s} {zone:d}\n'
     USBCOMX = 0.5  # moment of Arduino action between start and end timestamp
     TCALIB = 60  # decay time for calibration weitgths
+    FASIZE = 1 << 16  # 64KiB size of mmap buffers
+
+    class FADCstate:
+        def __init__(self, buf=None):
+            self.buf = buf if buf is not None else bytearray()
+            self.running = True
+            self.byteH = None
+            self.counter = 0
 
     def __init__(self, port, ctx=None, splitmode=None):
         """Constructor
@@ -413,7 +436,7 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
 """ % (ctx.basetime.strftime('%Y-%m-%d'), luubnums))
         s = None               # avoid NameError on isinstance(s, Serial) check
         try:
-            s = Serial(port, baudrate=115200)
+            s = Serial(port, baudrate=1000000, parity='O')
             self.logger.info('Opening serial %s', repr(s))
             s.write(b'?\r')
             sleep(0.5)  # ad hoc constant to avoid timeout
@@ -438,6 +461,10 @@ uubnums - list of UUBnums in order of connections.  None if port skipped"""
         self.bootvolt = self.boottime = self.pendingLimits = self.chk_ts = None
         self.rz_tout = PowerControl.RZ_TOUT
         self.rz_thread = None
+        self.fastadc_thread = None
+        self.fastadc_block = None  # current mmap object
+        self.fastadc_data = []  # list of finished mmap objects
+        self.fastadc_conv = None  # list: offset and slope for conversion
         self.zeroTime()
 
     def _removeUUB(self, uubnum):
@@ -720,6 +747,161 @@ May raise IndexError if appropriate record does not exist"""
             sleep(tout)
             tout = self.rz_tout
         self.logger.debug('readZone finished')
+
+    def _fastadc(self, port):
+        """Function running in a separate thread to actually start fast ADC
+acquisition, read and store data to fastadc_data blocks.
+Acquisition is stopped by fastADC_stop() function writing 'A' to the power
+ control device"""
+        tid = syscall(SYS_gettid)
+        logger = logging.getLogger('fastADC')
+        logger.debug('thread started: name %s, tid %d',
+                     threading.current_thread().name, tid)
+        self.fastadc_block = mmap.mmap(-1, self.FASIZE)
+        with self._lock:
+            self.ser.write(b'a%d\r' % port)
+            state = PowerControl.FADCstate()
+            resp = readSerRE(self.ser, PowerControl.re_fastadc_st,
+                             buf=state.buf, timeout=0.5)
+            m = PowerControl.re_fastadc_st.match(resp)
+            d = m.groupdict()
+            if port != int(d['port']):
+                logger.error('port mismatch: set %d, recieved %d',
+                             port, int(d['port']))
+                return
+            self.fastadc_conv = [np.float32(d[key])
+                                 for key in ('offset', 'slope')]
+            state.fp = open('/tmp/fastadc', 'wb')
+            while state.running:
+                inwait = self.ser.inWaiting()
+                if inwait > 0:
+                    state.buf += self.ser.read(inwait)
+                    self._fastadc_procbuf(state)
+                sleep(0.001)
+            self.fastadc_data.append(self.fastadc_block)
+            self.fastadc_block = None
+            resp = readSerRE(self.ser, PowerControl.re_fastadc_en,
+                             buf=state.buf, logger=logger, timeout=0.01)
+            logger.info('thread finished')
+
+    def _fastadc_procbuf(self, state):
+        """Process received buffer, store data
+state - FADCstate instance"""
+        FADC_STOP = ord('@')
+        FADC_INIT = 0x04
+        FADC_NBIT = 5
+        FADC_CNT = 1 << FADC_NBIT
+        res = bytearray()
+        while state.buf:
+            c = state.buf.pop(0)
+            if 'fp' in state.__dict__:
+                state.fp.write(bytes((c, )))
+            if state.byteH is not None:
+                res += bytearray((state.byteH, c))
+                state.byteH = None
+            elif c == FADC_STOP:
+                state.running = False
+                break
+            elif c & FADC_INIT:
+                nskip = ((c >> (8 - FADC_NBIT)) - state.counter) % FADC_CNT
+                if nskip > 0:
+                    res += b'\xff\xff' * nskip
+                state.counter += nskip+1
+                state.byteH = c & (FADC_INIT-1)  # mask higher bits
+            # else wrong character - ignore
+        if res:
+            self._fastadc_storedata(res)
+
+    def _fastadc_storedata(self, data):
+        """Store data (bytearray) to self.fastadc_data,
+ allocating new blocks if necessary"""
+        ndata = len(data)
+        nrem = self.FASIZE - self.fastadc_block.tell()
+        while ndata > 0:
+            nwrite = min(nrem, ndata)
+            self.fastadc_block.write(data[:nwrite])
+            if nrem == nwrite:
+                self.fastadc_data.append(self.fastadc_block)
+                self.fastadc_block = mmap.mmap(-1, self.FASIZE)
+                nrem = self.FASIZE
+            if ndata == nwrite:
+                break
+            nrem -= nwrite
+            ndata -= nwrite
+            data = data[nwrite:]
+
+    def fastADC_start(self, port):
+        """Start fast ADC acquisition from port by running separate thread"""
+        assert 0 <= port <= 9
+        if self.fastadc_thread is not None:
+            self.logger.warning(
+                'Fast ADC start but thread already running, stopping it')
+            self.fastADC_stop()
+        self.fastadc_data = []  # discard old data eventually
+        self.fastadc_thread = threading.Thread(
+            target=self._fastadc, args=(port, ), name='Thread-fastADC')
+        self.fastadc_thread.start()
+        self.logger.info('FADC thread started')
+
+    def fastADC_stop(self, timeout=0.1):
+        """Stop fast ADC acquisition
+return acquired data"""
+        if self.fastadc_thread is None:
+            self.logger.warning('fast ADC stop but thread not running')
+            return None
+        NTRIAL = 3
+        for trial in range(NTRIAL):
+            self.logger.info('stopping fast ADC thread, trial %d/%d',
+                             trial+1, NTRIAL)
+            self.ser.write(b'A')
+            self.fastadc_thread.join(timeout)
+            if not self.fastadc_thread.is_alive():
+                break
+        else:
+            self.logger.error('Fast ADC join timeouted')
+            raise SerialReadTimeout
+        self.logger.debug('fast ADC thread joined')
+        self.zeroTime()
+        self.fastadc_thread = None
+        return self.fastADC_res()
+
+    def fastADC_res(self):
+        """Get (and release) data collected by Fast ADC acquisition.
+Return numpy array or None if data not available"""
+        arrays = []
+        off, slope = self.fastadc_conv
+        while self.fastadc_data:
+            block = self.fastadc_data.pop(0)
+            nitem = block.tell() // 2
+            block.seek(0, os.SEEK_SET)
+            ar = np.frombuffer(block, dtype=np.dtype('>i2'), count=nitem)
+            ar = slope*(ar - off)
+            # replace ADC values = -1 by NaN
+            ar[ar < slope*(-0.5 - off)] = np.nan
+            arrays.append(ar)
+            block.close()
+        return np.concatenate(arrays) if arrays else None
+
+    def fastADC_smooth(self, data, alpha=None):
+        """Smooth fast ADC data as PC device would do"""
+        if alpha is None:
+            alpha = 255/256
+        nsamp = data.shape[0]
+        nsampred = nsamp // 10
+        datasm = np.zeros((nsampred, ), dtype='float32')
+        for i in range(nsamp):
+            if not np.isnan(data[i]):
+                datasm[0] = data[i]
+                break
+        else:
+            return None  # no non-NaN
+        for i in range(1, nsampred):
+            x = data[10*i]
+            if np.isnan(x):
+                datasm[i] = datasm[i-1]
+            else:
+                datasm[i] = alpha*datasm[i-1] + (1-alpha)*x
+        return datasm
 
     def run(self):
         if self.timer is None or self.q_resp is None:

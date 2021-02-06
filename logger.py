@@ -770,10 +770,11 @@ dslist - list of DS18B20 labels to log (integers in label 'DS%d')"""
                           skiprec=lambda d: 'meas_thp' not in d)
 
 
-def makeDLhumid(ctx, uubnums, scuubs=False):
+def makeDLhumid(ctx, uubnums, scuubs=(), bmelist=()):
     """Create LogHandlerFile for temperatures
 ctx - context object, used keys: datadir + basetime
 uubnums - list of UUB numbers to log
+bmelist - list of BMEs (int 1 or 2)
 scuubs - list of uubs to log sc humid
          if True, use uubnums"""
     if scuubs is True:
@@ -783,16 +784,15 @@ scuubs - list of uubs to log sc humid
     prolog = """\
 # Humidity measurement: BME + chamber + [SlowControl]
 # date %s
-# columns: timestamp | set.humid | BME1.humid | BME2.humid |\
- chamber.humid""" % ctx.basetime.strftime('%Y-%m-%d')
+# columns: timestamp | set.humid""" % ctx.basetime.strftime('%Y-%m-%d')
+    prolog += ''.join([' | BME%d.humid' % i for i in bmelist])
+    prolog += ' | chamber.humid'
     prolog += ''.join([' | UUB-%04d.sc_humid' % uubnum
                        for uubnum in scuubs])
     prolog += '\n'
-    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}',
-               '{set_humid:5.1f}',
-               '{bme_humid1:6.2f}',
-               '{bme_humid2:6.2f}',
-               '{chamber_humid:6.2f}']
+    logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}', '{set_humid:5.1f}']
+    logdata += ['{bme_humid%d:7.2f}' % i for i in bmelist]
+    logdata.append('{chamber_humid:6.2f}')
     logdata += ['{sc%04d_humid:6.2f}' % uubnum for uubnum in scuubs]
     formatstr = ' '.join(logdata) + '\n'
     fn = ctx.datadir + ctx.basetime.strftime('humid-%Y%m%d.log')

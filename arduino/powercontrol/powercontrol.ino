@@ -5,13 +5,15 @@
  *
  */
 
+#include <avr/io.h>
+
 #ifndef DEVICE
   #define DEVICE 0  /* 0: VIRGIN, 1: PowerCtrl1, 2: PowerCtrl2 */
 #endif
 
 #define STR(s) _STR(s)
 #define _STR(s) #s
-#define VERSION "dev:" STR(DEVICE) " 2020-04-29"
+#define VERSION "dev:" STR(DEVICE) " 2021-02-04"
 
 /* constants for voltage reference */
 #define AVCC 1
@@ -51,9 +53,19 @@ const float inv1alpha = (float)(1 << alphaN);
 char buffer[BUFSIZE];
 
 volatile uint8_t adcpin; /* currently processed ADC pin */
+#define FASTC_OFF 0xff
+#define FASTC_INIT 0x04
+#define FASTC_STEP (1 << 3)
+#define FASTC_STOP 'A'
+static const char FASTC_ENDMSG[] = "@@@@";
+volatile uint8_t fastcount; /* cyclic counter for fast transmission */
 volatile uint32_t gtime; /* time in 0.4ms */
 volatile uint32_t adcvals[NCHAN];  /* running average with expo decay */
 volatile uint8_t zones[NCHAN];  /* current zone of pin */
+
+#define set_adcpin(adcpin, adcsrb) \
+  ADMUX = ANALOG_REF | (adcpin & 0x07); \
+  ADCSRB = ((adcsrb) & ~(1 << MUX5)) | (((adcpin >> 3) & 0x01) << MUX5) 
 
 /* current reports */
 struct _creport {
@@ -363,12 +375,20 @@ ISR(ADC_vect) {
 #endif
   lval = ADCL;
   hval = ADCH;
+  if(fastcount != FASTC_OFF) {
+    hval |= fastcount;
+    fastcount += FASTC_STEP;
+    if(UCSR0A & TXC0) {
+      UDR0 = hval;
+      while ( !( UCSR0A & (1<<UDRE0)) ) ;
+      UDR0 = lval; }
+    sbi(TIFR1, OCF1B);  /* clear OCR1B match flag */
+    return; }
   if( --adcpin == 0xFF ) {
     adcpin = NCHAN-1;
     gtime++; }
   //  adcpin = adcPin[apin];
-  ADCSRB = (ADCSRB & ~(1 << MUX5)) | (((adcpin >> 3) & 0x01) << MUX5);
-  ADMUX = ANALOG_REF | (adcpin & 0x07);
+  set_adcpin(adcpin, ADCSRB);
   sbi(TIFR1, OCF1B);  /* clear OCR1B match flag */
 
   acumvalptr = (uint32_t*)adcvals + oldpin;
@@ -527,10 +547,10 @@ int readDecimal(char **_ptr) {
     return -1;
   while('0' <= **_ptr && **_ptr <= '9') {
     res = 10*res + **_ptr - '0';
+    if (res < 0) // overflow
+      return -2;
     (*_ptr) ++;
   }
-  if (res < 0) // overflow
-    return -2;
   return res;
 }
 
@@ -548,6 +568,7 @@ void printError() {
 		 "                      -- set current limits for port(s) [0.1mA]"
 		 "\r\n"
 		 "       L [0-9]?       -- return current limits [mA]" "\r\n" 
+		 "       a [0-9]        -- switch to fast ADC on pin" "\r\n"
 		 ));
 }
 
@@ -559,10 +580,30 @@ void printOK() {
   Serial.print(F("OK\r\n"));
 }
 
+/* switch to fast ADC mode until any character arrive */
+void fastadc(int adcpin) {
+  uint8_t oldSREG;
+  uint8_t oldUCSRB;
+
+  oldSREG = SREG;
+  cli();
+  set_adcpin(adcpin, ADCSRB);
+  fastcount = FASTC_INIT;
+  oldUCSRB = UCSR0B;  /* save USART control register and disable interrupts */
+  UCSR0B &= ~((1 << TXCIE0) | (1 << UDRIE0));
+  SREG = oldSREG;
+  while(Serial.read() != FASTC_STOP)  /* wait until 'A' read */
+    delay(1);
+  fastcount = FASTC_OFF;
+  UCSR0B = oldUCSRB;
+  delay(1);
+  Serial.write(FASTC_ENDMSG);
+}
+
 void setup() {
   uint8_t i;
 
-  Serial.begin(115200, SERIAL_8N1);
+  Serial.begin(1000000UL, SERIAL_8O1);
   printIdent();
 #ifdef DEBUGTOG
   /* set pin12 = PB6 as OUTPUT, LOW */
@@ -603,10 +644,12 @@ void setup() {
   // setup ADCs
   /* apin = NCHAN-1; if ADC pin remapping necessary */
   /* adcpin = adcPin[apin]; */
+  fastcount = FASTC_OFF;
   adcpin = NCHAN-1;
-  ADMUX = ANALOG_REF | (adcpin & 0x07);   // REFS1&0, MUXi = 0 =>
-  ADCSRB = (1<<ADTS2) | (0<<ADTS1) | (1<<ADTS0)
-    | (((adcpin >> 3) & 0x01) << MUX5); // TC1 overflow
+  /* ADMUX = ANALOG_REF | (adcpin & 0x07);   // REFS1&0, MUXi = 0 => */
+  /* ADCSRB = (1<<ADTS2) | (0<<ADTS1) | (1<<ADTS0) */
+  /*   | (((adcpin >> 3) & 0x01) << MUX5); // TC1 overflow */
+  set_adcpin(adcpin, (1<<ADTS2) | (0<<ADTS1) | (1<<ADTS0));
   DIDR0 = ADCDIDR0;  // digital input disable
   DIDR2 = ADCDIDR2;
   ADCSRA = (1<<ADEN) | (1<<ADATE) | (1<<ADIE) |
@@ -703,6 +746,19 @@ void loop() {
   case 'L':
     printLimits(&ptr);
     printOK();
+    break;
+  case 'a':
+    i = readDecimal(&ptr);
+    if( 0 <= i && i <= 9) {
+      Serial.write("pin = "); Serial.print(i);
+      Serial.write("; offset = "); Serial.print(offs[i], 1);
+      Serial.write("; slope = "); Serial.print(slopes[i], 3);
+      Serial.write("\r\n");
+      Serial.flush();
+      fastadc(i);
+      printOK(); }
+    else
+      printError();
     break;
   case '?':
     printIdent();
