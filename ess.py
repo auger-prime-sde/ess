@@ -58,11 +58,12 @@ class DetectUSB:
     re_TTYACM = re.compile(r'ttyACM\d+')
     re_USBTMC = re.compile(r'usbtmc(?P<tmcid>\d+)')
     SERIALS = {
-        "BME": ('ttyUSB', 115200, None, BME.re_bmeinit),
-        "trigdelay": ('ttyUSB', 115200, None, TrigDelay.re_init),
-        "powercontrol": ('ttyACM', 115200, b'?\r', PowerControl.re_init),
-        "power_cpx": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_cpx),
-        "power_hmp": ('ttyACM', 9600, b'*IDN?\n', PowerSupply.re_hmp)}
+        "BME": ('ttyUSB', 115200, '8N1', None, BME.re_bmeinit),
+        "trigdelay": ('ttyUSB', 115200, '8N1', None, TrigDelay.re_init),
+        "powercontrol": ('ttyACM', 1000000, '8O1',
+                             b'?\r', PowerControl.re_init),
+        "power_cpx": ('ttyACM', 9600, '8N1', b'*IDN?\n', PowerSupply.re_cpx),
+        "power_hmp": ('ttyACM', 9600, '8N1', b'*IDN?\n', PowerSupply.re_hmp)}
     TMCS = {
         "afg": (b'*IDN?', re.compile(rb'.*AFG')),
         "mdo": (b'*IDN?', re.compile(rb'.*MDO'))}
@@ -102,11 +103,11 @@ class DetectUSB:
         for dev in ('BME', 'trigdelay', 'powercontrol',
                     'power_cpx', 'power_hmp'):
             if dev in devlist:
-                devclass, baudrate, cmd_id, re_resp = DetectUSB.SERIALS[dev]
+                devclass, *serpars = DetectUSB.SERIALS[dev]
                 for port in self.devices[devclass]:
                     self.logger.debug('Detecting %s on %s @ %d',
-                                      dev, port, baudrate)
-                    if self._check_serial(port, baudrate, cmd_id, re_resp):
+                                      dev, port, serpars[0])
+                    if self._check_serial(port, *serpars):
                         self.found[dev] = port
                         self.devices[devclass].remove(port)
                         self.logger.info('%s found at %s', dev, port)
@@ -182,11 +183,19 @@ class DetectUSB:
                 self.failed.append('flir')
                 self.logger.debug('flir not found')
 
-    def _check_serial(self, port, baudrate, cmd_id, re_resp):
+    def _check_serial(self, port, baudrate, mode, cmd_id, re_resp):
         ser = None
+        m = re.match(r'^([5-8])([NOE])([152])$', mode)
+        if m is None:
+            self.logger.error('wrong mode %s', repr(mode))
+            return False
+        bytesize, parity, stopbits = m.groups()
+        bytesize = int(bytesize)
+        stopbits = 1.5 if stopbits == '5' else int(stopbits)
         try:
             ser = Serial(port, baudrate,
-                         bytesize=8, parity='N', stopbits=1, timeout=0.5)
+                         bytesize=bytesize, parity=parity,
+                         stopbits=stopbits, timeout=0.5)
             if cmd_id is not None:
                 ser.write(cmd_id)
             readSerRE(ser, re_resp, timeout=2.0, logger=self.logger)
