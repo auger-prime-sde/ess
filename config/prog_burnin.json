@@ -28,12 +28,13 @@
   "program": [
     { "duration": 90,
       "timer": "timer_sc_1",
-      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80, "splitter": false }],
       "eval": [{ "offset": 0, "message": "Powering UUBs on for check"},
 	       { "offset": 81, "checkISN": 0 },
 	       { "offset": 83, "orderUUB": true }]},
     { "duration": 90,
-      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 },
+	        { "offset": -1, "splitter": true }],
       "eval": [{ "offset": 0, "message": "Powering UUBs on for test"}],
       "telnet": [{ "offset": -5, "cmds": "uubinit_cmds" }]},
 

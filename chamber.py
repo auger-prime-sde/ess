@@ -441,8 +441,9 @@ jsonobj - either json string or json file"""
                     # PowerControl
                     # pcon, pcoff parameter: list of UUBs, True or None
                     # rz_tout parameter: wait time [s] for readZone, float
+                    # splitter: True/False to power splitter on/off
                     for key in ('pcon', 'pcoff', 'rz_tout',
-                                'pczero', 'pccalib'):
+                                'pczero', 'pccalib', 'splitter'):
                         if key in pp:
                             kwargs[key] = self._macro(pp[key])
                     if 'volt_ramp' in pp:

@@ -439,6 +439,18 @@ gener_param - generator of measurement paramters (see gener_funcparams)
             tflags = {tname: self.timer.flags[tname]
                       for tname in self.tnames
                       if tname in self.timer.flags}
+            # switch splitter on/off according to power.splitter
+            if 'power' in self.timer.flags and \
+               'splitter' in self.timer.flags['power']:
+                powersplit = self.timer.flags['power']['splitter']
+                splittxt = 'on' if powersplit else 'off'
+                if self.spliton is not None:
+                    logger.info('splitter power %s', splittxt)
+                    self.spliton(powersplit)
+                    sleep(UUBdaq.TOUT_PREP)
+                else:
+                    logger.warning('splitter power %s required,' +
+                                   ' but spliton not available', splittxt)
             if not tflags:
                 continue
 

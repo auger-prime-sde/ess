@@ -30,7 +30,8 @@
   "load": false,
   "program": [
     { "duration": 90,
-      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80, "splitter": false },
+		{ "offset": -1, "splitter": true }],
       "eval": [{ "offset": 0,
 		 "message": "Powering UUBs on"},
 	       { "offset": 84, "checkISN": 8 }],

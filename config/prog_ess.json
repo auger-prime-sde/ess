@@ -64,12 +64,13 @@
   "program": [
     { "duration": 90,
       "timer": "timer_sc_1",
-      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80, "splitter": false }],
       "eval": [{ "offset": 0, "message": "Powering UUBs on for check"},
 	       { "offset": 81, "checkISN": 0 },
 	       { "offset": 83, "orderUUB": true }]},
     { "duration": 90,
-      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 }],
+      "power": [{ "offset": 0, "pcon": null, "pccheck": 80 },
+	        { "offset": -1, "splitter": true }],
       "eval": [{ "offset": 0, "message": "Powering UUBs on for test"}],
       "telnet": [{ "offset": -5, "cmds": "uubinit_cmds" }]},
 
@@ -200,7 +201,7 @@
     { "duration": 120,
       "eval": [{ "offset": 0, "message":
 		 "Voltage ramp down, expecting UUBs switch on (2:00)"}],
-      "power": [{ "offset": 0, "pccheck": 104,
+      "power": [{ "offset": 0, "pccheck": 104, "splitter": false,
 		  "volt_ramp": "volt_ramp_down_on" },
 		{ "offset": 105, "ch0": [24.0 ]}]},
     { "duration": 60,
@@ -216,7 +217,7 @@
       "power": [{ "offset": 0, "pccheck": 104,
 		  "volt_ramp": "volt_ramp_up_on" },
 		{ "offset": 105, "ch0": [24.0 ] },
-		{ "offset": -5, "rz_tout": null }],
+		{ "offset": -5, "rz_tout": null, "splitter": true }],
       "telnet": [{ "offset": -1, "cmds": "uubinit_cmds" }]},
 
     { "duration": 400,
@@ -277,7 +278,7 @@
     { "duration": 120,
       "eval": [{ "offset": 0, "message":
 		 "Voltage ramp down, expecting UUBs switch on (2:00)"}],
-      "power": [{ "offset": 0, "pccheck": 104,
+      "power": [{ "offset": 0, "pccheck": 104, "splitter": false,
 		  "volt_ramp": "volt_ramp_down_on" },
 		{ "offset": 105, "ch0": [24.0 ]}]},
     { "duration": 60,
@@ -293,7 +294,7 @@
       "power": [{ "offset": 0, "pccheck": 104,
 		  "volt_ramp": "volt_ramp_up_on" },
 		{ "offset": 105, "ch0": [24.0 ] },
-		{ "offset": -5, "rz_tout": null }],
+		{ "offset": -5, "rz_tout": null, "splitter": true }],
       "telnet": [{ "offset": -1, "cmds": "uubinit_cmds" }]},
 
     { "duration": 500,
