@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# choose appropriate version with respect to fpga version
+if [ -x /bin/get_fpga_version ]; then
+    fpgaver=`/bin/get_fpga_version | sed -e 's/{"version":\([0-9]\{8\}\)}/\1/'`
+    case $fpgaver in
+	14120420|17161120)
+	    ADCCHECK=/sbin/adc_check_ramp-14120420.elf
+	    ;;
+	14120220)
+	    ADCCHECK=/sbin/adc_check_ramp-14120220.elf
+	    ;;
+	*)
+	    ADCCHECK=/sbin/adc_check_ramp-14120220.elf
+	    ;;
+    esac
+else
+    ADCCHECK=/sbin/adc_check_ramp-14120220.elf
+fi
+
+NTESTS=5
+FN_LOG=/srv/www/adc_check_ramp.log
+echo -n "Check ADCs status: ."
+I=0
+while [ $I -lt $NTESTS ]; do
+    echo "== TEST_NUMBER: $I ==" >> $FN_LOG
+    opts="-v -d/srv/www/adc_check_$I.txt"
+    $ADCCHECK $opts 2>> $FN_LOG
+    status=$?
+    if [ $status -eq 0 ]; then
+	echo "OK"
+	echo "OK" >> $FN_LOG
+	exit 1
+    fi
+    echo -n "."
+    echo "failed, status " $? >> $FN_LOG
+    echo "restarting ADC" >> $FN_LOG
+    adc >& /dev/null
+    sleep 1
+    I=$(($I + 1))
+done
+echo " ATTENTION! ADCs check fails"
+echo "== ADC check fails ==" >> $FN_LOG  
+
