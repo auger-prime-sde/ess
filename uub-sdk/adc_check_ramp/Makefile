@@ -53,8 +53,8 @@ build/adc_check_ramp-%.elf : $(SRCS) | $(OBJDIR)
 
 patch: $(TARNAME)
 
-$(TARNAME): $(ELFS) test_adc
-	tar czf $(TARNAME) $(TAR_OPTS) test_adc $(ELFS)
+$(TARNAME): $(ELFS) test-adc
+	tar czf $(TARNAME) $(TAR_OPTS) test-adc $(ELFS)
 
 $(ELFSIZE): $(ELFS)
 	@echo arm-xilinx-linux-gnueabi-size $< | tee $@
