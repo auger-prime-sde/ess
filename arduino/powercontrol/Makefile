@@ -1,4 +1,4 @@
-ARDUINO_DIR = /opt/arduino-1.8.5
+ARDUINO_DIR = /opt/arduino-1.8.13
 BOARD_TAG = mega
 MCU = atmega2560
 AVRDUDE_ARD_BAUDRATE = 115200

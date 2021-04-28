@@ -13,7 +13,7 @@
 
 #define STR(s) _STR(s)
 #define _STR(s) #s
-#define VERSION "dev:" STR(DEVICE) " 2021-02-04"
+#define VERSION "dev:" STR(DEVICE) " 2021-04-26"
 
 /* constants for voltage reference */
 #define AVCC 1
