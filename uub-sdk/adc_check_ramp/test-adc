@@ -20,8 +20,11 @@ fi
 
 NTESTS=5
 DIR=/srv/www
+# FN_LOG=/dev/null to completely quite output
 FN_LOG=$DIR/adc_check_ramp.log
 echo -n "Check ADCs ramp status: ."
+echo -n "ADC check binary: " >> $FN_LOG
+$ADCCHECK -V 2>> $FN_LOG
 I=0
 while [ $I -lt $NTESTS ]; do
     echo "== TEST_NUMBER: $I ==" >> $FN_LOG
@@ -35,9 +38,9 @@ while [ $I -lt $NTESTS ]; do
 	exit 1
     fi
     echo -n "."
-    echo "failed, status " $? >> $FN_LOG
+    echo "failed, status " $status >> $FN_LOG
     echo "restarting ADC" >> $FN_LOG
-    adc >> $FN_LOG 2>&1
+    adc-restart >> $FN_LOG 2>&1
     sleep 1
     I=$(($I + 1))
 done

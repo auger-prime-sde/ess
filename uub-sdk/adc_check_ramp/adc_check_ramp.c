@@ -10,7 +10,7 @@
    Petr Tobiska <tobiska@fzu.cz>
 */
 
-#define VERSION "2021-04-19"
+#define VERSION "2021-04-26"
 #define REALTIME
 #define BUFALIGN
 
@@ -287,12 +287,11 @@ void dump_trace(char *fname, uint16_t trace[][SHWR_NSAMPLES]) {
 int evaluate_ramp(uint16_t trace[][SHWR_NSAMPLES]) {
   int ch, i, sum, result;
   result = 0;
-  for( ch = 0; ch < SHWR_RAW_NCH_MAX; ch++ ) {
-    sum = trace[2*ch][0];
-    for( i = 0; i < SHWR_NSAMPLES; i++ ) {
-      if(trace[2*ch][i] != trace[2*ch+1][i] ||
-	 (trace[2*ch][i] + i) % SHWR_MAX_VAL != sum) {
-	result |= 1 << ch;
+  for( ch = 0; ch < SHWR_NCH_MAX; ch++ ) {
+    sum = trace[ch][0];
+    for( i = 1; i < SHWR_NSAMPLES; i++ ) {
+      if((trace[ch][i] + i) % SHWR_MAX_VAL != sum) {
+	result |= 1 << (ch/2);
 	break; }
     }
   }
