@@ -85,8 +85,8 @@ uubnums - list of upto 10 UUB numbers
 calibration - dict(key: correction_value),
               key: "%d%s%s" % (splitmode, splitch, flabel)
               correction_value: 1.0 in ideal case
-channels: [A-F][0-9] ... splitter, on AFG chan A
-          R[0-9] ... reference, on AFG chan B
+channels: [A-F][0-9] ... splitter, always on AFG chan A
+          R[A-B] ... reference, on AFG chan A or B
 """
         assert len(pregains) == 2
         self.pregains = [float(p) if p is not None else None
@@ -94,22 +94,21 @@ channels: [A-F][0-9] ... splitter, on AFG chan A
         self.mdomap = None
         if mdochans is not None:
             assert 0 < len(mdochans) <= 4
-            self.mdomap = {ch+1: str(splitch)
-                           for ch, splitch in enumerate(mdochans)
-                           if splitch is not None and (
-                               len(splitch) == 2 and
-                               splitch[0] in 'ABCDEFR' and
-                               splitch[1] in '0123456789')}
-            if any([splitch[0] in 'ABCDEF'
-                    for splitch in self.mdomap.values()]):
-                assert self.pregains[0] is not None
-            if any([splitch[0] == 'R' for splitch in self.mdomap.values()]):
-                assert self.pregains[1] is not None
+            self.mdomap = {ch+1: SplitterGain._checksplitch(splitch, self)
+                           for ch, splitch in enumerate(mdochans)}
         self.uubnums = uubnums if uubnums is not None else [None]
         if calibration is not None:
-            self.calibration = json.load(open(calibration, 'r'))
+            with open(calibration, 'r') as fp:
+                self.calibration = json.load(fp)
         else:
             self.calibration = {}
+
+    def iterMDO(self):
+        """Iterator over configured MDO channels"""
+        if self.mdomap:
+            for mdoch, splitch in self.mdomap.items():
+                if splitch is not None:
+                    yield mdoch, splitch
 
     def gainMDO(self, splitmode, mdoch, flabel=""):
         """Return gain for MDO channel
@@ -126,16 +125,32 @@ flabel - freq for sine wave or pulse if empty string"""
         return self._gain(splitmode, '%c%d' % (group, index), flabel)
 
     @staticmethod
-    def _checksplitch(splitch):
+    def _checksplitch(splitch, self=None):
+        """Check that splitch is valid, return it or raise exception
+if self is not None, expect that it is instance of SplitterGain"""
+        if splitch is None:
+            return None
         assert isinstance(splitch, str) and len(splitch) == 2
-        assert splitch[0] in 'ABCDEFR' and splitch[1] in '0123456789'
+        if splitch[0] in 'ABCDEF':
+            assert splitch[1] in '0123456789'
+            if self is not None:
+                assert self.pregains[0] is not None
+        elif splitch[0] == 'R':
+            assert splitch[1] in 'AB'
+            if self is not None:
+                ind = ord(splitch[1]) - ord('A')
+                assert self.pregains[ind] is not None
+        else:
+            raise AssertionError()
+        return splitch
 
     def _gain(self, splitmode, splitch, flabel):
         """Return gain for splitter channel
 splitch - i.e. C8"""
-        SplitterGain._checksplitch(splitch)
+        splitch = SplitterGain._checksplitch(splitch, self)
         if splitch[0] == 'R':
-            return self.pregains[1]
+            ind = ord(splitch[1]) - ord('A')
+            return self.pregains[ind]
         assert splitmode in (0, 1, 3)
         if splitmode == 0:
             gain = 1.0 / 32
@@ -317,9 +332,9 @@ kwargs and item are merged, item is not modified"""
         # transform chan 10 -> c0
         attr.append('c%d' % (kwargs['chan'] % 10))
     if 'splitch' in kwargs:
-        arg = kwargs['splitch']
-        SplitterGain._checksplitch(arg)
-        attr.append('s' + arg)
+        splitch = SplitterGain._checksplitch(kwargs['splitch'])
+        if splitch is not None:
+            attr.append('s' + splitch)
     functype = kwargs.get('functype', '')
     if 'splitmode' in kwargs and functype in ('P', 'F'):
         assert kwargs['splitmode'] in (0, 1, 3)
