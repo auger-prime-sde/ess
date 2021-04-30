@@ -254,10 +254,10 @@
       "meas.freq": "meas_freq_params" },
 
     { "duration": 500,
-      "eval": [{ "offset": 0, "message": "Ramp up to 65 deg.C (8:20)"}],
-      "temperature": 65 },
+      "eval": [{ "offset": 0, "message": "Ramp up to 70 deg.C (8:20)"}],
+      "temperature": 70 },
     { "duration": 900,
-      "eval": [{ "offset": 0, "message": "Plateau at 65 deg.C, measurement in 13:30"}],
+      "eval": [{ "offset": 0, "message": "Plateau at 70 deg.C, measurement in 13:30"}],
       "power": [{ "offset": -120, "rz_tout": 5, "pccalib": true },
 		{ "offset": -60, "pccalib": true },
 		{ "offset": -1, "pccalib": true }],
