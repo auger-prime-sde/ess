@@ -406,6 +406,8 @@ timer - instance of timer
 q_resp - queue to send response
 uubnums - list of UUBnums in order of connections.  None if port skipped"""
         self.logger = logging.getLogger('PowerControl')
+        self.logger_zone = logging.getLogger('PwrCtrl-zone')
+        self.logger_curr = logging.getLogger('PwrCtrl-curr')
         if ctx is None:
             self.timer, self.q_resp, self.fp = None, None, None
             self.uubnums = {}
@@ -637,22 +639,24 @@ return tuple of two list: (uubsOn, uubsOff)"""
 
     def _readCurrents(self):
         """Read currents [mA]. Return as tuple of ten floats"""
-        self.logger.info('reading currents')
+        self.logger_curr.info('reading currents')
         with self._lock:
+            self.logger_curr.debug('writing b')
             self.ser.write(b'r\r')
             resp = readSerRE(self.ser, PowerControl.re_readcurr,
-                             logger=self.logger)
+                             logger=self.logger_curr)
         return [float(s)
                 for s in PowerControl.re_readcurr.match(resp).groups()]
 
     def _readZones(self):
         """Read zone transition and log them.
 Return list of dict with keys: ts, uubnum, dir, zone"""
-        self.logger.info('reading current zone transitions')
+        self.logger_zone.info('reading current zone transitions')
         with self._lock:
+            self.logger_zone.debug('writing z')
             self.ser.write(b'z\r')
             resp = readSerRE(self.ser, PowerControl.re_zones,
-                             logger=self.logger)
+                             logger=self.logger_zone)
         recs = []
         for rec in PowerControl.re_zones.match(resp).groups()[0].split(b' '):
             if not rec:
@@ -664,13 +668,14 @@ Return list of dict with keys: ts, uubnum, dir, zone"""
             try:
                 d['uubnum'] = self.port2uubnum[d['port']]
             except KeyError:
-                self.logger.warning('Transition in unassigned port: %s', rec)
+                self.logger_zone.warning(
+                    'Transition in unassigned port: %s', rec)
                 continue
             d['ts'] = self.atics2ts(d['atics'])
             if self.fp is not None:
                 self.fp.write(PowerControl.ZONEFMT.format(**d))
             if d['zone'] == PowerControl.ZONEOVER:
-                self.logger.error(
+                self.logger_zone.error(
                     'OverCurrent on UUB %04d at %s', d['uubnum'],
                     d['ts'].strftime('%Y-%m-%d %H:%M:%S.%f'))
             recs.append(d)
