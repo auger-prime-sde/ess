@@ -183,6 +183,7 @@ class LogHandlerPickle:
 
 class LogHandlerGrafana:
     """LogHandler delivering data to Grafana database"""
+    #               ess key, grafana key
     TEMP_KEYS = (('set_temp', 'temp_set'),
                  ('chamber_temp', 'temp_chamber'),
                  ('bme_temp1', 'temp_BME1'),
@@ -196,7 +197,8 @@ class LogHandlerGrafana:
                  ('ds6_temp', 'temp_DS6'),
                  ('ds7_temp', 'temp_DS7'),
                  ('ds8_temp', 'temp_DS8'),
-                 ('ds9_temp', 'temp_DS9'))
+                 ('ds9_temp', 'temp_DS9'),
+                 ('ps_u', 'u_input'))
     SLOW_KEYS = (('zynq{u:04d}_temp', 'temp_zynq'),
                  ('sc{u:04d}_temp', 'temp_sc'),
                  ('itot_u{u:04d}', 'i_tot'),
