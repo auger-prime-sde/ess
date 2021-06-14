@@ -9,15 +9,19 @@ import os
 import sys
 import json
 import logging
+import logging.config
+import logging.handlers
+import multiprocessing
 import time
 from datetime import datetime
-from Queue import Queue
+import queue
 
 # ESS stuff
-from UUB import UUBlisten, UUBconvData, UUBtelnet
-from dataproc import DataProcessor, DP_store
+from UUB import UUBlisten, UUBtelnet
+from dataproc import DataProcessor
+from logger import QueDispatch, QLogHandler
 
-VERSION = '20190520'
+VERSION = '20210531'
 
 
 class DAQ(object):
@@ -53,8 +57,38 @@ class DAQ(object):
             logging.basicConfig(**kwargs)
 
         # queues
-        self.q_ndata = Queue()
-        self.q_dp = Queue()
+        self.q_ndata = multiprocessing.JoinableQueue()
+        self.q_dpres = multiprocessing.Queue()
+        self.q_log = multiprocessing.Queue()
+        self.q_resp = queue.Queue()
+        # manager for shared dict for invalid channels
+        self.mgr = multiprocessing.Manager()
+        self.invalid_chs_dict = self.mgr.dict()
+
+        self.qlistener = logging.handlers.QueueListener(
+            self.q_log, QLogHandler())
+        self.qlistener.start()
+
+        # UUB channels
+        self.chans = d.get('chans', range(1, 11))
+
+        # start DataProcessors before anything is logged, otherwise child
+        # processes may lock at acquiring lock to existing log handlers
+        dp_ctx = {'q_ndata': self.q_ndata,
+                  'q_resp': self.q_dpres,
+                  'q_log': self.q_log,
+                  'inv_chs_dict': self.invalid_chs_dict,
+                  'datadir': self.datadir,
+                  'splitmode': None,
+                  'chans': self.chans}
+        self.n_dp = d.get('n_dp', multiprocessing.cpu_count() - 2)
+        self.dataprocs = [multiprocessing.Process(
+            target=DataProcessor, name='DP%d' % i, args=(dp_ctx, ))
+                          for i in range(self.n_dp)]
+        for dp in self.dataprocs:
+            dp.start()
+        self.qdispatch = QueDispatch(self.q_dpres, self.q_resp, zLog=False)
+        self.qdispatch.start()
 
         self.uubnums = [int(uubnum) for uubnum in d['uubnums']]
         # UUBs - UUBdaq and UUBlisten
@@ -62,8 +96,6 @@ class DAQ(object):
         self.ulisten.permanent = True
         self.ulisten.uubnums = set(self.uubnums)
         self.ulisten.start()
-        self.uconv = UUBconvData(self.q_ndata, self.q_dp)
-        self.uconv.start()
 
         # UUBs - UUBtelnet
         telnetcmds = d.get('telnetcmds', None)
@@ -73,18 +105,23 @@ class DAQ(object):
         else:
             self.telnet = None
 
-        # data processing
-        self.dp0 = DataProcessor(self.q_dp)
-        self.dp0.workhorses.append(DP_store(self.datadir))
-        self.dp0.start()
-
     def stop(self):
         """Stop all threads"""
-        self.dp0.stop.set()
         self.ulisten.stop.set()
-        self.uconv.stop.set()
+        for i in range(self.n_dp):
+            self.q_ndata.put(None)
+        if self.q_dpres is not None:
+            self.q_dpres.put(None)
+        # join all threads
+        self.qlistener.stop()
+        self.ulisten.join()
         if self.telnet is not None:
-            self.telnet.__del__()
+            self.telnet.join()
+        self.qdispatch.join()
+        # join DP processes
+        for dp in self.dataprocs:
+            dp.join()
+        self.mgr.shutdown()
 
 
 if __name__ == '__main__':
