@@ -13,7 +13,7 @@
 
 #define STR(s) _STR(s)
 #define _STR(s) #s
-#define VERSION "dev:" STR(DEVICE) " 2021-04-26"
+#define VERSION "dev:" STR(DEVICE) " 2021-06-17"
 
 /* constants for voltage reference */
 #define AVCC 1
@@ -157,7 +157,12 @@ float offs[NCHAN] = {-2.6, -2.4, -2.8, -2.6, -2.4,
 		     -2.9, -3.0, -2.7, -2.7, -2.5};
 float slopes[NCHAN] = {1.207, 1.203, 1.202, 1.205, 1.205,
 		       1.202, 1.202, 1.209, 1.204, 1.210};
-  #endif
+  #elif DEVICE == 3
+ float offs[NCHAN] = {-3.4, -3.2, -3.9, -3.9, -3.7,
+		      -4.3, -3.3, -4.1, -3.8, -3.9};
+float slopes[NCHAN] = {1.231, 1.236, 1.232, 1.234, 1.234,
+		       1.231, 1.233, 1.236, 1.234, 1.236};
+ #endif
 #endif
 
 static inline uint32_t curr2adc(int i, float curr) {
