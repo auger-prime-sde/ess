@@ -900,7 +900,8 @@ jsdata - JSON data (str), ignored if jsfn is not None"""
 TESTERS = {'suma': 'Petr Tobiska',
            'martina': 'Martina Bohacova',
            'matej': 'Matej Havelka',
-           'honza': 'Jan Stastny'}
+           'honza': 'Jan Stastny',
+           'margita': 'Margita Majercakova'}
 
 PHASES = {'pretest': ('config/config_pretest.json', ('tester', 'uubnum')),
           'cycles': ('config/config_ess.json', ('tester', 'uubnums')),

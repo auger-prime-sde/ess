@@ -819,10 +819,10 @@ uubnum - UUB number to log"""
 # columns: timestamp""" % (uubnum, ctx.basetime.strftime('%Y-%m-%d'))
     logdata = ['{timestamp:%Y-%m-%dT%H:%M:%S}']
     prolog += ''.join([' | I_%s' % label for label in labels_I])
-    logdata.extend(['{sc%04d_i_%s:5.2f}' % (uubnum, label)
+    logdata.extend(['{sc%04d_i_%s:5.1f}' % (uubnum, label)
                     for label in labels_I])
     prolog += ''.join([' | U_%s' % label for label in labels_U])
-    logdata.extend(['{sc%04d_u_%s:7.2f}' % (uubnum, label)
+    logdata.extend(['{sc%04d_u_%s:6.1f}' % (uubnum, label)
                     for label in labels_U])
     prolog += '\n'
     formatstr = ' '.join(logdata) + '\n'
