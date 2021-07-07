@@ -100,7 +100,7 @@ class DAQ(object):
         # UUBs - UUBtelnet
         telnetcmds = d.get('telnetcmds', None)
         if telnetcmds is not None:
-            self.telnet = UUBtelnet(None, *self.uubnums)
+            self.telnet = UUBtelnet(None, self.uubnums)
             self.telnet._runcmds(map(str, telnetcmds))
         else:
             self.telnet = None
@@ -115,8 +115,6 @@ class DAQ(object):
         # join all threads
         self.qlistener.stop()
         self.ulisten.join()
-        if self.telnet is not None:
-            self.telnet.join()
         self.qdispatch.join()
         # join DP processes
         for dp in self.dataprocs:
