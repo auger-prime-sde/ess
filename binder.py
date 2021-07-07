@@ -186,12 +186,12 @@ N.B. progno is diplayed as progno+1 on the chamber"""
         return self.modbus.read_float(self.ADDR_ACT_HUMID)
 
     def set_temp(self, temperature, manual=True):
-        self.modbus.write_float(self.ADDR_SET_TEMP, temperature)
+        self.modbus.write_float(self.ADDR_SET_TEMP_MAN, temperature)
         if manual:
             self.modbus.write_single_register(self.ADDR_MODE, self.MODE_MANUAL)
 
     def set_humid(self, humidity, manual=True):
-        self.modbus.write_float(self.ADDR_SET_HUMID, humidity)
+        self.modbus.write_float(self.ADDR_SET_HUMID_MAN, humidity)
         if manual:
             self.modbus.write_single_register(self.ADDR_MODE, self.MODE_MANUAL)
 
