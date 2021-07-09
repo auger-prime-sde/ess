@@ -4,10 +4,11 @@
  * Petr Tobiska <tobiska@fzu.cz>
  * 2021-07-09
 
+ source /opt/xilinx/SDK/2015.2/settings64.sh (replace with your path Xilinx SDK)
+
  prerequisities: build zlib (TODO: put it into Makefile)
    wget https://zlib.net/zlib-1.2.11.tar.gz && tar zxf zlib-1.2.11.tar.gz
    cd zlib-1.2.11
-   source /opt/xilinx/SDK/2015.2/settings64.sh (replace with your path Xilinx SDK)
    CC=arm-xilinx-linux-gnueabi-gcc ./configure --prefix=.
    make
    make DESTDIR=../zlib/ install
@@ -16,7 +17,7 @@
  optional clean up: rm zlib-1.2.11.tar.gz && rm -rf zlib-1.2.11
  (not necessary after successful build of zlib; include/lib files are in crc32/zlib)
 
- build crc32 binary: make (from crc32 directory)
+ build crc32 binary: make (from crc32 directory), result: build/crc32
  */
 
 #include <stdio.h>

@@ -16,7 +16,7 @@ else
 DEBUG_FLAGS := -O2
 endif
 
-LIBS := -lrt -Lzlib/lib -lz
+LIBS := -lrt -Lzlib/lib -l:libz.a
 CC := arm-xilinx-linux-gnueabi-gcc
 CFLAGS = -Wall $(DEBUG_FLAGS) -c -fmessage-length=0
 CFLAGS += -MT$@ -MMD -MP -MF$(@:%.o=%.d) -MT$(@:%.o=%.d)
